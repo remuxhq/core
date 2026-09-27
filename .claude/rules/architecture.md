@@ -1,0 +1,53 @@
+# Architecture
+
+DDD, hexagonal-lite, in Rust. `engine/domain/` (crate `remuxd-domain`) decides and sees
+no framework and no socket; a motor is the machine behind the domain's ports
+(`engine/motor-obs/` is libobs; another motor is another crate on the same ports);
+`engine/remuxd/` is the daemon: `boot` (the daemon as a function, given a motor), the
+socket, the wire; `cli/` is a face; `engine/wire/` is the HTTP the daemon and the CLI
+share.
+
+## The engine's contexts
+
+`engine/domain/src/engine/` is one module per context, each owning its verbs and the
+port it drives; `mod.rs` holds the state, the dispatcher and what crosses contexts
+(the panic button, the tick, the status):
+
+- `picture`: what is behind the picture, the cards, the layout, the preview lease.
+  Port: `Picture`.
+- `sound`: the microphone, the gate, the denoiser, the music and its rotation, the
+  clips, the faders, the speakers, the screen's sound. Port: `Sound`.
+- `air`: going live and recording, the two levers on the same picture; the live written
+  down when it ends. Port: `Air`.
+- `app`: what the engine asks on a face's behalf (arm, retitle, announce, the chat, the
+  categories). Port: `Watching`, implemented by `destinations::Local` with no account
+  and by `remuxd::wire::App` with one.
+
+`Pipeline` is the three media ports together plus the grants, and one motor implements
+each port in its own `impl`. A verb that needs two contexts belongs in `mod.rs`, like
+the panic button.
+
+## Beside the engine
+
+- `destinations`: the file (`~/.config/remux/destinations.json`) and `Local`, the
+  `Watching` over it.
+- `wire`: what a server and the engine say to each other (`docs/wire.md`); `chat` is
+  the feed every face reads.
+- `config`, `os`: what is in effect, and the one table of what differs per OS.
+- `plan`, `scenes`, `history`, `clips`, `remembered`, `music`, `gate`: pure, with the
+  file beside.
+
+## Rules
+
+- **Shared code never names an operating system.** The domain, the daemon, the wire
+  and the CLI read one table, `remuxd_domain::os::OS` (where state, recordings and OBS
+  live; how the engine runs as a service, as argv lists the shell executes). The libobs
+  motor reads its own, `motor_obs::platform::TABLE` (plugins, source ids, encoders,
+  paths). A new OS is a column in each table and a runner in the release matrix, never
+  an `if` elsewhere; `make remuxd.seam` fails on `target_os` outside the two files
+  (`cfg(unix)` around std's file modes is std's shim, allowed).
+- Decisions live in pure modules next to the adapter that acts on them. A thread or an
+  HTTP call is transport; if it starts deciding, split it.
+- Stream keys and tokens are per-row data in the destinations file, never in code,
+  config or logs; the shell writes them, the engine reads them.
+- The CLI's default prose is a contract (`smoke/cli.py`); `--json` is the shape.

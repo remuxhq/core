@@ -1,0 +1,12 @@
+[package]
+name = "remux-wire"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The HTTP the daemon and the shell share: the web's API (`remux login`, the session)."
+
+[dependencies]
+remuxd-domain = { path = "../domain" }
+reqwest = { workspace = true }
+serde_json = { workspace = true }

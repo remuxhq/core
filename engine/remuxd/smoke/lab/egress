@@ -1,0 +1,85 @@
+#!/bin/sh
+# Egress: one ffmpeg per destination, all reading the same input.
+#   usage: egress rtsp://input/path rtmp://host/app/key [rtmp://host/app/key ...]
+#
+# The app runs this on each adapter's path (Remux.Broadcast.Path): one input,
+# one destination. The lab can still fan out by hand:
+#   docker exec remux-mediamtx /egress rtsp://localhost:8554/scene rtmp://tico:1935/live/tico-key rtmp://teco:1935/live/teco-key
+#
+# Video is copied when the input is already H264 (Chrome, Brave, Edge, Safari)
+# and transcoded otherwise (VP8/VP9 from a Chromium without proprietary
+# codecs, or Firefox without OpenH264): FLV/RTMP only carries H264. Audio is
+# copied when it is already AAC (an encoder's scene, read over RTMP with the
+# timestamps it was published with) and transcoded to AAC otherwise (the
+# browser's Opus, over RTSP). Why not `ffmpeg -f tee` (one process, N outputs)?
+# It chains every platform to the weakest one: an output that fails is
+# dropped for good or takes the rest down, and outputs cannot join or leave
+# mid-stream.
+#
+# mediamtx runs this by exec (no shell of its own) and SIGINTs the whole
+# process group when the path goes away, so every ffmpeg dies with it.
+# The choice between copying and transcoding is the whole decision here, so it
+# is four functions with a test beside them (`relay/egress.test`, `make
+# egress.test`) rather than a case statement nobody can reach without a live
+# stream. Sourced with EGRESS_SOURCED set, this file defines them and does
+# nothing else.
+
+# What the input needs before it is opened. RTSP left to "automatic" is UDP,
+# and at the engine's 6 Mbps of 1080p30 the relay lost RTP packets by the
+# hundred a second from itself; RTMP has no such switch.
+common_for() {
+  case "$1" in
+    rtsp://*) echo "-rtsp_transport tcp -analyzeduration 10M -probesize 10M" ;;
+    *)        echo "-analyzeduration 10M -probesize 10M" ;;
+  esac
+}
+
+# One codec name out of `ffprobe -show_entries stream=codec_type,codec_name
+# -of csv=p=0`: one line per stream, `type,name`, in the input's order and not
+# ours. A line with the type alone names no codec.
+codec_of() {
+  printf '%s\n' "$1" | grep -E "(^|,)$2(,|$)" | head -n1 | tr ',' '\n' \
+    | grep -vx "$2" | head -n1
+}
+
+# FLV/RTMP only carries H264, so anything else is transcoded: VP8/VP9 from a
+# Chromium without proprietary codecs, or Firefox without OpenH264.
+video_of() {
+  case "$1" in
+    h264) echo "-c:v copy" ;;
+    *)    echo "-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -g 60 -b:v 4M -maxrate 4M -bufsize 8M" ;;
+  esac
+}
+
+# AAC is copied with the timestamps it was published with (an encoder's scene,
+# read over RTMP); the browser's Opus, over RTSP, is turned into AAC.
+audio_of() {
+  case "$1" in
+    aac) echo "-c:a copy" ;;
+    *)   echo "-c:a aac -b:a 160k" ;;
+  esac
+}
+
+main() {
+  input="$1"; shift
+  common=$(common_for "$input")
+
+  # One probe for both streams: each probe waits the whole analyzeduration on
+  # a live input, and two of them (25 s on a WebRTC scene under load) blew the
+  # e2e's budget for the first HLS segment.
+  probe=$(ffprobe -v error $common -show_entries stream=codec_type,codec_name -of csv=p=0 "$input" 2>/dev/null)
+  codec=$(codec_of "$probe" video)
+  sound=$(codec_of "$probe" audio)
+  video=$(video_of "$codec")
+  audio=$(audio_of "$sound")
+  echo "egress: input video is ${codec:-unknown}, ${video%% *} $(echo "$video" | cut -d' ' -f2); audio is ${sound:-none}, ${audio%% *} $(echo "$audio" | cut -d' ' -f2)"
+
+  for dst in "$@"; do
+    ffmpeg -hide_banner -loglevel warning $common -i "$input" \
+      -map 0:v -map 0:a? $video $audio \
+      -f flv "$dst" &
+  done
+  wait
+}
+
+[ -n "${EGRESS_SOURCED:-}" ] || main "$@"

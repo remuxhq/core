@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# The engine is signed with a certificate of our own, created once and kept in
+# the login keychain. Ad-hoc signing has no certificate to anchor to, so macOS
+# pins the permission to the binary's cdhash and every rebuild starts from
+# zero: the Screen Recording toggle stays on while the capture comes back
+# empty. With a certificate the requirement is the bundle id plus the leaf,
+# both of which survive a rebuild.
+#
+# macOS's own openssl throughout, on purpose. Homebrew's OpenSSL 3 writes a
+# PKCS#12 whose MAC the keychain refuses ("MAC verification failed"), and it is
+# the one first on the PATH here; LibreSSL writes the format Apple reads. The
+# extensions go through a config file because LibreSSL has no -addext.
+set -euo pipefail
+
+NAME="${1:?usage: identity <common name>}"
+KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+SSL=/usr/bin/openssl
+
+if security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+  echo "identity \"$NAME\" is already in the keychain"
+  exit 0
+fi
+
+DIR="$(mktemp -d)"
+trap 'rm -rf "$DIR"' EXIT
+
+cat > "$DIR/req.cnf" <<EOF
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = ext
+[dn]
+CN = $NAME
+[ext]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = critical,codeSigning
+EOF
+
+"$SSL" req -x509 -newkey rsa:2048 -sha256 -days 7300 -nodes \
+  -config "$DIR/req.cnf" -keyout "$DIR/key.pem" -out "$DIR/cert.pem" 2>/dev/null
+
+"$SSL" pkcs12 -export -inkey "$DIR/key.pem" -in "$DIR/cert.pem" \
+  -out "$DIR/id.p12" -passout pass:remux -name "$NAME"
+
+security import "$DIR/id.p12" -k "$KEYCHAIN" -P remux -T /usr/bin/codesign -A
+
+# Without this codesign asks for the key through a dialog on every build. It
+# needs the login password, so a refusal here is not a failure: answering
+# "Always Allow" once does the same thing.
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -l "$NAME" \
+  "$KEYCHAIN" >/dev/null 2>&1 ||
+  echo "note: codesign will ask for the key once, answer \"Always Allow\""
+
+echo "identity \"$NAME\" created"

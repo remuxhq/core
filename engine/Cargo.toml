@@ -1,0 +1,33 @@
+# One workspace, one Cargo.lock. Every machine that builds remux builds the
+# same dependency graph, which is the whole point of committing the lock.
+[workspace]
+resolver = "2"
+members = ["remuxd", "domain", "wire", "../cli"]
+# The libobs motor links against the OBS on this machine: its own workspace,
+# so this one builds on a machine with no OBS.
+exclude = ["motor-obs"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "http2"] }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+objc2-audio-toolbox = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-core-audio = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-image = "0.3.2"
+objc2-image-io = "0.3.2"
+objc2-av-foundation = "0.3.2"
+block2 = "0.6.2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# Cargo ignores profiles outside the workspace root, so this is the one place.
+[profile.release]
+opt-level = 3

@@ -1,0 +1,21 @@
+# gitleaks: the default rules, minus what is not ours to scan.
+# `make security` runs `gitleaks git` (the history) and then the tracked files.
+title = "remux"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "build output and fetched dependencies, never ours"
+paths = [
+  '''^engine/target/''',
+  '''^engine/motor-obs/target/''',
+  '''^engine/mutants\.out/''',
+  '''^music/''',
+]
+
+[[allowlists]]
+description = "the lab's keys that open nothing (the smokes)"
+paths = [
+  '''^engine/remuxd/smoke/''',
+]

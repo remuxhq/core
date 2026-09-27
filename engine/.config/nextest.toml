@@ -1,0 +1,25 @@
+# The Rust suite runs under nextest, and the reason is one specific failure
+# shape. A daemon does not fail by returning the wrong answer, it fails by
+# never answering: a client thread that waits on a socket nobody will write
+# to, a readiness line from a process that already died. Under the plain
+# `cargo test` harness that run never ends. It holds the target lock, burns a
+# core, and nobody notices until they wonder why the terminal went quiet. A
+# test that hangs is worse than one that fails.
+
+[profile.default]
+# The slowest honest test is 0.154s and the whole suite finishes in 0.2s, so
+# ten seconds is roughly sixty times the real ceiling: it can only fire on
+# something genuinely stuck, never on a slow machine or an instrumented build.
+# Keep it that way by making a test faster rather than by raising this.
+slow-timeout = { period = "10s", terminate-after = 2 }
+
+# A journey that passes on retry is a bug in the journey or in the product;
+# find which. Same rule the Playwright journeys have run under since day one.
+retries = 0
+
+[profile.ci]
+# The same reasoning with room for a shared runner, which is slower and noisier
+# than a laptop by a margin nobody controls.
+slow-timeout = { period = "30s", terminate-after = 2 }
+retries = 0
+failure-output = "immediate-final"

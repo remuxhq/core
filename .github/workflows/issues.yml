@@ -1,0 +1,29 @@
+# A bug issue carries `remux bug`'s report or it is closed on the spot: a
+# person (or their agent) reopens it with the report, and nobody triages a
+# flood by hand. Everything else about who may open issues is the
+# repository's interaction limits, in Settings, not here.
+name: issues
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  needs-report:
+    if: contains(github.event.issue.labels.*.name, 'bug')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+            const hasReport = /remux \d+\.\d+\.\d+ · remuxd/.test(body) || /remux \d+\.\d+\.\d+ · the engine/.test(body);
+            if (hasReport) return;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({ owner, repo, issue_number,
+              body: "This issue has no `remux bug` report. Run `remux bug` (or `remux bug --open`), put its output in the *remux bug* box, and reopen." });
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: ["needs-report"] });
+            await github.rest.issues.update({ owner, repo, issue_number, state: "closed", state_reason: "not_planned" });

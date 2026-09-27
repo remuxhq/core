@@ -1,0 +1,81 @@
+#!/bin/sh
+# What the egress decides, without an ffmpeg or a stream.
+#
+# The choice between copying and transcoding is made from one line of
+# ffprobe's output, and it is the whole reason the script exists: a browser
+# without H264 kills the egress if it is copied, and an encoder's AAC read
+# over RTMP arrives with the timestamps it was published with and must not be
+# touched. That decision is four functions in `relay/egress`; this drives them
+# with ffprobe output written by hand.
+#
+#   make egress.test
+set -e
+here=$(dirname "$0")
+# shellcheck source=./egress
+EGRESS_SOURCED=1 . "$here/egress"
+
+failures=0
+ok() { printf '  ok: %s\n' "$1"; }
+is() {
+  if [ "$2" = "$3" ]; then
+    ok "$1"
+  else
+    printf '  FAIL: %s\n    expected: %s\n    got:      %s\n' "$1" "$3" "$2"
+    failures=$((failures + 1))
+  fi
+}
+
+# ── reading the probe ───────────────────────────────────────────────────────
+# ffprobe -show_entries stream=codec_type,codec_name -of csv=p=0 prints one
+# line per stream, and the order is the file's, not ours.
+chrome="video,h264
+audio,opus"
+firefox="video,vp8
+audio,opus"
+encoder="audio,aac
+video,h264"
+silent="video,h264"
+
+is "the browser's H264 is found whichever line it is on" \
+  "$(codec_of "$chrome" video)" "h264"
+is "an encoder's video is found under its audio" \
+  "$(codec_of "$encoder" video)" "h264"
+is "the browser's Opus is found" "$(codec_of "$chrome" audio)" "opus"
+is "an encoder's AAC is found" "$(codec_of "$encoder" audio)" "aac"
+is "a stream with no sound answers nothing" "$(codec_of "$silent" audio)" ""
+is "a probe that said nothing answers nothing" "$(codec_of "" video)" ""
+
+# csv=p=0 with one entry prints the bare name; a probe that only found the
+# type must not be read as a codec called "video".
+is "a stream whose codec ffprobe could not name is not called video" \
+  "$(codec_of "video" video)" ""
+
+# ── copy or transcode ───────────────────────────────────────────────────────
+is "H264 is copied: it is what FLV carries" "$(video_of h264)" "-c:v copy"
+is "AAC is copied, timestamps and all" "$(audio_of aac)" "-c:a copy"
+
+for other in vp8 vp9 av1 "" unknown; do
+  is "video that is not H264 is transcoded (${other:-nothing})" \
+    "$(video_of "$other" | cut -d' ' -f1-2)" "-c:v libx264"
+done
+for other in opus pcm_s16le "" mp3; do
+  is "sound that is not AAC is transcoded (${other:-nothing})" \
+    "$(audio_of "$other" | cut -d' ' -f1-2)" "-c:a aac"
+done
+
+# ── the road in ─────────────────────────────────────────────────────────────
+# RTSP left to "automatic" is UDP, and at 6 Mbps the relay lost hundreds of RTP
+# packets a second from itself. An encoder's scene comes over RTMP, which has
+# no such switch.
+is "an RTSP input is pulled over TCP" \
+  "$(common_for rtsp://localhost:8554/scene | cut -d' ' -f1-2)" "-rtsp_transport tcp"
+is "an RTMP input carries no transport switch" \
+  "$(common_for rtmp://localhost:1935/scene)" \
+  "-analyzeduration 10M -probesize 10M"
+
+if [ "$failures" -eq 0 ]; then
+  echo "egress: every decision as expected"
+else
+  echo "egress: $failures wrong"
+  exit 1
+fi

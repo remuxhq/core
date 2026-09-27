@@ -1,0 +1,4 @@
+# Pinned so the compiler is not a variable either. Raising this is a commit.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]

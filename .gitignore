@@ -1,0 +1,9 @@
+# every crate's build output, and cargo-mutants' report
+**/target/
+/engine/mutants.out/
+
+# the music that plays under a live: on disk, never in the repository
+/music/
+
+__pycache__/
+/dist/

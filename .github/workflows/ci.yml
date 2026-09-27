@@ -1,0 +1,105 @@
+# The gate on every pull request and on main: the engine on the two operating
+# systems it ships for, and the scanners, each under a timeout. What needs a
+# display and a grant (the smokes) cannot run on a hosted runner and stays on
+# the machine (AGENTS.md, "Commands").
+#
+# Every action is pinned by commit, with the release beside it.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.98.0"
+
+jobs:
+  engine:
+    name: lint+tests / engine (fmt, clippy, seam, nextest, coverage)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the toolchain the repository pins
+        run: |
+          pinned=$(sed -n 's/^channel = "\(.*\)"/\1/p' engine/rust-toolchain.toml)
+          test "$pinned" = "${{ env.RUST_TOOLCHAIN }}" || { echo "rust-toolchain.toml says $pinned, ci.yml says ${{ env.RUST_TOOLCHAIN }}"; exit 1; }
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt, llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: engine
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-nextest,cargo-llvm-cov
+      - name: the OBS the engine links, pinned
+        run: make obs.fetch
+      # seam, fmt --check, clippy -D warnings, nextest, llvm-cov ≥ 90% of the domain
+      - run: make remuxd.check
+
+  # The same engine on the other OS it ships for: the seam, the domain and
+  # the CLI tests, the libobs motor built against the distribution's OBS.
+  # The smokes stay on a machine (a display, a session); this is the compile
+  # and the decisions, where a macOS-only default shows.
+  engine-linux:
+    name: lint+tests / engine on linux (seam, clippy, nextest, obs motor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: engine
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-nextest
+      - name: libobs, the distribution's, and a display for the daemon the socket tests spawn
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio xvfb
+      - run: make remuxd.seam
+      - run: cd engine && cargo clippy --locked --all-targets --features remuxd/obs -- -D warnings
+      - run: cd engine && xvfb-run -a cargo nextest run --locked --all-targets --features remuxd/obs
+      - run: cd engine && cargo test --locked --manifest-path motor-obs/Cargo.toml
+
+  security:
+    name: sec / secrets, advisories, deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks reads the history
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-audit,cargo-deny
+      # the advisory databases cargo audit and cargo deny clone: restored from
+      # the last run and refreshed on top (they fetch by default), never stale
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/advisory-db
+            ~/.cargo/advisory-dbs
+          key: advisory-db-${{ github.run_id }}
+          restore-keys: advisory-db-
+      - name: gitleaks 8.30.1, pinned by checksum
+        run: |
+          curl -sSL -o /tmp/gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks && gitleaks version
+      - run: make security

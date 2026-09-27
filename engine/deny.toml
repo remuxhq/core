@@ -1,0 +1,29 @@
+# cargo-deny: advisories, bans and sources for the engine's dependency graph.
+# Licenses are not checked here: the product is proprietary and the graph is
+# serde, objc2 bindings and a handful of MIT/Apache crates; a licence review
+# is a release step, not a gate.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+ignore = [
+  # ttf-parser 0.25.1 is unmaintained (RUSTSEC-2026-0192, 2026-06-28), no
+  # vulnerability and no patched release; it reaches the libobs motor through
+  # ab_glyph, which draws the cards' text. Moving to skrifa is the way out.
+  "RUSTSEC-2026-0192",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# the workspace crates point at each other by path, with no version: that is
+# the one wildcard a workspace has
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

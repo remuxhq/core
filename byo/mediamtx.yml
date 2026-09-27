@@ -1,0 +1,35 @@
+# A relay of your own, on this machine: the engine publishes one stream to
+# rtmp://127.0.0.1:1935/scene, mediamtx hands it to one ffmpeg per platform,
+# copying (the engine already sends H.264 + AAC). docs/byo.md.
+#
+#   set -a; . ~/.config/remux/byo.env; set +a     # TWITCH_KEY, YOUTUBE_KEY
+#   mediamtx byo/mediamtx.yml
+#
+# Every door is on loopback. The keys reach ffmpeg's command line, which
+# `ps` on this machine can list; that is this machine, and yours.
+
+logLevel: info
+api: no
+metrics: no
+pprof: no
+playback: no
+hls: no
+webrtc: no
+srt: no
+
+rtsp: yes
+rtspTransports: [tcp]
+rtspAddress: 127.0.0.1:8554
+rtmp: yes
+rtmpAddress: 127.0.0.1:1935
+
+paths:
+  scene:
+    runOnReady: >
+      sh -c '
+      [ -n "$TWITCH_KEY" ] && ffmpeg -loglevel warning -nostdin -rtsp_transport tcp -i rtsp://127.0.0.1:8554/$MTX_PATH
+        -c copy -f flv "rtmp://live.twitch.tv/app/$TWITCH_KEY" &
+      [ -n "$YOUTUBE_KEY" ] && ffmpeg -loglevel warning -nostdin -rtsp_transport tcp -i rtsp://127.0.0.1:8554/$MTX_PATH
+        -c copy -f flv "rtmp://a.rtmp.youtube.com/live2/$YOUTUBE_KEY" &
+      wait'
+    runOnReadyRestart: yes

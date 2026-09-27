@@ -1,0 +1,23 @@
+[package]
+name = "remuxd-domain"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Everything the engine decides. No Apple framework reaches this crate, and Cargo is what enforces that."
+
+# This dependency list is the seam, and it is the only enforcement that cannot
+# be argued with. A convention that the domain does not import AVFoundation is
+# a convention; a manifest that does not name objc2 is a compiler error. The
+# day someone needs a framework in here is the day this file has to change,
+# which is exactly the conversation worth having.
+#
+# What is here is serde and the two things the wire needs beside it: base64
+# for a picture in a line of JSON, and schemars, which prints the schema
+# `remux schema` shows. None of them knows what a display is.
+[dependencies]
+base64 = "0.22"
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"

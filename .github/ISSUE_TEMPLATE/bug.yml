@@ -1,0 +1,24 @@
+name: Bug
+description: Something remux did wrong. `remux bug --open` fills this in.
+title: "remux: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `remux bug` and paste what it prints in the box below, or `remux bug --open` to land here with it filled in. Reports without it are closed by a bot and can be reopened once it is there. Keys and tokens are redacted by the command; look anyway before you submit.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got. One paragraph.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: remux bug
+      description: The output of `remux bug`, whole.
+      render: text
+    validations:
+      required: true
