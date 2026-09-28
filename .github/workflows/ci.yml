@@ -44,11 +44,17 @@ jobs:
           tool: cargo-nextest,cargo-llvm-cov
       - name: the OBS the engine links, pinned
         run: make obs.fetch
+      # OBS's headers reach for simde on ARM; the bindings are generated from them.
+      - name: simde, for the libobs bindings
+        run: brew install simde
       # seam, fmt --check, clippy -D warnings, nextest, llvm-cov ≥ 90% of the domain
       - run: make remuxd.check
 
   # The same engine on the other OS it ships for: the seam, the domain and
   # the CLI tests, the libobs motor built against the distribution's OBS.
+  # LIBOBS_PATH links it straight from the multiarch folder: the bindings'
+  # own pkg-config check asks for the OBS their headers are from (32.1),
+  # which the distribution's is not.
   # The smokes stay on a machine (a display, a session); this is the compile
   # and the decisions, where a macOS-only default shows.
   engine-linux:
@@ -68,7 +74,9 @@ jobs:
         with:
           tool: cargo-nextest
       - name: libobs, the distribution's, and a display for the daemon the socket tests spawn
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio xvfb
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio libobs-dev xvfb
+          echo "LIBOBS_PATH=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
       - run: make remuxd.seam
       - run: cd engine && cargo clippy --locked --all-targets --features remuxd/obs -- -D warnings
       - run: cd engine && xvfb-run -a cargo nextest run --locked --all-targets --features remuxd/obs

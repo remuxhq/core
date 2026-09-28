@@ -27,7 +27,7 @@ What never goes anywhere, and what every change has to keep true.
 
 ## Text from strangers
 
-Chat, titles, names: control characters stripped before a terminal (`remux chat -f`),
+Chat, titles, names: control characters stripped before a terminal (`remux chat read -f`),
 never interpolated into a command, a query or a log format string.
 
 ## Process

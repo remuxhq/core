@@ -53,11 +53,11 @@ Twitch over IRC (anonymously) and YouTube's live chat through the Data API
 (`YOUTUBE_API_KEY` in `byo.env`, from a Google Cloud project with the YouTube
 Data API on), and serves both on the engine's wire (`docs/wire.md`). Python's
 standard library only, 3.9 or newer. `remux-chat` points the engine at the
-bridge itself (`remux chat --url ws://127.0.0.1:9999`).
+bridge itself (`remux chat url ws://127.0.0.1:9999`).
 
 ```
 remux-chat --twitch <channel> --youtube <video id>        # its own pane
-remux chat -f
+remux chat read -f
 ```
 
 The channel and the video id can live in `~/.config/remux/config.toml`
@@ -66,8 +66,8 @@ them when its command line says nothing. The YouTube video id is the one in
 the live's URL: YouTube Studio → Go live → Stream → the share link; a
 broadcast has to exist there before the chat can be read, because the
 platform hands out the chat per broadcast (with an account, the web's API
-does this for you). Twitch needs nothing but the channel's name. `remux chat --url -` goes back to no chat (or the
-account's). A `delete` from `remux delete <seq>` reaches the bridge and is
+does this for you). Twitch needs nothing but the channel's name. `remux chat url -` goes back to no chat (or the
+account's). A `delete` from `remux chat delete <seq>` reaches the bridge and is
 printed, not done: taking a message down on a platform needs a moderator's
 token, which the bridge does not hold.
 
@@ -75,16 +75,17 @@ token, which the bridge does not hold.
 
 ```
 remux health                       # what stands in the way, one line each
-remux screen 1; remux camera "FaceTime"; remux mic "Razer"
-remux shot --out /tmp/scene.jpg    # the picture, as it would go out
+remux scene layer add screen desk 1; remux scene layer add camera face FaceTime
+remux audio mic Razer
+remux scene shot --out /tmp/scene.jpg   # the picture, as it would go out
 remux plan                         # where it goes, and a fingerprint
 remux live                         # the plan, a yes, then on air
-remux chat -f                      # both platforms, one stream of lines
+remux chat read -f                 # both platforms, one stream of lines
 remux stop; remux history
 ```
 
 On macOS, Screen Recording and Microphone are granted to `remuxd` once: the
-first `remux screen` makes macOS list `remuxd` in System Settings → Privacy &
+first `remux scene layer add screen` makes macOS list `remuxd` in System Settings → Privacy &
 Security → Screen Recording, you turn it on, `remux daemon restart`; the
 microphone asks in a dialog. `remux health` says which is missing. Linux
 asks for nothing. The engine writes `~/Movies/remux/<date>.mp4`

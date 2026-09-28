@@ -46,5 +46,5 @@ with a credential the relay checks). `socket_token` goes on the wire's URL
 (`docs/wire.md`). Without a valid token: `401`.
 
 The engine calls this at start and at every reconnect of the wire; a session
-the server no longer knows makes `remux destinations` say so. `remux logout`
+the server no longer knows makes `remux destination list` say so. `remux logout`
 removes the file.

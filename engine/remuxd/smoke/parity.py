@@ -22,7 +22,48 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from drive import Daemon  # noqa: E402
+import base64  # noqa: E402
+
+from drive import Daemon as WireDaemon  # noqa: E402
+
+
+class Daemon(WireDaemon):
+    """Present the layer-only wire to older parity assertions.
+
+    The adapter exists only in this test harness, never in the daemon or a
+    client. First assert that removed fields really are absent; then project
+    the unique layer into the old single-source assertions. Multiple matches
+    intentionally produce no implicit choice.
+    """
+
+    def ask(self, command):
+        reply = super().ask(command)
+        if reply.get("reply") != "status":
+            return reply
+        for removed in ("screen", "camera", "camera_position", "camera_shape", "flowing", "camera_flowing"):
+            assert removed not in reply, f"legacy wire field {removed} came back"
+
+        def unique(kinds):
+            matches = [layer for layer in reply["layers"] if layer["source"]["kind"] in kinds]
+            return matches[0] if len(matches) == 1 else None
+
+        display = unique(("screen", "window"))
+        camera = unique(("camera",))
+        scene = reply["scene_flowing"]
+        view = dict(reply)
+        view["screen"] = display["source"]["name"] if display else None
+        view["camera"] = camera["source"]["name"] if camera else None
+        view["camera_flowing"] = reply["layer_flowing"].get(camera["id"], {}) if camera else {
+            "captured": 0, "frames": 0, "width": 0, "height": 0
+        }
+        source = reply["layer_flowing"].get(display["id"], {}) if display else {}
+        view["flowing"] = {
+            **scene,
+            "captured": source.get("captured", 0),
+            "width": source.get("width", 0),
+            "height": source.get("height", 0),
+        }
+        return view
 
 # The picture's rate, what every camera is held at (the motors hold it).
 OUTPUT_FPS = 30
@@ -174,6 +215,94 @@ def devices(daemon):
     )
 
 
+@check("layers")
+def layers(daemon):
+    """A real camera and window can coexist, move while running and close on cut."""
+    found = daemon.ask({"cmd": "devices"})
+    expect(found["cameras"], "no camera for a layered capture")
+    expect(found["windows"], "no window for a layered capture")
+    expect(found["screens"], "no display for a layered capture")
+    # The preceding source check now creates layers too. Start this
+    # independent layer check on an empty scene instead of assuming an old
+    # parallel capture was left behind.
+    for existing in daemon.ask({"cmd": "status"})["layers"]:
+        daemon.ask({"cmd": "layer-remove", "id": existing["id"]})
+    camera = found["cameras"][0]
+    # A real running window, not a synthetic title in the source list.
+    window = next((w for w in found["windows"] if "Ghostty" in w["name"]), found["windows"][0])
+    add_cam = daemon.ask({"cmd": "layer-camera", "id": "face", "device": camera["id"]})
+    expect(add_cam.get("reply") == "status", f"camera overlay did not open: {add_cam.get('message')}")
+    shaped = daemon.ask({"cmd": "layer-shape", "id": "face", "shape": "circle"})
+    expect(shaped.get("reply") == "status" and shaped["layers"][0]["shape"] == "circle", "camera mask did not read back")
+    camera_shot = daemon.ask({"cmd": "shot", "of": "camera"})
+    expect(camera_shot.get("reply") == "shot" and len(camera_shot["jpeg"]) > 500, "layer camera has no source preview")
+    expect(daemon.ask({"cmd": "status"})["camera_flowing"]["captured"] > 0, "layer camera's capture rate is not reported")
+    at = daemon.ask({"cmd": "camera-position", "at": {"x": 200, "y": 100}})
+    expect(at.get("reply") == "status" and at["layers"][0]["transform"]["x"] == 200, "single-camera alias did not move its layer")
+    reset = daemon.ask({"cmd": "layer-position", "id": "face", "at": None})
+    expect(reset.get("reply") == "status" and reset["layers"][0]["transform"]["x"] == 0, "camera position did not reset")
+    add_window = daemon.ask({"cmd": "layer-window", "id": "app", "query": window["name"].split(" — ")[0]})
+    expect(add_window.get("reply") == "status", f"window overlay did not open: {add_window.get('message')}")
+    expect([layer["id"] for layer in add_window["layers"]] == ["face", "app"], "overlays lost their order")
+    for layer_id in ("face", "app"):
+        preview = daemon.ask({"cmd": "layer-shot", "id": layer_id})
+        expect(preview.get("reply") == "shot" and len(preview["jpeg"]) > 500,
+               f"no preview for layer {layer_id}: {preview.get('message')}")
+    for layer in add_window["layers"]:
+        size = layer["source"]
+        expect(size["width"] > 0 and size["height"] > 0, f"no native size: {size}")
+        expect((layer["transform"]["width"], layer["transform"]["height"]) ==
+               (size["width"], size["height"]), f"layer was stretched to a preset: {layer}")
+    source = add_window["layers"][1]["source"]
+    crop = {"x": 0, "y": 0, "width": min(100, source["width"]), "height": min(100, source["height"])}
+    cropped = daemon.ask({"cmd": "layer-crop", "id": "app", "crop": crop})
+    expect(cropped.get("reply") == "status" and cropped["layers"][1]["crop"] == crop, "crop did not read back")
+    invalid = daemon.ask({"cmd": "layer-crop", "id": "app", "crop": {"x": source["width"], "y": 0, "width": 1, "height": 1}})
+    expect(invalid.get("reply") == "error", "an out-of-bounds crop was accepted")
+    expect(daemon.ask({"cmd": "layer-crop", "id": "app", "crop": None})["layers"][1]["crop"] is None, "crop off did not restore the source")
+    transform = {"x": 100, "y": 200, "width": 800, "height": 450, "degrees": 90}
+    moved = daemon.ask({"cmd": "layer-transform", "id": "app", "transform": transform})
+    expect(moved.get("reply") == "status" and moved["layers"][1]["transform"] == transform, "transform did not read back")
+    reordered = daemon.ask({"cmd": "layer-move", "id": "app", "index": 0})
+    expect([layer["id"] for layer in reordered["layers"]] == ["app", "face"], "layer order did not change")
+    removed = daemon.ask({"cmd": "layer-remove", "id": "app"})
+    expect([layer["id"] for layer in removed["layers"]] == ["face"], "window did not close")
+    expect(daemon.ask({"cmd": "layer-shot", "id": "app"}).get("reply") == "error", "removed layer still has a preview")
+    display = found["screens"][0]
+    added = daemon.ask({"cmd": "layer-screen", "id": "desk", "display": int(display["id"])})
+    expect(added.get("reply") == "status", f"display layer did not open: {added.get('message')}")
+    expect([layer["id"] for layer in added["layers"]] == ["face", "desk"], "display layer has a reserved order")
+    expect(added["layers"][1]["source"]["name"] == display["name"], "display ID selected another screen")
+    expect(added["layers"][1]["source"]["width"] > 0, "display layer delivered no pixels")
+    replaced = daemon.ask({"cmd": "layer-replace-window", "id": "desk", "query": window["name"].split(" — ")[0]})
+    expect(replaced.get("reply") == "status" and [l["id"] for l in replaced["layers"]] == ["face", "desk"],
+           f"source change lost layer order: {replaced.get('message')}")
+    refused = daemon.ask({"cmd": "layer-replace-window", "id": "desk", "query": "window-that-does-not-exist"})
+    expect(refused.get("reply") == "error" and daemon.ask({"cmd": "status"})["layers"][1]["id"] == "desk",
+           "an unavailable window changed the running layer")
+    restored = daemon.ask({"cmd": "layer-replace-screen", "id": "desk", "display": int(display["id"])})
+    expect(restored.get("reply") == "status" and restored["layers"][1]["source"]["kind"] == "screen",
+           f"display did not return under its ID: {restored.get('message')}")
+    before = restored["layer_flowing"]["desk"]["captured"]
+    hidden = daemon.ask({"cmd": "layer-visible", "id": "desk", "on": False})
+    expect(hidden.get("reply") == "status" and not hidden["layers"][1]["visible"], "display did not hide")
+    expect([l["id"] for l in hidden["layers"]] == ["face", "desk"], "hiding closed or reordered a capture")
+    expect(hidden["layer_flowing"]["desk"]["captured"] >= before, "hiding reset capture counters")
+    expect(daemon.ask({"cmd": "layer-shot", "id": "desk"}).get("reply") == "shot",
+           "hidden capture lost its source preview")
+    shown = daemon.ask({"cmd": "layer-visible", "id": "desk", "on": True})
+    expect(shown.get("reply") == "status" and shown["layers"][1]["visible"], "display did not return")
+    expect(shown["layer_flowing"]["desk"]["captured"] >= before, "showing reopened the capture")
+    screen_shot = daemon.ask({"cmd": "shot", "of": "screen"})
+    expect(screen_shot.get("reply") == "shot" and len(screen_shot["jpeg"]) > 500, "layer display has no source preview")
+    expect(daemon.ask({"cmd": "status"})["flowing"]["captured"] > 0, "layer display's capture rate is not reported")
+    expect(daemon.ask({"cmd": "layer-move", "id": "desk", "index": 0})["layers"][0]["id"] == "desk", "display cannot move")
+    expect(daemon.ask({"cmd": "layer-remove", "id": "desk"})["layers"][0]["id"] == "face", "display did not close")
+    cut = daemon.ask({"cmd": "hide-everything"})
+    expect(cut.get("reply") == "status" and not cut["layers"], "panic left a camera running")
+    return "camera + window + display, transform and order read back, cut closes captures"
+
+
 # ---- 5. a capture that runs ------------------------------------------------
 
 
@@ -201,6 +330,7 @@ def capture(daemon):
     for screen in screens:
         chose = daemon.ask({"cmd": "screen", "display": int(screen["id"])})
         expect(chose.get("reply") == "status", f"{screen['name']}: {chose}")
+        layer = next(layer for layer in chose["layers"] if layer["source"]["kind"] == "screen")
         flowing = daemon.until(
             lambda: (lambda f: f if f["frames"] >= 1 else None)(
                 daemon.ask({"cmd": "status"})["flowing"]
@@ -208,8 +338,10 @@ def capture(daemon):
             f"a frame from {screen['name']}",
         )
         expect(
-            (flowing["width"], flowing["height"]) == (1920, 1080),
-            f"{screen['name']} delivered {flowing['width']}x{flowing['height']}",
+            (flowing["width"], flowing["height"])
+            == (layer["source"]["width"], layer["source"]["height"]),
+            f"{screen['name']} delivered {flowing['width']}x{flowing['height']} "
+            "instead of its native layer size",
         )
         seen.append(f"{screen['name']} {flowing['frames']}")
 
@@ -272,23 +404,25 @@ def pacing(daemon):
         )
         measured.append(f"{screen['name']} {got} in / {out:.0f} fps out")
 
-    # This assertion used to be the opposite, and the reason it flipped is
-    # worth keeping: before the cards existed, nothing behind the picture meant
-    # nothing to repeat, and the pacer correctly stopped. Now the engine puts
-    # its own "No content shared" up instead, so the rate holds through it. The
-    # old assertion was encoding a limitation, not a requirement. `smoke cards`
-    # covers what that card says; here it is only the rate that matters.
+    # With nothing in the scene the picture holds its rate, as the native
+    # motor's does: black is drawn, and the plan, not the count, keeps it off
+    # the air.
     daemon.ask({"cmd": "share", "on": False})
     time.sleep(0.3)
-    idle = daemon.ask({"cmd": "status"})["flowing"]
+    idle = daemon.ask({"cmd": "status"})["scene_flowing"]
     time.sleep(1.0)
-    still = daemon.ask({"cmd": "status"})["flowing"]
+    still = daemon.ask({"cmd": "status"})["scene_flowing"]
     blank_rate = still["frames"] - idle["frames"]
     expect(
         blank_rate >= 20,
         f"the picture slowed to {blank_rate} frames a second with nothing shared",
     )
-    measured.append(f"nothing shared {blank_rate} fps out")
+    plan = daemon.ask({"cmd": "plan"})
+    expect(
+        "the scene is empty: nothing would be shared" in json.dumps(plan),
+        f"the plan let an empty scene through: {plan}",
+    )
+    measured.append(f"nothing shared {blank_rate} fps out, the plan says empty")
     return "; ".join(measured)
 
 
@@ -364,113 +498,46 @@ def camera(daemon):
     return f"{len(opened)} opened: {'; '.join(opened)}"
 
 
-# ---- 8, 10. the cards, and a screen that can be switched off ---------------
+# ---- 8, 9. text and timers, generated on the picture ----------------------
 
 
-@check("cards")
-def cards(daemon):
-    """The cards go up and down, their words are the operator's, and the
-    picture is never empty.
+@check("elements")
+def elements(daemon):
+    """A text and a timer are pictures of their own: the scene has frames with
+    nothing captured, a timer counts only while started, and both read back
+    in the scene's order.
 
-    The last part is the one that matters and it is not obvious: with nothing
-    behind the picture the engine puts up its own "No content shared", because
-    a viewer looking at a frozen frame cannot tell a deliberate blank from a
-    stream that died. That card is deliberately absent from the status, which
-    reports what the *operator* chose, so a panel does not draw "Back in a
-    moment" as selected because the screen happens to be off.
-
-    What the cards look like is proven by `shot`, which reads the
-    output picture back: dark background, bright line across the middle.
+    They replaced the cards: the words are a layer the operator places, and
+    a countdown is a timer element, started and stopped by its id.
     """
-    up = daemon.ask({"cmd": "card", "which": "starting-soon"})
-    expect(up.get("reply") == "status", f"putting a card up: {up}")
-    expect(up["card"] == "starting-soon", f"the status says {up['card']!r}")
-
-    worded = daemon.ask(
-        {"cmd": "card-text", "which": "starting-soon", "text": "Chegando já"}
-    )
-    expect(worded.get("reply") == "status", f"changing the words: {worded}")
-
-    fixed = daemon.ask(
-        {"cmd": "card-text", "which": "nothing-shared", "text": "anything"}
-    )
-    expect(
-        fixed.get("reply") == "error",
-        "the engine's own line about itself is not the operator's to change",
-    )
-
-    # Off, then on, and the pacer never stops in between: an engine that
-    # publishes the capture straight reports 0 fps on a still screen.
-    screen = daemon.ask({"cmd": "devices"})["screens"][0]
-    daemon.ask({"cmd": "screen", "display": int(screen["id"])})
-    daemon.ask({"cmd": "card", "which": "live"})
+    for existing in daemon.ask({"cmd": "status"})["layers"]:
+        daemon.ask({"cmd": "layer-remove", "id": existing["id"]})
+    text = {"id": "title", "x": 200, "y": 200, "width": 1000, "height": 160,
+            "kind": "text", "text": "Chegando já"}
+    timer = {"id": "clock", "x": 700, "y": 450, "width": 520, "height": 160,
+             "kind": "timer", "seconds": 10}
+    for element in (text, timer):
+        added = daemon.ask({"cmd": "scene-element-add", "element": element})
+        expect(added.get("reply") == "status", f"adding {element['id']}: {added}")
     daemon.until(
-        lambda: daemon.ask({"cmd": "status"})["flowing"]["frames"] >= 1,
-        "the picture to start",
+        lambda: daemon.ask({"cmd": "status"})["scene_flowing"]["frames"] >= 1,
+        "the picture to start with only elements in it",
     )
-
-    import time
-
-    before = daemon.ask({"cmd": "status"})["flowing"]["frames"]
-    daemon.ask({"cmd": "share", "on": False})
-    time.sleep(1.0)
-    after = daemon.ask({"cmd": "status"})["flowing"]["frames"]
-    expect(
-        after > before,
-        f"the picture stopped when the screen went off: {before} -> {after}",
-    )
-    blank = daemon.ask({"cmd": "status"})
-    expect(
-        blank["card"] is None,
-        f"the engine's own card must not read as the operator's choice, got {blank['card']!r}",
-    )
-    return (
-        f"up, reworded, the fixed one refused, and the picture kept going "
-        f"with nothing shared ({before} -> {after} frames)"
-    )
-
-
-# ---- 9. the countdown ------------------------------------------------------
-
-
-@check("countdown")
-def countdown(daemon):
-    """A countdown runs under the starting card's words, and the picture keeps
-    going while it does.
-
-    The clock lives in the picture, not in the engine: the engine has no clock
-    and counting is something that happens between frames. What is checked here
-    is that starting it puts the right card up, that it keeps its own words,
-    and that the frames keep flowing while it counts, because a countdown that
-    freezes the stream is worse than no countdown.
-    """
-    import time
-
-    started = daemon.ask({"cmd": "countdown", "seconds": 10})
-    expect(started.get("reply") == "status", f"starting the countdown: {started}")
-    expect(
-        started["card"] == "starting-soon",
-        f"the countdown belongs to the starting card, got {started['card']!r}",
-    )
-
-    first = daemon.ask({"cmd": "status"})["flowing"]["frames"]
+    first = daemon.ask({"cmd": "status"})["scene_flowing"]["frames"]
+    started = daemon.ask({"cmd": "scene-timer-start", "id": "clock"})
+    expect(started.get("reply") == "status", f"starting the timer: {started}")
     time.sleep(1.5)
-    later = daemon.ask({"cmd": "status"})["flowing"]["frames"]
+    later = daemon.ask({"cmd": "status"})["scene_flowing"]["frames"]
     rate = (later - first) / 1.5
-    expect(
-        rate >= 20,
-        f"the picture ran at {rate:.0f} fps while the clock was counting",
-    )
-
-    # Another card stops it rather than leaving a clock running behind
-    # something else.
-    daemon.ask({"cmd": "card", "which": "back-in-a-moment"})
-    expect(
-        daemon.ask({"cmd": "status"})["card"] == "back-in-a-moment",
-        "another card must take over",
-    )
-    daemon.ask({"cmd": "card", "which": "live"})
-    return f"counted down at {rate:.0f} fps out, and another card took over"
+    expect(rate >= 20, f"the picture ran at {rate:.0f} fps while the timer counted")
+    shot = daemon.ask({"cmd": "layer-shot", "id": "clock"})
+    expect(shot.get("reply") == "shot", f"a timer has a picture of its own: {shot}")
+    moved = daemon.ask({"cmd": "layer-move", "id": "clock", "index": 0})
+    order = next(s for s in moved["scenes"] if s["name"] == moved["active_scene"])["order"]
+    expect(order == ["clock", "title"], f"the scene's order did not change: {order}")
+    for element in (text, timer):
+        daemon.ask({"cmd": "layer-remove", "id": element["id"]})
+    return f"text and timer drawn, {rate:.0f} fps out while counting, reordered"
 
 
 # ---- 11. the panic button --------------------------------------------------
@@ -478,8 +545,7 @@ def countdown(daemon):
 
 @check("panic")
 def panic(daemon):
-    """One button: card up, camera down, screen off, microphone muted, and the
-    picture never stops.
+    """One button: every layer off, microphone muted, and the live goes on.
 
     It is one button and not four commands because it is pressed in the moment
     somebody walks into the room, and four round trips is four chances for one
@@ -499,7 +565,6 @@ def panic(daemon):
         "the picture to start",
     )
 
-    before = daemon.ask({"cmd": "status"})["flowing"]["frames"]
     hidden = daemon.ask({"cmd": "hide-everything"})
     expect(hidden.get("reply") == "status", f"hiding everything: {hidden}")
 
@@ -510,23 +575,12 @@ def panic(daemon):
     )
     expect(hidden["music_to_stream"] is False, "and keep the bed off the stream")
     expect(hidden["screen_sound"] is False, "and the screen's sound too")
+    expect(not hidden["layers"], f"layers stayed up: {hidden['layers']}")
     expect(hidden["camera"] is None, f"the camera stayed at {hidden['camera']!r}")
     expect(hidden["screen"] is None, f"the screen stayed at {hidden['screen']!r}")
-    expect(
-        hidden["card"] == "back-in-a-moment",
-        f"the card is {hidden['card']!r}",
-    )
     expect(hidden["on_air"], "it is a break, not the end of the live")
-
-    time.sleep(1.0)
-    after = daemon.ask({"cmd": "status"})["flowing"]["frames"]
-    expect(
-        after - before >= 20,
-        f"the picture ran at {after - before} fps through the panic button",
-    )
     daemon.ask({"cmd": "stop"})
-    daemon.ask({"cmd": "card", "which": "live"})
-    return f"card up, camera down, screen off, muted, still {after - before} fps out"
+    return "every layer off, camera and screen closed, muted, still on air"
 
 
 # ---- the screen's sound: a switch every face reads, off until asked -------
@@ -542,7 +596,6 @@ def screen_sound(daemon):
     import time
 
     daemon.ask({"cmd": "hide-everything"})
-    daemon.ask({"cmd": "card", "which": "live"})
     screen = daemon.ask({"cmd": "devices"})["screens"][0]
     daemon.ask({"cmd": "screen", "display": int(screen["id"])})
     daemon.until(
@@ -587,6 +640,60 @@ def screen_sound(daemon):
         f"off by default, on and off by asking, {after - before} fps through it, "
         f"{(later['screen_samples'] - heard) // (48_000 * 2)}s of the screen's sound in 3s"
     )
+
+
+# ---- a filter over the scene ----------------------------------------------
+
+
+@check("filter")
+def scene_filter(daemon):
+    """A WGSL filter over the whole scene changes the picture that goes out,
+    and off restores it. A file that does not build is refused and leaves the
+    filter that was there."""
+
+    def middle():
+        """The picture's middle pixel, summed: inside the screen whatever its
+        shape, where a corner can be the bars beside a screen that is not
+        16:9, which no filter makes anything but black."""
+        shot = daemon.ask({"cmd": "shot", "of": "scene"})
+        expect(shot.get("reply") == "shot", f"scene shot: {shot}")
+        rgb = subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "mjpeg", "-i", "pipe:0",
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+            input=base64.b64decode(shot["jpeg"]), capture_output=True, check=True,
+        ).stdout
+        expect(len(rgb) == shot["width"] * shot["height"] * 3, "decoded JPEG size")
+        at = (shot["height"] // 2 * shot["width"] + shot["width"] // 2) * 3
+        return sum(rgb[at:at + 3])
+
+    screen = daemon.ask({"cmd": "devices"})["screens"][0]
+    daemon.ask({"cmd": "screen", "display": int(screen["id"])})
+    desk = daemon.ask({"cmd": "status"})["layers"][0]["id"]
+    daemon.ask({"cmd": "layer-transform", "id": desk,
+                "transform": {"x": 0, "y": 0, "width": 1920, "height": 1080, "degrees": 0}})
+    daemon.until(lambda: daemon.ask({"cmd": "status"})["scene_flowing"]["frames"] > 2,
+                 "the screen to reach the scene")
+    plain = middle()
+    path = os.path.abspath("engine/shader/examples/invert.wgsl")
+    selected = daemon.ask({"cmd": "shader", "path": path})
+    expect(selected.get("reply") == "status" and selected.get("shader") == path,
+           f"filter selection: {selected}")
+    time.sleep(0.5)
+    inverted = middle()
+    expect(abs(inverted - (765 - plain)) < 60,
+           f"the scene filter did not invert the middle: {plain} -> {inverted}")
+    broken = os.path.join(tempfile.gettempdir(), "remux-parity-broken.wgsl")
+    with open(broken, "w") as f:
+        f.write("@fragment fn main() -> nonsense")
+    rejected = daemon.ask({"cmd": "shader", "path": broken})
+    expect(rejected.get("reply") == "error", "a filter that does not build was accepted")
+    expect(daemon.ask({"cmd": "status"})["shader"] == path, "the refusal replaced the filter")
+    daemon.ask({"cmd": "shader", "path": None})
+    time.sleep(0.5)
+    restored = middle()
+    expect(abs(restored - plain) < 36, f"off left the filter on: {plain} -> {inverted} -> {restored}")
+    daemon.ask({"cmd": "share", "on": False})
+    return f"middle {plain} -> {inverted} -> {restored}; a broken file kept the filter"
 
 
 # ---- a microphone that leaves and comes back ------------------------------
@@ -1486,10 +1593,11 @@ def record(_shared):
             time.sleep(4)
         else:
             # One monitor here, so the source is changed the other way the
-            # product allows: the screen goes off the picture and comes back.
-            engine.ask({"cmd": "share", "on": False})
+            # product allows: the screen's layer hides and shows again.
+            desk = engine.ask({"cmd": "status"})["layers"][0]["id"]
+            engine.ask({"cmd": "layer-visible", "id": desk, "on": False})
             time.sleep(2)
-            engine.ask({"cmd": "share", "on": True})
+            engine.ask({"cmd": "layer-visible", "id": desk, "on": True})
             time.sleep(2)
 
         engine.ask({"cmd": "record-stop"})
@@ -1583,11 +1691,12 @@ def watching(daemon):
     screens = daemon.ask({"cmd": "devices"})["screens"]
     expect(screens, "no screen to compose")
     daemon.ask({"cmd": "screen", "display": int(screens[0]["id"])})
+    # Watching first, as the panel does: the region is made when a face
+    # first asks for it, and a status before that names none.
+    daemon.ask({"cmd": "watching", "on": True})
     region = daemon.ask({"cmd": "status"})["preview"]
     expect(region, "this engine has no preview region")
     name = region["name"]
-
-    daemon.ask({"cmd": "watching", "on": True})
     time.sleep(1.0)
     first = rings(name)
     time.sleep(2.0)
@@ -1614,6 +1723,45 @@ def watching(daemon):
     back = rings(name)
     expect(back[0] > still[0], f"watched again, the ring did not come back: {still} -> {back}")
     return f"scene ring {first[0]}->{second[0]} watched, {lapsed[0]}->{still[0]} lapsed, {back[0]} back"
+
+
+@check("shot", alone=True)
+def shot(_shared):
+    """A shot is not a watch: it wakes the rings for the frame it takes and
+    leaves them as the faces left them.
+
+    `remux shot` on an engine nobody had watched left libobs scaling every
+    frame into the ring on the CPU for nobody: 45% of a core, idle, 1080p30,
+    until the engine restarted. Its own engine, because the bug is the ring's
+    first picture: one a watch already woke answered from what it kept, and
+    that picture was as old as the watch. A shot after a watch lapsed is the
+    third ask, and must be of now, not of then.
+    """
+    with Daemon(REMUXD) as engine:
+        screens = engine.ask({"cmd": "devices"})["screens"]
+        expect(screens, "no screen to compose")
+        engine.ask({"cmd": "screen", "display": int(screens[0]["id"])})
+
+        def settled(said):
+            taken = engine.ask({"cmd": "shot", "of": "scene"})
+            expect(taken.get("reply") == "shot", f"{said}: {taken}")
+            region = engine.ask({"cmd": "status"})["preview"]
+            expect(region, "this engine has no preview region")
+            after = rings(region["name"])
+            time.sleep(1.0)
+            idle = rings(region["name"])
+            expect(idle == after, f"{said}, the rings kept moving: {after} -> {idle}")
+            return idle[0]
+
+        cold = settled("a shot of an engine nobody watched")
+        again = settled("a second shot")
+        engine.ask({"cmd": "watching", "on": True})
+        # Four seconds without a renewal is past the three-second lease.
+        time.sleep(4.0)
+        lapsed = rings(engine.ask({"cmd": "status"})["preview"]["name"])[0]
+        late = settled("a shot after the watch lapsed")
+        expect(late > lapsed, f"a shot after the watch lapsed was the old picture: ring {lapsed} -> {late}")
+        return f"scene ring still at {cold}, {again}, and {late} after the watch lapsed at {lapsed}"
 
 
 @check("monitor", alone=True)
@@ -1838,9 +1986,9 @@ def headto(_shared):
     about this design.
 
     Four states, because the interesting figures are differences and a total
-    alone names nothing. A card replaces the picture rather than sitting on it,
-    so a camera left open behind a card is captured and not composited, which
-    is what splits the cost of having a camera from the cost of drawing it:
+    alone names nothing. A hidden layer keeps its capture running and is not
+    composited, which is what splits the cost of having a camera from the
+    cost of drawing it:
 
         C - D  is the camera's capture, alone
         (B - A) - (C - D)  is one more layer through the compositor
@@ -1857,7 +2005,6 @@ def headto(_shared):
         expect(cameras, "no camera to measure against")
 
         engine.ask({"cmd": "screen", "display": int(screens[0]["id"])})
-        engine.ask({"cmd": "card", "which": "live"})
         engine.until(
             lambda: engine.ask({"cmd": "status"})["flowing"]["frames"] >= 30,
             "the picture to be running before its cost is read",
@@ -1879,7 +2026,8 @@ def headto(_shared):
         )
         both_cpu, both_mb, both_fps = cost(engine)
 
-        engine.ask({"cmd": "card", "which": "starting-soon"})
+        for layer in engine.ask({"cmd": "status"})["layers"]:
+            engine.ask({"cmd": "layer-visible", "id": layer["id"], "on": False})
         behind_cpu, _, _ = cost(engine)
 
         engine.ask({"cmd": "camera", "device": None})

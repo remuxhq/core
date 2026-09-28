@@ -185,11 +185,9 @@ fn changes_the_setup(command: &Command) -> bool {
             | Command::Arm { .. }
             | Command::Retitle { .. }
             | Command::Announce { .. }
-            | Command::Card { .. }
-            | Command::Countdown { .. }
-            | Command::Share { .. }
+            | Command::SceneTimerStart { .. }
+            | Command::SceneTimerStop { .. }
             | Command::Mute { .. }
-            | Command::HideEverything
             | Command::NextTrack
     )
 }

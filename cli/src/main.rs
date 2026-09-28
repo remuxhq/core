@@ -14,15 +14,48 @@ mod daemon;
 use remuxd_domain::cli::{self, Format, Ink, View};
 use remuxd_domain::protocol::{decode_reply, encode, Command, Reply};
 
+/// A failure, the way the words asked for it: on stderr for a person, as
+/// the socket's error reply on stdout for a program.
+fn fail(why: &str, json: bool, code: i32) -> ! {
+    if json {
+        println!(
+            "{}",
+            cli::render_json(&Reply::Error {
+                message: why.into()
+            })
+        );
+    } else {
+        eprintln!("{why}");
+    }
+    std::process::exit(code);
+}
+
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
-    let ask = match cli::read(&words) {
-        Ok(ask) => ask,
-        Err(why) => {
-            eprintln!("{why}");
-            std::process::exit(2);
+    let json = words.iter().any(|w| matches!(w.as_str(), "--json" | "-j"));
+    let bare: Vec<String> = words
+        .iter()
+        .filter(|w| !matches!(w.as_str(), "--json" | "-j"))
+        .cloned()
+        .collect();
+    // Help and the guide are answered here, with no engine.
+    if let Some(said) = cli::help(&bare) {
+        match said {
+            Ok(text) if json => println!("{}", serde_json::json!({ "help": text })),
+            Ok(text) => println!("{text}"),
+            Err(why) => fail(&why, json, 2),
         }
-    };
+        return;
+    }
+    if let Some(said) = cli::guide(&bare) {
+        match said {
+            Ok(text) if json => println!("{}", serde_json::json!({ "guide": text })),
+            Ok(text) => print!("{text}"),
+            Err(why) => fail(&why, json, 2),
+        }
+        return;
+    }
+    let ask = cli::read(&words).unwrap_or_else(|why| fail(&why, json, 2));
 
     let path = remuxd_domain::socket::default_path();
     let ink = Ink::for_terminal(
@@ -408,13 +441,8 @@ fn now() -> i64 {
 }
 
 fn ask_or_exit(path: &std::path::Path, command: &Command) -> Reply {
-    match ask(path, command) {
-        Ok(reply) => reply,
-        Err(why) => {
-            eprintln!("{why}");
-            std::process::exit(1);
-        }
-    }
+    let json = std::env::args().any(|w| matches!(w.as_str(), "--json" | "-j"));
+    ask(path, command).unwrap_or_else(|why| fail(&why, json, 1))
 }
 
 /// The app answers a category search on the status, not on the reply: ask

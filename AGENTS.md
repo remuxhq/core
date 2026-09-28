@@ -41,11 +41,15 @@ the documentation; a measurement behind a decision goes in the comment beside it
   sound, air, app; ports `Picture`, `Sound`, `Air`, `Sources`, `Watching`.
   `destinations` (the file; `Local` is the `Watching` with no account), `session` and
   `login` (`remux login`), `wire` (what a server and the engine say to each other) and
-  `chat` (the feed), `config`, `os`, `history`, `plan`, `scenes`, `music`, `gate`.
+  `chat` (the feed), `config`, `os`, `history`, `plan`, `layers`, `scenes`, `audio_layers`,
+  `music`, `gate`.
 - `engine/remuxd/`: the daemon: `boot` (the daemon as a function, given a motor), the
   socket, `wire.rs` (the one WebSocket to whoever serves the wire); `smoke/` the parity
   checks, `cli.py` and the lab.
-- `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS.
+- `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
+  the layers and elements on one scene, `effect.rs` the two sources it adds to libobs
+  (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/shader/`
+  is everything about filters: the WGSL contract and its OBS effect.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
 - `byo/`, `docs/`, `scripts/`, `install*.sh`, `uninstall.sh`.
@@ -56,8 +60,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
   `make remuxd.test F=name` mid-loop. `make remuxd.cli` round-trips every verb (~12 s).
   `make remuxd.smoke S=name` one parity check on the machine (`free` and `byo` against
   `make smoke.lab.up`, Docker). `make security` the scanners.
-- macOS: `make obs.fetch` once (the OBS the engine links, pinned), `make remuxd.identity`
-  once (the signing certificate). Linux: `apt-get install obs-studio`.
+- macOS: `make obs.fetch` once (the OBS the engine links, pinned), `brew install simde`
+  (the bindings' headers want it), `make remuxd.identity` once (the signing certificate). Linux: `apt-get install obs-studio libobs-dev`.
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
   a person gets, from `dist/`; `make release.publish` the GitHub release of the version.

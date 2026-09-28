@@ -2,13 +2,15 @@
 
 Live media for one person, from a shell. The engine captures a screen or a window, a
 camera and a microphone, composes one 1080p30 scene, mixes the sound, records it and
-sends it by RTMP, one stream per destination. `remux` is the face: forty-odd verbs,
-prose for a person, `--json` for anything else. macOS on Apple silicon, Linux on X11.
+sends it by RTMP, one stream per destination. `remux` is the face: five groups of
+commands (scene, audio, music, destination, chat), prose for a person, `--json` for
+anything else. macOS on Apple silicon, Linux on X11.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | sh
 echo scene | remux destination add custom relay --url rtmp://127.0.0.1:1935 --key -
-remux screen 1 && remux camera "FaceTime" && remux mic "Razer"
+remux scene layer add screen desk 1 && remux scene layer add camera face FaceTime
+remux audio mic Razer
 remux plan                               # where it goes, and a fingerprint
 remux live                               # the plan, a yes, then on air
 remux stop && remux history
