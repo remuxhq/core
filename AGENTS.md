@@ -60,8 +60,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
   `make remuxd.test F=name` mid-loop. `make remuxd.cli` round-trips every verb (~12 s).
   `make remuxd.smoke S=name` one parity check on the machine (`free` and `byo` against
   `make smoke.lab.up`, Docker). `make security` the scanners.
-- macOS: `make obs.fetch` once (the OBS the engine links, pinned), `make remuxd.identity`
-  once (the signing certificate). Linux: `apt-get install obs-studio libobs-dev`.
+- macOS: `make obs.fetch` once (the OBS the engine links, pinned), `brew install simde`
+  (the bindings' headers want it), `make remuxd.identity` once (the signing certificate). Linux: `apt-get install obs-studio libobs-dev`.
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
   a person gets, from `dist/`; `make release.publish` the GitHub release of the version.

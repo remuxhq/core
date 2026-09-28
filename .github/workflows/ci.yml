@@ -44,6 +44,9 @@ jobs:
           tool: cargo-nextest,cargo-llvm-cov
       - name: the OBS the engine links, pinned
         run: make obs.fetch
+      # OBS's headers reach for simde on ARM; the bindings are generated from them.
+      - name: simde, for the libobs bindings
+        run: brew install simde
       # seam, fmt --check, clippy -D warnings, nextest, llvm-cov ≥ 90% of the domain
       - run: make remuxd.check
 
