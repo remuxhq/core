@@ -32,8 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           version="${GITHUB_REF_NAME#v}"
-          said=$(sed -n 's/^version = "\(.*\)"/\1/p' cli/Cargo.toml | head -1)
-          test "$version" = "$said" || { echo "the tag says $version, cli/Cargo.toml says $said"; exit 1; }
+          said=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
+          test "$version" = "$said" || { echo "the tag says $version, engine/cli/Cargo.toml says $said"; exit 1; }
           test -s "docs/releases/$version.md" || { echo "no notes: write docs/releases/$version.md"; exit 1; }
   build:
     needs: notes

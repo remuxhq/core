@@ -3,7 +3,7 @@
 Live media for one person, from a shell, on macOS and Linux. The engine (`engine/`,
 Rust) drives a screen, a camera, a microphone and a music bed into one 1080p30 scene,
 records it, and sends it by RTMP, one ffmpeg per armed destination kept on this
-machine. The `remux` CLI (`cli/`) is the face, for humans (tmux) and for agents. A
+machine. The `remux` CLI (`engine/cli/`) is the face, for humans (tmux) and for agents. A
 relay and a chat bridge of one's own live in `byo/`; anybody may serve the chat wire
 (`docs/wire.md`) or a relay (`docs/relay.md`).
 
@@ -48,7 +48,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
   (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/shader/`
   is everything about filters: the WGSL contract and its OBS effect.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
-- `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
+- `engine/cli/`: `remux`. The words are `words.rs` (typed words to a `Command`, a `Reply`
+  to prose, help and the guide); its prose is a contract.
 - `byo/`, `docs/`, `scripts/`, `install*.sh`, `uninstall.sh`.
 
 ## Commands

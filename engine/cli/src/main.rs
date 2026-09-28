@@ -1,8 +1,8 @@
 //! The engine, from a shell.
 //!
 //! One of the faces. It opens the socket, writes a line and prints what comes
-//! back, and everything it knows about what the words mean is in
-//! `remuxd_domain::cli`, where `cargo test` can reach it. This file is the
+//! back, and everything it knows about what the words mean is in `words`,
+//! where `cargo test` can reach it. This file is the
 //! part that cannot be tested without a daemon, so there is as little of it as
 //! there can be.
 
@@ -10,9 +10,10 @@ use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 
 mod daemon;
+mod words;
 
-use remuxd_domain::cli::{self, Format, Ink, View};
 use remuxd_domain::protocol::{decode_reply, encode, Command, Reply};
+use words::{self as cli, Format, Ink, View};
 
 /// A failure, the way the words asked for it: on stderr for a person, as
 /// the socket's error reply on stdout for a program.
@@ -32,12 +33,7 @@ fn fail(why: &str, json: bool, code: i32) -> ! {
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
-    let json = words.iter().any(|w| matches!(w.as_str(), "--json" | "-j"));
-    let bare: Vec<String> = words
-        .iter()
-        .filter(|w| !matches!(w.as_str(), "--json" | "-j"))
-        .cloned()
-        .collect();
+    let (json, bare) = cli::output_mode(&words);
     // Help and the guide are answered here, with no engine.
     if let Some(said) = cli::help(&bare) {
         match said {

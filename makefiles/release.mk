@@ -1,7 +1,7 @@
 ##@ Release (the public build: the CLI and the engine on the libobs motor; a tarball a dev installs with install.sh.)
 .PHONY: release release.install release.uninstall release.publish
 
-VERSION  := $(shell sed -n 's/^version = "\(.*\)"/\1/p' cli/Cargo.toml | head -1)
+VERSION  := $(shell sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
 TARGET   := $(shell uname -m | sed s/arm64/aarch64/)-$(shell uname -s | tr A-Z a-z | sed "s/darwin/apple-darwin/; s/linux/unknown-linux-gnu/")
 RELEASE  := remux-$(VERSION)-$(TARGET)
 DIST     := $(CURDIR)/dist

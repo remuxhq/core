@@ -15,25 +15,21 @@ pub use help::{guide, help, usage};
 /// A global output option, removed before interpreting positional arguments.
 /// It can precede the command or follow any of its arguments.
 pub fn output_mode(words: &[String]) -> (bool, Vec<String>) {
-    let json = words.iter().any(|word| word == "--json");
+    let asked = |word: &String| matches!(word.as_str(), "--json" | "-j");
     (
-        json,
-        words
-            .iter()
-            .filter(|word| *word != "--json")
-            .cloned()
-            .collect(),
+        words.iter().any(asked),
+        words.iter().filter(|word| !asked(word)).cloned().collect(),
     )
 }
 
 /// The same reply shape the socket uses, one complete JSON object per line.
 pub fn render_json(reply: &Reply) -> String {
-    crate::protocol::encode(reply)
+    remuxd_domain::protocol::encode(reply)
         .trim_end_matches('\n')
         .to_string()
 }
 
-use crate::protocol::{Command, Devices, Framed, Grant, Named, Reply, Status};
+use remuxd_domain::protocol::{Command, Devices, Framed, Grant, Named, Reply, Status};
 
 /// Read a command out of the words after the program's own name.
 ///
@@ -256,10 +252,10 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         },
         "camera-shape" => match rest {
             [shape] if shape == "circle" => Ok(Command::CameraShape {
-                shape: crate::scene::CameraShape::Circle,
+                shape: remuxd_domain::scene::CameraShape::Circle,
             }),
             [shape] if shape == "rectangle" => Ok(Command::CameraShape {
-                shape: crate::scene::CameraShape::Rectangle,
+                shape: remuxd_domain::scene::CameraShape::Rectangle,
             }),
             _ => Err("camera-shape takes exactly `circle` or `rectangle`".into()),
         },
@@ -272,7 +268,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                     "camera-position takes x and y in 1920x1080 pixels, or `default`".into(),
                 );
             }
-            let (width, height) = crate::scene::CAMERA_OUTPUT;
+            let (width, height) = remuxd_domain::scene::CAMERA_OUTPUT;
             let point = |word: &str, limit: u32| -> Result<u32, String> {
                 let value = word
                     .parse::<u32>()
@@ -282,7 +278,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                     .ok_or_else(|| format!("{word} must be less than {limit}"))
             };
             Ok(Command::CameraPosition {
-                at: Some(crate::scene::CameraPosition {
+                at: Some(remuxd_domain::scene::CameraPosition {
                     x: point(&rest[0], width)?,
                     y: point(&rest[1], height)?,
                 }),
@@ -381,7 +377,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         // `remux audio gate reset`: the seven defaults. `remux audio gate opens -30`: the
         // panel's words, in dB; `remux gate full 0.03`: the wire's, as they are.
         "gate" if joined == "reset" => Ok(Command::Gate {
-            patch: serde_json::to_value(crate::gate::GateParams::default())
+            patch: serde_json::to_value(remuxd_domain::gate::GateParams::default())
                 .map_err(|e| e.to_string())?,
         }),
         "gate" => {
@@ -398,10 +394,10 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .parse()
                 .map_err(|_| format!("{value} is not a number"))?;
             let (name, number) = match name.as_str() {
-                "opens" => ("full", crate::levels::amplitude(number)),
-                "highs" => ("hf", crate::levels::amplitude(number)),
-                "closed" => ("floor", crate::levels::amplitude(number)),
-                "keys" => ("keys_boost", crate::levels::amplitude(number)),
+                "opens" => ("full", remuxd_domain::levels::amplitude(number)),
+                "highs" => ("hf", remuxd_domain::levels::amplitude(number)),
+                "closed" => ("floor", remuxd_domain::levels::amplitude(number)),
+                "keys" => ("keys_boost", remuxd_domain::levels::amplitude(number)),
                 other => (other, number),
             };
             let name = &name.to_string();
@@ -534,7 +530,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
 }
 
 fn parse_scene_element(words: &[String]) -> Result<Command, String> {
-    use crate::scenes::{Element, ElementContent};
+    use remuxd_domain::scenes::{Element, ElementContent};
     if let [action, id] = words {
         if action == "remove" && !id.is_empty() {
             return Ok(Command::SceneElementRemove { id: id.clone() });
@@ -577,7 +573,7 @@ fn parse_scene_element(words: &[String]) -> Result<Command, String> {
 }
 
 fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
-    use crate::audio_layers::Source;
+    use remuxd_domain::audio_layers::Source;
     let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, remove <id>";
     match words {
         [add, kind, id, source @ ..] if add == "add" && !source.is_empty() => {
@@ -591,7 +587,7 @@ fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
                 ),
                 _ => return Err(usage.into()),
             };
-            crate::audio_layers::Layer::new(id.clone(), source.clone())?;
+            remuxd_domain::audio_layers::Layer::new(id.clone(), source.clone())?;
             Ok(Command::AudioLayerAdd {
                 id: id.clone(),
                 source,
@@ -662,25 +658,25 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             let number = |word: &str| word.parse::<u32>().map_err(|_| format!("{word:?} is not a non-negative source pixel"));
             Ok(Command::LayerCrop {
                 id: id(name)?,
-                crop: Some(crate::layers::Crop { x: number(x)?, y: number(y)?, width: number(width)?, height: number(height)? }),
+                crop: Some(remuxd_domain::layers::Crop { x: number(x)?, y: number(y)?, width: number(width)?, height: number(height)? }),
             })
         }
         [shape, name, value] if shape == "shape" => Ok(Command::LayerShape {
             id: id(name)?,
             shape: match value.as_str() {
-                "circle" => crate::scene::CameraShape::Circle,
-                "rectangle" => crate::scene::CameraShape::Rectangle,
+                "circle" => remuxd_domain::scene::CameraShape::Circle,
+                "rectangle" => remuxd_domain::scene::CameraShape::Rectangle,
                 _ => return Err("layer shape takes circle or rectangle".into()),
             },
         }),
         [position, name, value] if position == "position" && value == "default" => Ok(Command::LayerPosition { id: id(name)?, at: None }),
         [position, name, x, y] if position == "position" => {
-            let (wide, tall) = crate::scene::CAMERA_OUTPUT;
+            let (wide, tall) = remuxd_domain::scene::CAMERA_OUTPUT;
             let point = |word: &str, limit: u32| -> Result<u32, String> {
                 let value = word.parse::<u32>().map_err(|_| format!("{word} is not a non-negative pixel coordinate"))?;
                 (value < limit).then_some(value).ok_or_else(|| format!("{word} must be less than {limit}"))
             };
-            Ok(Command::LayerPosition { id: id(name)?, at: Some(crate::scene::CameraPosition { x: point(x, wide)?, y: point(y, tall)? }) })
+            Ok(Command::LayerPosition { id: id(name)?, at: Some(remuxd_domain::scene::CameraPosition { x: point(x, wide)?, y: point(y, tall)? }) })
         }
         [filter, name, path] if filter == "filter" => Ok(Command::LayerShader {
             id: id(name)?, path: (path != "off").then(|| path.clone()),
@@ -695,7 +691,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
         }),
         [change, name, x, y, width, height, degrees] if change == "transform" => {
             let number = |s: &str| s.parse().map_err(|_| format!("{s:?} is not a whole number"));
-            let transform = crate::layers::Transform {
+            let transform = remuxd_domain::layers::Transform {
                 x: number(x)?, y: number(y)?, width: width.parse().map_err(|_| "width must be a positive whole number")?, height: height.parse().map_err(|_| "height must be a positive whole number")?, degrees: number(degrees)?,
             };
             transform.validate()?;
@@ -758,8 +754,8 @@ pub fn render(reply: &Reply) -> String {
             } else {
                 String::new()
             },
-            crate::levels::decibels(hearing.gate_levels.full),
-            crate::levels::decibels(hearing.gate_levels.hf),
+            remuxd_domain::levels::decibels(hearing.gate_levels.full),
+            remuxd_domain::levels::decibels(hearing.gate_levels.hf),
             mixing.level_db,
             mixing.music_db,
             if mixing.ducked_db < -0.5 {
@@ -805,7 +801,7 @@ fn grant(grant: &Grant) -> &'static str {
 
 /// The plan the way a person confirms it: what leaves, where to, and what
 /// would stop it, with the fingerprint `live --confirm` takes on the last line.
-fn render_plan(plan: &crate::plan::Plan) -> String {
+fn render_plan(plan: &remuxd_domain::plan::Plan) -> String {
     let mut lines = Vec::new();
     if plan.on_air {
         lines.push("already on air".to_string());
@@ -908,8 +904,12 @@ fn render_status(status: &Status) -> String {
     {
         for (index, element) in scene.elements.iter().enumerate() {
             let content = match &element.content {
-                crate::scenes::ElementContent::Text { text } => format!("text {:?}", plain(text)),
-                crate::scenes::ElementContent::Timer { seconds } => format!("timer {seconds}s"),
+                remuxd_domain::scenes::ElementContent::Text { text } => {
+                    format!("text {:?}", plain(text))
+                }
+                remuxd_domain::scenes::ElementContent::Timer { seconds } => {
+                    format!("timer {seconds}s")
+                }
             };
             said.push(format!(
                 "element {} at {},{} {}x{} (order {index}): {content}",
@@ -946,9 +946,9 @@ fn render_status(status: &Status) -> String {
     }
     for layer in &status.audio_layers {
         let source = match layer.source.kind {
-            crate::audio_layers::Kind::Mic => layer.source.device.as_deref().unwrap_or("?"),
-            crate::audio_layers::Kind::App => layer.source.name.as_deref().unwrap_or("?"),
-            crate::audio_layers::Kind::Screen => "display",
+            remuxd_domain::audio_layers::Kind::Mic => layer.source.device.as_deref().unwrap_or("?"),
+            remuxd_domain::audio_layers::Kind::App => layer.source.name.as_deref().unwrap_or("?"),
+            remuxd_domain::audio_layers::Kind::Screen => "display",
         };
         said.push(format!(
             "audio layer {}: {:?} {} ({}%){}",
@@ -1095,35 +1095,36 @@ mod tests {
         };
         assert_eq!(
             super::parse(&words(&["scene", "create", "Close Up"])),
-            Ok(crate::protocol::Command::SceneCreate {
+            Ok(remuxd_domain::protocol::Command::SceneCreate {
                 name: "Close Up".into()
             })
         );
         assert_eq!(
             super::parse(&words(&["scene", "duplicate", "Close Up"])),
-            Ok(crate::protocol::Command::SceneDuplicate {
+            Ok(remuxd_domain::protocol::Command::SceneDuplicate {
                 name: "Close Up".into()
             })
         );
         assert_eq!(
             super::parse(&words(&["scene", "switch", "Close Up"])),
-            Ok(crate::protocol::Command::SceneSwitch {
+            Ok(remuxd_domain::protocol::Command::SceneSwitch {
                 name: "Close Up".into()
             })
         );
         assert_eq!(
             super::parse(&words(&["scene", "delete", "Close Up"])),
-            Ok(crate::protocol::Command::SceneDelete {
+            Ok(remuxd_domain::protocol::Command::SceneDelete {
                 name: "Close Up".into()
             })
         );
         assert_eq!(
             super::parse(&words(&["scene", "list"])),
-            Ok(crate::protocol::Command::Status)
+            Ok(remuxd_domain::protocol::Command::Status)
         );
         assert!(super::parse(&words(&["scene", "create"])).is_err());
         assert!(
-            super::render_scene_list(&crate::protocol::Status::default()).contains("* default")
+            super::render_scene_list(&remuxd_domain::protocol::Status::default())
+                .contains("* default")
         );
     }
 
@@ -1132,14 +1133,14 @@ mod tests {
         let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(
             super::parse(&words("scene layer filter face effect.wgsl")),
-            Ok(crate::protocol::Command::LayerShader {
+            Ok(remuxd_domain::protocol::Command::LayerShader {
                 id: "face".into(),
                 path: Some("effect.wgsl".into())
             })
         );
         assert_eq!(
             super::parse(&words("scene layer filter face off")),
-            Ok(crate::protocol::Command::LayerShader {
+            Ok(remuxd_domain::protocol::Command::LayerShader {
                 id: "face".into(),
                 path: None
             })
@@ -1152,35 +1153,35 @@ mod tests {
         let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(
             super::parse(&words("scene layer add window editor Ghostty Window")),
-            Ok(crate::protocol::Command::LayerWindow {
+            Ok(remuxd_domain::protocol::Command::LayerWindow {
                 id: "editor".into(),
                 query: "Ghostty Window".into()
             })
         );
         assert_eq!(
             super::parse(&words("scene layer add screen desktop 3")),
-            Ok(crate::protocol::Command::LayerScreen {
+            Ok(remuxd_domain::protocol::Command::LayerScreen {
                 id: "desktop".into(),
                 display: 3
             })
         );
         assert_eq!(
             super::parse(&words("scene layer set window desktop Emacs Notes")),
-            Ok(crate::protocol::Command::LayerReplaceWindow {
+            Ok(remuxd_domain::protocol::Command::LayerReplaceWindow {
                 id: "desktop".into(),
                 query: "Emacs Notes".into(),
             })
         );
         assert_eq!(
             super::parse(&words("scene layer set screen desktop 3")),
-            Ok(crate::protocol::Command::LayerReplaceScreen {
+            Ok(remuxd_domain::protocol::Command::LayerReplaceScreen {
                 id: "desktop".into(),
                 display: 3
             })
         );
         assert_eq!(
             super::parse(&words("scene layer set camera host FaceTime")),
-            Ok(crate::protocol::Command::LayerReplaceCamera {
+            Ok(remuxd_domain::protocol::Command::LayerReplaceCamera {
                 id: "host".into(),
                 device: "FaceTime".into()
             })
@@ -1188,14 +1189,14 @@ mod tests {
         assert!(super::parse(&words("scene layer set screen desktop nope")).is_err());
         assert_eq!(
             super::parse(&words("scene layer hide desktop")),
-            Ok(crate::protocol::Command::LayerVisible {
+            Ok(remuxd_domain::protocol::Command::LayerVisible {
                 id: "desktop".into(),
                 on: false
             })
         );
         assert_eq!(
             super::parse(&words("scene layer show desktop")),
-            Ok(crate::protocol::Command::LayerVisible {
+            Ok(remuxd_domain::protocol::Command::LayerVisible {
                 id: "desktop".into(),
                 on: true
             })
@@ -1204,21 +1205,21 @@ mod tests {
         assert!(super::parse(&words("scene layer add screen desktop 3 extra")).is_err());
         assert_eq!(
             super::parse(&words("scene layer shape face circle")),
-            Ok(crate::protocol::Command::LayerShape {
+            Ok(remuxd_domain::protocol::Command::LayerShape {
                 id: "face".into(),
-                shape: crate::scene::CameraShape::Circle
+                shape: remuxd_domain::scene::CameraShape::Circle
             })
         );
         assert_eq!(
             super::parse(&words("scene layer position face 300 200")),
-            Ok(crate::protocol::Command::LayerPosition {
+            Ok(remuxd_domain::protocol::Command::LayerPosition {
                 id: "face".into(),
-                at: Some(crate::scene::CameraPosition { x: 300, y: 200 })
+                at: Some(remuxd_domain::scene::CameraPosition { x: 300, y: 200 })
             })
         );
         assert_eq!(
             super::parse(&words("scene layer position face default")),
-            Ok(crate::protocol::Command::LayerPosition {
+            Ok(remuxd_domain::protocol::Command::LayerPosition {
                 id: "face".into(),
                 at: None
             })
@@ -1227,16 +1228,16 @@ mod tests {
         assert!(super::parse(&words("scene layer position face 1920 0")).is_err());
         assert_eq!(
             super::parse(&words("scene layer move editor 0")),
-            Ok(crate::protocol::Command::LayerMove {
+            Ok(remuxd_domain::protocol::Command::LayerMove {
                 id: "editor".into(),
                 index: 0
             })
         );
         assert_eq!(
             super::parse(&words("scene layer crop editor 10 20 300 200")),
-            Ok(crate::protocol::Command::LayerCrop {
+            Ok(remuxd_domain::protocol::Command::LayerCrop {
                 id: "editor".into(),
-                crop: Some(crate::layers::Crop {
+                crop: Some(remuxd_domain::layers::Crop {
                     x: 10,
                     y: 20,
                     width: 300,
@@ -1246,7 +1247,7 @@ mod tests {
         );
         assert_eq!(
             super::parse(&words("scene layer crop editor off")),
-            Ok(crate::protocol::Command::LayerCrop {
+            Ok(remuxd_domain::protocol::Command::LayerCrop {
                 id: "editor".into(),
                 crop: None
             })
@@ -1257,7 +1258,7 @@ mod tests {
     }
     #[test]
     fn the_chat_reads_one_message_at_a_time_with_a_rule_between() {
-        use crate::protocol::{ChatLine, Reply};
+        use remuxd_domain::protocol::{ChatLine, Reply};
         let line = |seq, platform: &str, from: &str, body: &str| ChatLine {
             seq,
             from: from.into(),
@@ -1301,7 +1302,7 @@ mod tests {
     // terminal that set NO_COLOR is a pipe.
     #[test]
     fn the_chat_is_coloured_for_a_terminal_and_plain_for_everything_else() {
-        use crate::protocol::{ChatLine, Reply};
+        use remuxd_domain::protocol::{ChatLine, Reply};
         let reply = Reply::Chat {
             reachable: true,
             lines: vec![
@@ -1348,7 +1349,7 @@ mod tests {
     // into a message nobody sent (#8). A tab is the one control that stays.
     #[test]
     fn the_chat_carries_no_control_sequence_to_the_terminal() {
-        use crate::protocol::{ChatLine, Reply};
+        use remuxd_domain::protocol::{ChatLine, Reply};
         let reply = Reply::Chat {
             reachable: true,
             lines: vec![ChatLine {
@@ -1402,7 +1403,7 @@ mod tests {
 
     #[test]
     fn audio_layers_have_grouped_commands_and_distinct_ids() {
-        use crate::audio_layers::Source;
+        use remuxd_domain::audio_layers::Source;
         assert_eq!(
             typed("audio layer add app chat Safari"),
             Ok(Command::AudioLayerAdd {
@@ -1454,6 +1455,7 @@ mod tests {
         assert!(json);
         assert_eq!(follow(&normalize(&clean).unwrap()), (true, words("chat")));
         assert_eq!(output_mode(&words("status")), (false, words("status")));
+        assert_eq!(output_mode(&words("status -j")), (true, words("status")));
         for reply in [
             Reply::Ok,
             Reply::Error {
@@ -1472,7 +1474,7 @@ mod tests {
             },
         ] {
             let encoded = render_json(&reply);
-            assert_eq!(crate::protocol::decode_reply(&encoded), Ok(reply));
+            assert_eq!(remuxd_domain::protocol::decode_reply(&encoded), Ok(reply));
             assert!(!encoded.contains('\n'));
         }
     }
@@ -1591,12 +1593,23 @@ mod tests {
     }
 
     #[test]
+    fn screen_sound_from_a_hidden_layer_reads_as_paused() {
+        let status = Status {
+            screen_sound: true,
+            screen_sound_layer: Some("desk".into()),
+            ..Status::default()
+        };
+        let said = render(&Reply::Status(Box::new(status)));
+        assert!(said.contains("screen sound paused (hidden)"), "{said}");
+    }
+
+    #[test]
     fn a_status_is_one_line_a_person_can_read() {
         let status = Status {
             on_air: true,
             mic: Some("HyperX DuoCast".into()),
             muted: true,
-            scene_flowing: crate::protocol::Flowing {
+            scene_flowing: remuxd_domain::protocol::Flowing {
                 width: 1920,
                 height: 1080,
                 frames: 900,
@@ -1612,9 +1625,9 @@ mod tests {
 
         // The chosen microphone is not delivering: the line says so, because
         // its name alone read as a working one the night it had left.
-        let unplugged = crate::protocol::Status {
+        let unplugged = remuxd_domain::protocol::Status {
             mic: Some("Razer".into()),
-            hearing: crate::protocol::Hearing {
+            hearing: remuxd_domain::protocol::Hearing {
                 complaint: Some("unplugged".into()),
                 ..Default::default()
             },
@@ -1855,7 +1868,7 @@ mod tests {
 
     #[test]
     fn camera_shape_requires_one_of_two_explicit_shapes() {
-        use crate::scene::CameraShape;
+        use remuxd_domain::scene::CameraShape;
         assert_eq!(
             typed("scene layer shape face circle"),
             Ok(Command::LayerShape {
@@ -1957,7 +1970,7 @@ mod tests {
         assert_eq!(
             typed("scene layer add text title 20 30 500 90 Hello world"),
             Ok(Command::SceneElementAdd {
-                element: crate::scenes::Element {
+                element: remuxd_domain::scenes::Element {
                     id: "title".into(),
                     x: 20,
                     y: 30,
@@ -1965,7 +1978,7 @@ mod tests {
                     height: 90,
                     visible: true,
                     shader: None,
-                    content: crate::scenes::ElementContent::Text {
+                    content: remuxd_domain::scenes::ElementContent::Text {
                         text: "Hello world".into()
                     }
                 }
@@ -2067,7 +2080,7 @@ pub enum View {
     Health,
     /// `wait <until> [--for <seconds>]`: the shell polls until it is so.
     Wait {
-        until: crate::wait::Until,
+        until: remuxd_domain::wait::Until,
         for_secs: u64,
     },
     /// `guide`: how to drive this from a script, in prose, off the shell.
@@ -2091,7 +2104,7 @@ pub enum View {
         open: bool,
     },
     /// `daemon start|stop|restart|status|log|path`: the engine as a service of the session.
-    Daemon(crate::daemon::Verb),
+    Daemon(remuxd_domain::daemon::Verb),
     /// `live` with nothing after it: the plan, then a person's yes.
     Confirm,
     /// `status -v`: every line of it.
@@ -2168,7 +2181,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
                     .get(3)
                     .cloned()
                     .ok_or("destination add takes a platform and a name")?;
-                let mut url = crate::destinations::ingest_of(&platform).map(String::from);
+                let mut url = remuxd_domain::destinations::ingest_of(&platform).map(String::from);
                 let mut key_from = KeyFrom::Nowhere;
                 let mut at = 4;
                 while at < words.len() {
@@ -2208,7 +2221,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
     }
     if words.first().map(String::as_str) == Some("login") {
         let base = match (words.get(1).map(String::as_str), words.get(2)) {
-            (None, _) => crate::session::default_base(),
+            (None, _) => remuxd_domain::session::default_base(),
             (Some("--url"), Some(base)) => base.trim_end_matches('/').to_string(),
             _ => return Err("login takes nothing or --url <web>".into()),
         };
@@ -2252,7 +2265,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
     if words.first().map(String::as_str) == Some("daemon") {
         return Ok(Ask {
             command: None,
-            view: View::Daemon(crate::daemon::Verb::parse(&words[1..])?),
+            view: View::Daemon(remuxd_domain::daemon::Verb::parse(&words[1..])?),
             format,
             follow: false,
         });
@@ -2276,7 +2289,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         });
     }
     if words.first().map(String::as_str) == Some("wait") {
-        let until = crate::wait::Until::parse(
+        let until = remuxd_domain::wait::Until::parse(
             words.get(1).map_or("", String::as_str),
             words.get(2).map(String::as_str),
         )?;
@@ -2373,8 +2386,8 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
 pub fn local(view: &View, format: Format) -> String {
     match view {
         View::Clips => {
-            let root = crate::clips::root();
-            let names = crate::clips::list(&root);
+            let root = remuxd_domain::clips::root();
+            let names = remuxd_domain::clips::list(&root);
             if names.is_empty() {
                 format!("no clips in {} (remux config)", root.display())
             } else {
@@ -2382,9 +2395,9 @@ pub fn local(view: &View, format: Format) -> String {
             }
         }
         View::Guide => help::GUIDE.to_string(),
-        View::Config => crate::config::describe(),
+        View::Config => remuxd_domain::config::describe(),
         View::History => {
-            let all = crate::history::read(&crate::history::path());
+            let all = remuxd_domain::history::read(&remuxd_domain::history::path());
             match format {
                 Format::Json => json(&all),
                 Format::Prose if all.is_empty() => "no lives on record yet".into(),
@@ -2393,7 +2406,7 @@ pub fn local(view: &View, format: Format) -> String {
                     .map(|b| {
                         format!(
                             "{}  {:>8}  {:<24} {}{}",
-                            crate::journal::clock_of(b.started),
+                            remuxd_domain::journal::clock_of(b.started),
                             elapsed(Some(b.started), b.ended),
                             b.destinations.join(", "),
                             if b.samples == 0 {
@@ -2418,8 +2431,8 @@ pub fn local(view: &View, format: Format) -> String {
         View::Schema => json(&serde_json::json!({
             "command": schemars::schema_for!(Command),
             "reply": schemars::schema_for!(Reply),
-            "wire_up": schemars::schema_for!(crate::wire::Up),
-            "wire_line": schemars::schema_for!(crate::wire::Line),
+            "wire_up": schemars::schema_for!(remuxd_domain::wire::Up),
+            "wire_line": schemars::schema_for!(remuxd_domain::wire::Line),
         })),
         _ => String::new(),
     }
@@ -2479,7 +2492,7 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 
 /// Every destination on one row with its id first, because the id is what
 /// `arm`, `title`, `sandbox` and `category` take and no other read gave it.
-fn render_destinations(rows: &[crate::protocol::Destination]) -> String {
+fn render_destinations(rows: &[remuxd_domain::protocol::Destination]) -> String {
     if rows.is_empty() {
         return "no destinations".into();
     }
@@ -2518,8 +2531,8 @@ fn render_destinations(rows: &[crate::protocol::Destination]) -> String {
     lines.join("\n")
 }
 
-fn render_gate(g: &crate::gate::GateParams) -> String {
-    use crate::levels::decibels;
+fn render_gate(g: &remuxd_domain::gate::GateParams) -> String {
+    use remuxd_domain::levels::decibels;
     format!(
         "opens at {:.0} dB, highs at {:.0} dB, closed {:.0} dB, hold {:.0} ms, attack {:.0} ms, keys boost {:+.0} dB",
         decibels(g.full),
@@ -2544,7 +2557,7 @@ pub fn elapsed(since: Option<i64>, now: i64) -> String {
 
 /// The whole status, one fact a line, in the units the sliders are marked in.
 fn render_verbose(status: &Status, now: i64) -> String {
-    use crate::levels::decibels;
+    use remuxd_domain::levels::decibels;
     let mut lines = Vec::new();
     lines.push(match status.on_air_since {
         Some(since) => format!("on air {}", elapsed(Some(since), now)),
@@ -2618,7 +2631,7 @@ fn render_verbose(status: &Status, now: i64) -> String {
     lines.push(format!(
         "volume {:.0}%, music {:.0} dB, duck {:.0} dB{}",
         status.faders.mic * 100.0,
-        crate::music::music_fader_db(status.faders.music),
+        remuxd_domain::music::music_fader_db(status.faders.music),
         status.faders.duck_db,
         if status.mixing.ducked_db < -0.5 {
             format!(" (ducking {:.0} dB)", status.mixing.ducked_db)
@@ -2682,7 +2695,7 @@ fn render_verbose(status: &Status, now: i64) -> String {
 #[cfg(test)]
 mod reading {
     use super::*;
-    use crate::protocol::Destination;
+    use remuxd_domain::protocol::Destination;
 
     fn w(line: &str) -> Vec<String> {
         line.split_whitespace().map(String::from).collect()
@@ -2737,7 +2750,7 @@ mod reading {
         assert_eq!(
             read(&w("login")).unwrap().view,
             View::Login {
-                base: crate::session::default_base()
+                base: remuxd_domain::session::default_base()
             }
         );
         assert_eq!(
@@ -2759,7 +2772,7 @@ mod reading {
         );
         assert_eq!(
             read(&w("daemon stop --force")).unwrap().view,
-            View::Daemon(crate::daemon::Verb::Stop { force: true })
+            View::Daemon(remuxd_domain::daemon::Verb::Stop { force: true })
         );
         assert!(read(&w("daemon")).is_err());
     }
@@ -2829,7 +2842,7 @@ mod reading {
             (asks.command, asks.view),
             (Some(Command::Plan), View::Confirm)
         );
-        let plan = crate::plan::Plan::of(&Status::default());
+        let plan = remuxd_domain::plan::Plan::of(&Status::default());
         let shown = render(&Reply::Plan(plan.clone()));
         assert!(shown.contains("! no destination is armed"), "{shown}");
         assert!(
@@ -2841,7 +2854,7 @@ mod reading {
     #[test]
     fn the_scene_list_marks_the_active_scene() {
         assert_eq!(read(&w("scene list")).unwrap().view, View::Scenes);
-        let scene = |name: &str| crate::scenes::Scene {
+        let scene = |name: &str| remuxd_domain::scenes::Scene {
             name: name.into(),
             layers: vec![],
             order: vec![],

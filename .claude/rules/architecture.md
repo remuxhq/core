@@ -4,7 +4,7 @@ DDD, hexagonal-lite, in Rust. `engine/domain/` (crate `remuxd-domain`) decides a
 no framework and no socket; a motor is the machine behind the domain's ports
 (`engine/motor-obs/` is libobs; another motor is another crate on the same ports);
 `engine/remuxd/` is the daemon: `boot` (the daemon as a function, given a motor), the
-socket, the wire; `cli/` is a face; `engine/wire/` is the HTTP the daemon and the CLI
+socket, the wire; `engine/cli/` is a face, and its words are its own; `engine/wire/` is the HTTP the daemon and the CLI
 share.
 
 ## The engine's contexts

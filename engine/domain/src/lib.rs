@@ -9,7 +9,6 @@ pub mod audio_layers;
 pub mod bug;
 pub mod camera;
 pub mod chat;
-pub mod cli;
 pub mod clips;
 pub mod config;
 pub mod daemon;

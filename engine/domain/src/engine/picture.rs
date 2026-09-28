@@ -2275,11 +2275,6 @@ mod tests {
             Reply::Shot { .. }
         ));
         assert!(hidden.screen_sound && hidden.screen_sound_layer.as_deref() == Some("desk"));
-        let said = crate::cli::render(&Reply::Status(hidden.clone()));
-        assert!(
-            said.contains("hidden") && said.contains("screen sound paused"),
-            "{said}"
-        );
         assert!(
             !levels.lock().unwrap().unwrap().5,
             "hidden display audio must leave the mix"
