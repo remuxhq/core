@@ -12,6 +12,8 @@ What is an agent's alone:
 - Read the diff before writing a bullet, and write none the diff does not show.
 - The version is a question for the person when the diff leaves it unclear; patch is
   the default.
-- Stop after the pull request is green. The tag publishes, and it is pushed only when
-  the person says so in this conversation.
-- Report the release's assets after the tag: a tarball and a `.sha256` per target.
+- Stop after the pull request is green. Publishing is dispatching `release.yml`
+  (step 6), done only when the person says so in this conversation, after the pull
+  request is merged. Never tag by hand.
+- Report the release's assets once the workflow is green: a tarball and a `.sha256`
+  per target.
