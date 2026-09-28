@@ -25,7 +25,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'install-chat: %s\n' "$*" >&2; exit 1; }
 ask() {
   [ -n "$YES" ] && return 0
-  [ -r /dev/tty ] || die "no terminal to ask on; run with -y to accept"
+  ( : < /dev/tty ) 2>/dev/null || die "no terminal to ask on; run with -y to accept"
   printf '%s [Y/n] ' "$1" > /dev/tty; read -r answer < /dev/tty || answer=""
   case "$answer" in n|N|no|NO) return 1 ;; *) return 0 ;; esac
 }

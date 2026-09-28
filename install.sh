@@ -11,7 +11,7 @@
 # to install with your package manager. Safe to run again: the same version
 # is reinstalled in place, a newer one takes over.
 #
-#   REMUX_VERSION           a version instead of the latest (0.1.0)
+#   REMUX_VERSION           a version instead of the latest (0.1.1)
 #   REMUX_RELEASE_URL       where the tarballs are (file:///…/dist for a local `make release`)
 #   REMUX_HOME              where versions live (~/.local/share/remux)
 #   REMUX_YES=1  or -y      do not ask
@@ -30,7 +30,7 @@ die() { printf 'install: %s\n' "$*" >&2; exit 1; }
 ask() {
   # `curl | sh` has no stdin of its own: the question goes to the terminal.
   [ -n "$YES" ] && return 0
-  [ -r /dev/tty ] || die "no terminal to ask on; run with -y (or REMUX_YES=1) to accept"
+  ( : < /dev/tty ) 2>/dev/null || die "no terminal to ask on; run with -y (or REMUX_YES=1) to accept"
   printf '%s [Y/n] ' "$1" > /dev/tty; read -r answer < /dev/tty || answer=""
   case "$answer" in n|N|no|NO) return 1 ;; *) return 0 ;; esac
 }
