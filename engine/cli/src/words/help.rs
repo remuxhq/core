@@ -43,7 +43,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["scene-timer"], args: "start|stop <id>", summary: "Start or stop an active scene timer.", note: "Example: remux scene timer start clock. Switching scenes or restarting clears running timers; reaching 00:00 never changes scenes." },
     Topic { names: &["cut"], args: "", summary: "Panic button: turn everything off, including sound.", note: "" },
     Topic { names: &["record"], args: "[start|stop]", summary: "Start or stop a local recording.", note: "Omitted means start; `remux config` says where recordings go." },
-    Topic { names: &["gate"], args: "[reset | opens|highs|closed|keys <dB> | hold_ms|attack_ms|hf_attack_ms <ms>]", summary: "Show or tune the microphone gate.", note: "Alone it shows the thresholds in dB. Example: remux audio gate opens -30; `remux audio gate reset` puts every threshold back. The wire's own names (hf, full, floor, keys_boost) also work." },
+    Topic { names: &["gate"], args: "[reset | opens|highs|closed|keys <dB> | hold_ms|attack_ms|hf_attack_ms <ms>]", summary: "Show or tune the microphone gate.", note: "Alone it shows the settings. opens: the level of your voice that opens the gate (-20 dB). highs: the level above 3 kHz that opens it for a keyboard behind the mic (-55 dB). closed: how far a closed gate turns the room down (-40 dB). keys: the lift for a keyboard with no voice (+6 dB). hold_ms: how long it stays open between words (450). attack_ms and hf_attack_ms: how long the voice or the highs must last to open it (50, 12). It looks 60 ms ahead, so a word keeps its first syllable. Example: remux audio gate opens -30; `remux audio gate reset` puts every setting back. The wire's own names (hf, full, floor, keys_boost) also work." },
     Topic { names: &["title"], args: "<destination id> <words>", summary: "Change a destination's live title.", note: "Find destination IDs in the panel or web app. Example: remux destination title 2 Rust at midnight" },
     Topic { names: &["describe"], args: "<destination id> <words>", summary: "Change a destination's live description.", note: "Find destination IDs in the panel or web app." },
     Topic { names: &["announce"], args: "<destination id>", summary: "Send the current title and details to a platform now.", note: "Find destination IDs in the panel or web app." },
@@ -144,6 +144,12 @@ Layer choices, layout and visibility survive a restart.
 Use remux audio screen-sound on for a unique display, or remux scene layer
 screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
 one app's sound alone; remux audio app Spotify captures it on its own fader.
+
+The microphone goes through the remux gate: your voice opens it, a keyboard
+behind the mic opens it at a lift of its own, and closed it turns the room down
+rather than off. remux audio gate shows the settings; remux audio gate opens
+-30 opens it for a quieter voice; remux audio gate reset puts them back;
+remux help audio gate names every one.
 
 Named scenes: remux scene list; remux scene create 'Camera only' starts an
 empty scene and switches to it (on the air, nothing shows until its layers are
