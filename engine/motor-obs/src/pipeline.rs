@@ -251,6 +251,30 @@ struct Output {
     output: *mut sys::obs_output_t,
     service: *mut sys::obs_service_t,
     since: Instant,
+    /// Stopped on a thread of its own: an RTMP output still connecting
+    /// joins its connect thread on stop, which held the engine, and every
+    /// face with it, until the door gave up. A recording is stopped in place.
+    stops_apart: bool,
+}
+
+/// An output's handles, sent to the thread that stops it.
+struct Stopping(*mut sys::obs_output_t, *mut sys::obs_service_t);
+
+// SAFETY: libobs is thread-safe about stopping and releasing an output, and
+// nothing else holds these once the `Output` is gone.
+unsafe impl Send for Stopping {}
+
+impl Stopping {
+    fn stop(self) {
+        // SAFETY: ours; stopping waits for the muxer to close the file.
+        unsafe {
+            sys::obs_output_stop(self.0);
+            sys::obs_output_release(self.0);
+            if !self.1.is_null() {
+                sys::obs_service_release(self.1);
+            }
+        }
+    }
 }
 
 impl Output {
@@ -306,13 +330,11 @@ impl Output {
 
 impl Drop for Output {
     fn drop(&mut self) {
-        // SAFETY: ours; stopping waits for the muxer to close the file.
-        unsafe {
-            sys::obs_output_stop(self.output);
-            sys::obs_output_release(self.output);
-            if !self.service.is_null() {
-                sys::obs_service_release(self.service);
-            }
+        let stopping = Stopping(self.output, self.service);
+        if self.stops_apart {
+            std::thread::spawn(move || stopping.stop());
+        } else {
+            stopping.stop();
         }
     }
 }
@@ -449,6 +471,7 @@ impl ObsPipeline {
                 output,
                 service,
                 since: Instant::now(),
+                stops_apart: false,
             };
             if !sys::obs_output_start(output) {
                 let why = made.complaint();
@@ -689,7 +712,7 @@ impl ObsPipeline {
         if self.publishing.iter().any(|(there, _)| *there == id) {
             return Err("this engine is already live there".into());
         }
-        let output = if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
+        let mut output = if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
             self.rtmp(url)?
         } else {
             // Anything else is a file, as the native motor's ffmpeg takes it:
@@ -708,6 +731,7 @@ impl ObsPipeline {
             };
             self.start_output(kind, settings, std::ptr::null_mut())?
         };
+        output.stops_apart = true;
         self.publishing.push((id, output));
         Ok(())
     }
