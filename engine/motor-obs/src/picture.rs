@@ -919,22 +919,11 @@ impl Picture for ObsPipeline {
 
     fn flowing(&self) -> Flowing {
         self.keep_portal_token();
-        let (something, captured) = {
-            let drawn = self.drawn();
-            (
-                !drawn.layers.is_empty() || drawn.elements.iter().any(|w| w.element.visible),
-                drawn.layers.iter().any(|d| size_of(d.source).0 > 0),
-            )
-        };
-        // libobs renders an empty scene as steadily as a full one; a frame
-        // counts only when there is something in the picture, or the engine
-        // would go live with black.
+        let captured = self.drawn().layers.iter().any(|d| size_of(d.source).0 > 0);
+        // libobs renders an empty scene as steadily as a full one, as the
+        // native motor does: the plan keeps an empty scene off the air.
         // SAFETY: a pure read of libobs's counter.
-        let frames = if something {
-            unsafe { sys::obs_get_total_frames() as u64 }
-        } else {
-            0
-        };
+        let frames = unsafe { sys::obs_get_total_frames() as u64 };
         Flowing {
             captured: if captured { frames } else { 0 },
             frames,

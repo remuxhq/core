@@ -53,9 +53,12 @@ pub struct Plan {
 impl Plan {
     pub fn of(status: &Status) -> Self {
         let destinations: Vec<Planned> = status.destinations.iter().map(planned).collect();
+        let picture = picture(status);
         let mut blockers = Vec::new();
         if status.scene_flowing.frames == 0 {
             blockers.push("there is no picture to send yet".into());
+        } else if picture == NOTHING {
+            blockers.push("the scene is empty: nothing would be shared".into());
         }
         if !destinations.iter().any(|d| d.armed) {
             blockers.push("no destination is armed".into());
@@ -69,7 +72,7 @@ impl Plan {
             on_air: status.on_air,
             recording: status.recording,
             scene: status.active_scene.clone(),
-            picture: picture(status),
+            picture,
             camera: status
                 .layers
                 .iter()
@@ -111,6 +114,9 @@ impl Plan {
     }
 }
 
+/// What the picture reads when the scene has nothing visible in it.
+const NOTHING: &str = "nothing shared";
+
 /// The active scene's layers and elements, back to front, the way a person
 /// reads them before confirming.
 fn picture(status: &Status) -> String {
@@ -145,7 +151,7 @@ fn picture(status: &Status) -> String {
         })
         .collect();
     if shown.is_empty() {
-        "nothing shared".into()
+        NOTHING.into()
     } else {
         shown.join(", ")
     }
@@ -225,6 +231,18 @@ mod tests {
             ..ready()
         });
         assert_eq!(unconnected.blockers, vec!["twitch: not connected"]);
+    }
+
+    #[test]
+    fn an_empty_scene_is_a_blocker_though_it_has_frames() {
+        // Both motors draw an empty scene at the full rate, so the frames
+        // cannot say whether anything is in it; the plan says so instead.
+        let mut empty = ready();
+        empty.layers[0].visible = false;
+        assert_eq!(
+            Plan::of(&empty).blockers,
+            vec!["the scene is empty: nothing would be shared"]
+        );
     }
 
     #[test]

@@ -781,8 +781,8 @@ pub struct Status {
     /// own switches back draws them wrong after anything else changes them.
     pub mirrored: bool,
     pub music: Option<String>,
-    /// The scene's frames: counted while it has something in it, so an empty
-    /// scene reads as no picture rather than as black going out.
+    /// The scene's frames, drawn at the full rate whether or not anything is
+    /// in it; the plan, not the count, keeps an empty scene off the air.
     pub scene_flowing: Flowing,
     /// Capture measurements keyed by layer ID; no arbitrary first source.
     #[serde(default)]

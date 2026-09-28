@@ -404,19 +404,25 @@ def pacing(daemon):
         )
         measured.append(f"{screen['name']} {got} in / {out:.0f} fps out")
 
-    # With nothing in the scene there is no picture to count: libobs goes on
-    # drawing black, and the motor says so by counting nothing, which is what
-    # keeps a plan from going live with an empty scene.
+    # With nothing in the scene the picture holds its rate, as the native
+    # motor's does: black is drawn, and the plan, not the count, keeps it off
+    # the air.
     daemon.ask({"cmd": "share", "on": False})
     time.sleep(0.3)
     idle = daemon.ask({"cmd": "status"})["scene_flowing"]
     time.sleep(1.0)
     still = daemon.ask({"cmd": "status"})["scene_flowing"]
+    blank_rate = still["frames"] - idle["frames"]
     expect(
-        still["frames"] == idle["frames"] == 0,
-        f"an empty scene counted {still['frames'] - idle['frames']} frames as a picture",
+        blank_rate >= 20,
+        f"the picture slowed to {blank_rate} frames a second with nothing shared",
     )
-    measured.append("nothing shared, nothing counted")
+    plan = daemon.ask({"cmd": "plan"})
+    expect(
+        "the scene is empty: nothing would be shared" in json.dumps(plan),
+        f"the plan let an empty scene through: {plan}",
+    )
+    measured.append(f"nothing shared {blank_rate} fps out, the plan says empty")
     return "; ".join(measured)
 
 
