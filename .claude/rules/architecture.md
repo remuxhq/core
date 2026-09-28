@@ -36,8 +36,10 @@ where its verbs are:
 
 - `picture/`: scene, layers, scenes, sources, camera, preview, timer. Its filters are
   `remux-shader`, a crate of its own for the WGSL parser.
-- `sound/`: audio_layers, music, clips; `sound/mixer/` is audio filtering (gate,
-  levels).
+- `sound/`: audio_layers, music, clips; `sound/mixer/` is audio filtering as the
+  domain tunes it (levels, and the gate from `remux-mixer`, the crate of audio filters
+  every motor hosts under its `Filter` contract, the way `remux-shader` holds the
+  picture's).
 - `air/`: destinations (the file, `~/.config/remux/destinations.json`, and `Local`,
   the `Watching` over it), plan, recording, history, journal.
 - `app/`: wire (`docs/wire.md`), chat (the feed every face reads), session, login.
