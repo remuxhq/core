@@ -64,3 +64,68 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::fake::*;
+
+    #[test]
+    fn independent_audio_layers_are_addressed_by_id_and_remembered() {
+        use crate::audio_layers::Source;
+        let mut engine = engine();
+        for id in ["browser", "editor"] {
+            assert!(matches!(
+                engine.handle(Command::AudioLayerAdd {
+                    id: id.into(),
+                    source: Source::app("Safari".into()),
+                }),
+                Reply::Status(_)
+            ));
+        }
+        assert_eq!(engine.status().audio_layers.len(), 2);
+        assert!(matches!(
+            engine.handle(Command::AudioLayerVolume {
+                id: "editor".into(),
+                volume: 0.25
+            }),
+            Reply::Status(_)
+        ));
+        assert!(matches!(
+            engine.handle(Command::AudioLayerMute {
+                id: "browser".into(),
+                on: true
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status().audio_layers[0].volume, 1.0);
+        assert!(engine.status().audio_layers[0].muted);
+        assert_eq!(engine.status().audio_layers[1].volume, 0.25);
+        assert!(!engine.status().audio_layers[1].muted);
+        assert!(matches!(
+            engine.handle(Command::AudioLayerAdd {
+                id: "browser".into(),
+                source: Source::mic("mic".into()),
+            }),
+            Reply::Error { .. }
+        ));
+        assert!(matches!(
+            engine.handle(Command::AudioLayerVolume {
+                id: "editor".into(),
+                volume: f64::NAN
+            }),
+            Reply::Error { .. }
+        ));
+        let setup = engine.remembered();
+        let mut restored = Engine::new();
+        restored.restore(&setup);
+        assert_eq!(restored.status().audio_layers, engine.status().audio_layers);
+        assert!(matches!(
+            engine.handle(Command::AudioLayerRemove {
+                id: "browser".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status().audio_layers.len(), 1);
+    }
+}

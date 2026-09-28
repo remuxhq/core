@@ -1482,4 +1482,1051 @@ fn list_of(names: impl Iterator<Item = String>) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+mod fake;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::fake::*;
+    use crate::layers::Kind;
+    use crate::scenes::Scene;
+
+    // Setting up is the part nobody wants to do twice.
+    #[test]
+    fn what_was_chosen_comes_back_after_a_restart() {
+        let (mut engine, played, _) = machine_with_music();
+        engine.handle(Command::Camera {
+            device: Some("HP".into()),
+        });
+        engine.handle(Command::Mic {
+            device: Some("HyperX".into()),
+        });
+        engine.handle(Command::Mirror { on: true });
+        engine.handle(Command::CameraShape {
+            shape: crate::scene::CameraShape::Rectangle,
+        });
+        engine.handle(Command::CameraPosition {
+            at: Some(crate::scene::CameraPosition { x: 360, y: 180 }),
+        });
+        engine.handle(Command::Volume { level: 1.5 });
+        engine.handle(Command::Genre { name: "edm".into() });
+        engine.handle(Command::SceneElementAdd {
+            element: Element {
+                id: "title".into(),
+                x: 200,
+                y: 200,
+                width: 600,
+                height: 100,
+                visible: true,
+                shader: None,
+                content: ElementContent::Text {
+                    text: "back at nine".into(),
+                },
+            },
+        });
+        let setup = engine.remembered();
+        // Never state: an engine that came up publishing because it was
+        // publishing when the machine slept goes live in an empty room.
+        let written = crate::remembered::write(&setup).expect("written");
+        assert!(!written.contains("on_air"), "{written}");
+        assert!(!written.contains("recording"), "{written}");
+
+        let (mut next, next_played, _) = machine_with_music();
+        next.restore(&crate::remembered::read(&written));
+        let now = next.status();
+        assert_eq!(now.mic.as_deref(), Some("HyperX DuoCast"));
+        assert!(now.mirrored);
+        assert_eq!(
+            now.layers[0].shape,
+            Some(crate::scene::CameraShape::Rectangle)
+        );
+        assert_eq!(
+            (now.layers[0].transform.x, now.layers[0].transform.y),
+            (360, 180)
+        );
+        assert_eq!(now.faders.mic, 1.5);
+        assert_eq!(
+            now.scenes[0].elements[0].content,
+            ElementContent::Text {
+                text: "back at nine".into()
+            }
+        );
+        assert!(!now.on_air);
+        // The genre came back as the shelf, not as music: nothing plays until
+        // somebody turns it on, and then it is that shelf. An engine that came
+        // up playing was the music that "kept playing on its own with the app
+        // closed": every engine started for a smoke played the last genre
+        // through the speakers of a room nobody was in.
+        assert!(
+            now.music.is_none(),
+            "restoring a genre started it: {:?}",
+            now.music
+        );
+        assert!(next_played.lock().expect("played").is_empty());
+        next.handle(Command::Music { on: true });
+        let track = next_played
+            .lock()
+            .expect("played")
+            .first()
+            .cloned()
+            .flatten();
+        assert!(
+            track.as_deref().is_some_and(|t| t.contains("edm")),
+            "music on resumes the remembered shelf, played {track:?}"
+        );
+        let _ = played;
+    }
+
+    // A display is put back by what the monitor is, not by the number it had:
+    // the VG2791R saved as display 2 is display 3 now, and a monitor that is not
+    // here is left out rather than swapped for the one that took its number.
+    #[test]
+    fn a_saved_display_comes_back_as_the_same_monitor_whatever_its_number() {
+        let (mut engine, _, _) = machine_with_music();
+        let desk = |id: &str, handle: &str, stable: &str| crate::layers::Layer {
+            id: id.into(),
+            source: crate::layers::Source {
+                kind: crate::layers::Kind::Screen,
+                handle: handle.into(),
+                name: "a monitor".into(),
+                width: 1920,
+                height: 1080,
+                stable: Some(stable.into()),
+            },
+            transform: crate::layers::Transform::native((1920, 1080)),
+            visible: true,
+            crop: None,
+            shape: None,
+            mirrored: false,
+            shader: None,
+        };
+        engine.restore(&crate::remembered::Remembered {
+            layers: vec![desk("desk", "2", "5C1E09B4"), desk("gone", "1", "0FF1CE00")],
+            ..Default::default()
+        });
+        let layers = &engine.status().layers;
+        assert_eq!(
+            layers.len(),
+            1,
+            "the absent monitor is left out: {layers:?}"
+        );
+        assert_eq!(
+            (layers[0].id.as_str(), layers[0].source.handle.as_str()),
+            ("desk", "3")
+        );
+        assert_eq!(layers[0].source.name, "VG2791R");
+        assert_eq!(layers[0].source.stable.as_deref(), Some("5C1E09B4"));
+        assert_eq!(
+            engine.remembered().layers[0].source.stable.as_deref(),
+            Some("5C1E09B4"),
+            "and it is kept by its identity again"
+        );
+    }
+
+    // Losing a webcam is not a reason to lose the gate settings somebody spent
+    // an evening on.
+    #[test]
+    fn a_device_that_is_gone_does_not_take_the_rest_of_the_setup_with_it() {
+        let (mut engine, _, _) = machine_with_music();
+        let setup = crate::remembered::Remembered {
+            layers: vec![crate::layers::Layer {
+                id: "gone".into(),
+                source: crate::layers::Source {
+                    kind: crate::layers::Kind::Camera,
+                    handle: "missing".into(),
+                    name: "a camera nobody has".into(),
+                    width: 1280,
+                    height: 720,
+                    stable: None,
+                },
+                transform: crate::layers::Transform::native((1280, 720)),
+                visible: true,
+                crop: None,
+                shape: Some(crate::scene::CameraShape::Rectangle),
+                mirrored: false,
+                shader: None,
+            }],
+            mic: Some("HyperX".into()),
+            mirrored: true,
+            ..Default::default()
+        };
+        engine.restore(&setup);
+        assert!(engine.status().layers.is_empty(), "it must not invent one");
+        assert_eq!(engine.status().mic.as_deref(), Some("HyperX DuoCast"));
+        assert!(engine.status().mirrored);
+    }
+
+    #[test]
+    fn restart_restores_named_window_layers_without_legacy_fields() {
+        let mut engine =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        engine.handle(Command::LayerWindow {
+            id: "notes".into(),
+            query: "tmux".into(),
+        });
+        let saved = crate::remembered::write(&engine.remembered()).unwrap();
+        assert!(saved.contains("Ghostty — tmux a"));
+        assert!(!saved.contains("camera_position"));
+        assert!(!saved.contains("\"screen\""));
+        let mut next =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        next.restore(&crate::remembered::read(&saved));
+        assert_eq!(next.status().layers.len(), 1);
+        assert_eq!(next.status().layers[0].id, "notes");
+        assert_eq!(
+            next.status().layers[0].source.kind,
+            crate::layers::Kind::Window
+        );
+    }
+
+    #[test]
+    fn the_status_carries_what_the_engine_has_done() {
+        let mut engine = Engine::new();
+        let _ = engine.handle(Command::Mute { on: true });
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status");
+        };
+        // The stamp is the clock; what is asserted is the sentence and that
+        // asking for the status did not itself become a line.
+        assert_eq!(status.log.len(), 1);
+        assert!(status.log[0].ends_with("mic muted"), "got {:?}", status.log);
+    }
+
+    #[test]
+    fn devices_come_from_whatever_is_plugged_in() {
+        let mut engine = Engine::with_sources(Box::new(ThisMachine));
+        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
+            panic!("devices answers with devices")
+        };
+        assert_eq!(devices.screens.len(), 2);
+        assert_eq!(devices.screens[1].name, "VG2791R");
+        // A window is shown as who owns it and then what it says, because a
+        // browser window is titled after the page and neither half alone
+        // tells you which one it is.
+        assert_eq!(devices.windows[1].name, "Brave Browser — remux");
+    }
+
+    // An empty list would read as "you have no monitors", which sends a person
+    // looking at their cables instead of at System Settings.
+    #[test]
+    fn a_refused_grant_comes_back_as_a_sentence_not_an_empty_list() {
+        let mut engine = Engine::with_sources(Box::new(Refused));
+        assert_eq!(
+            engine.handle(Command::Devices),
+            Reply::Error {
+                message: "macOS refused: screen recording".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_engine_with_nothing_plugged_in_says_so_truthfully() {
+        let mut engine = engine();
+        assert_eq!(
+            engine.handle(Command::Devices),
+            Reply::Devices(Devices::default())
+        );
+    }
+
+    #[test]
+    fn a_fresh_engine_is_off_air_and_not_recording() {
+        let mut engine = engine();
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert!(!status.on_air);
+        assert!(!status.recording);
+        assert_eq!(status.viewers, None);
+    }
+
+    #[test]
+    fn fresh_engine_has_only_a_default_scene() {
+        let engine = engine();
+        assert_eq!(engine.status().scenes.len(), 1);
+        assert_eq!(engine.status().active_scene, "default");
+    }
+
+    // The panic button had a bug worth keeping a test for: it hid the picture
+    // and left the microphone open, which is the worst of both.
+    #[test]
+    fn hiding_everything_mutes_you_too() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        engine.handle(Command::GoLive);
+        engine.handle(Command::HideEverything);
+        assert!(
+            engine.status().muted,
+            "hide everything means hide your voice too"
+        );
+        assert_eq!(engine.status().active_scene, "default");
+        assert!(engine.status().layers.is_empty());
+        assert!(
+            engine.status().on_air,
+            "it is a break, not the end of the live"
+        );
+    }
+
+    #[test]
+    fn every_verb_in_the_protocol_is_one_this_build_answers() {
+        // There used to be a `Reply::Unsupported` and a test naming whichever
+        // verb was still missing; it was `next-track`, then `arm`, and now
+        // there is nothing to name. A reply nothing can produce is a reply
+        // somebody will write a reader for, so it went with the last gap.
+        //
+        // What is asserted instead is the property that made it safe to
+        // delete: every command decodes into something `handle` answers, which
+        // the compiler proves by the match being exhaustive, and this proves
+        // by asking for one of each shape.
+        let (mut engine, _) = publishing_engine(None);
+        for command in [
+            Command::Status,
+            Command::Devices,
+            Command::Grants,
+            Command::Chat {
+                since: 0,
+                follow: false,
+            },
+            Command::Mute { on: true },
+            Command::Arm {
+                adapter: 1,
+                on: true,
+            },
+        ] {
+            let reply = engine.handle(command.clone());
+            assert!(
+                !matches!(reply, Reply::Error { message } if message.contains("cannot")),
+                "{command:?} came back as unanswerable"
+            );
+        }
+    }
+
+    #[test]
+    fn quitting_is_a_decision_the_engine_records_and_does_not_act_on() {
+        let mut engine = engine();
+        assert!(!engine.quitting());
+        assert_eq!(engine.handle(Command::Quit), Reply::Ok);
+        assert!(
+            engine.quitting(),
+            "the transport reads this and stops accepting"
+        );
+    }
+
+    #[test]
+    fn the_camera_and_the_microphone_are_separate_lists() {
+        let mut engine = machine();
+        // "HyperX" is a microphone, so asking the camera list for it must miss
+        // rather than quietly find the mic.
+        let Reply::Error { message } = engine.handle(Command::Camera {
+            device: Some("hyperx".into()),
+        }) else {
+            panic!("a camera named after a microphone is not a camera")
+        };
+        assert!(message.contains("MacBook Pro Camera"), "{message}");
+        assert!(engine.status().layers.is_empty());
+
+        engine.handle(Command::Mic {
+            device: Some("hyperx".into()),
+        });
+        assert_eq!(engine.status().mic, Some("HyperX DuoCast".into()));
+    }
+
+    #[test]
+    fn deleted_starter_scene_is_not_recreated_on_restore() {
+        let mut engine = Engine::new();
+        engine.handle(Command::SceneCreate {
+            name: "Custom".into(),
+        });
+        engine.handle(Command::SceneDelete {
+            name: "default".into(),
+        });
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        let mut next = Engine::new();
+        next.restore(&saved);
+        assert_eq!(next.status().scenes.len(), 1);
+        assert_eq!(next.status().active_scene, "Custom");
+    }
+
+    #[test]
+    fn old_generated_presets_are_ignored_without_losing_custom_scenes() {
+        let saved = crate::remembered::read(
+            r#"{"active_scene":"BRB","scenes":[{"name":"default","layers":[]},{"name":"BRB","layers":[],"graphic":{"kind":"back-in-a-moment","text":"back"}},{"name":"My scene","layers":[],"elements":[{"id":"note","kind":"text","text":"Hi","x":2,"y":3,"width":100,"height":80}]}]}"#,
+        );
+        let mut engine = Engine::new();
+        engine.restore(&saved);
+        assert_eq!(engine.status().active_scene, "default");
+        assert_eq!(engine.status().scenes.len(), 2);
+        assert_eq!(engine.status().scenes[1].elements[0].id, "note");
+        assert_eq!(engine.status().scenes[1].ordered_ids(), ["note"]);
+    }
+
+    #[test]
+    fn scene_switch_prepares_then_commits_and_closes_only_unshared_captures() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let before = vec![
+            layer("camera", Kind::Camera, "cam", 0),
+            layer("old", Kind::Screen, "1", 0),
+        ];
+        let after = vec![
+            layer("closeup", Kind::Camera, "cam", 900),
+            layer("new", Kind::Window, "2", 10),
+        ];
+        engine.status.layers = before.clone();
+        engine.status.scenes.push(Scene {
+            name: "next".into(),
+            layers: after.clone(),
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        engine.status.on_air = true;
+        engine.status.recording = true;
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "next".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert!(engine.status.on_air);
+        assert!(engine.status.recording);
+        assert_eq!(engine.status.layers, after);
+        assert_eq!(engine.status.scenes[0].layers, before);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["prepare Window:2", "commit layout", "close Screen:1"]
+        );
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "default".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status.layers, before);
+    }
+
+    #[test]
+    fn failed_preparation_preserves_active_layout_and_live() {
+        let fake = Wrote {
+            refuse: Some("capture unavailable".into()),
+            ..Default::default()
+        };
+        let events = fake.scene_events.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let old = layer("face", Kind::Camera, "cam", 0);
+        engine.status.layers = vec![old.clone()];
+        engine.status.on_air = true;
+        engine.status.scenes.push(Scene {
+            name: "other".into(),
+            layers: vec![layer("new", Kind::Camera, "other-cam", 10)],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "other".into()
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status.active_scene, "default");
+        assert_eq!(engine.status.layers, [old]);
+        assert!(engine.status.on_air);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["prepare Camera:other-cam", "rollback prepared"]
+        );
+    }
+
+    #[test]
+    fn second_capture_failure_rolls_back_prepared_source_before_touching_live() {
+        let fake = Wrote {
+            refuse: Some("scene:missing".into()),
+            ..Default::default()
+        };
+        let events = fake.scene_events.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let previous = layer("face", Kind::Camera, "camera", 0);
+        engine.status.layers = vec![previous.clone()];
+        engine.status.on_air = true;
+        engine.status.scenes.push(Scene {
+            name: "next".into(),
+            layers: vec![
+                layer("screen", Kind::Screen, "1", 0),
+                layer("bad", Kind::Window, "missing", 0),
+            ],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "next".into()
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status.active_scene, "default");
+        assert_eq!(engine.status.layers, [previous]);
+        assert!(engine.status.on_air);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "prepare Screen:1",
+                "prepare Window:missing",
+                "rollback 1",
+                "rollback prepared"
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_layers_restore_as_default_and_named_scenes_round_trip() {
+        let old = layer("desktop", Kind::Screen, "1", 17);
+        let legacy = crate::remembered::read(&serde_json::json!({"layers": [old]}).to_string());
+        let mut engine = Engine::with_sources(Box::new(ThisMachine));
+        engine.restore(&legacy);
+        assert_eq!(engine.status.active_scene, "default");
+        assert_eq!(engine.remembered().scenes[0].layers, engine.status.layers);
+
+        let mut setup = engine.remembered();
+        setup.scenes.push(Scene {
+            name: "camera".into(),
+            layers: vec![layer("second", Kind::Screen, "3", 88)],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        setup.active_scene = "camera".into();
+        let saved = crate::remembered::read(&crate::remembered::write(&setup).unwrap());
+        let mut restored = Engine::with_sources(Box::new(ThisMachine));
+        restored.restore(&saved);
+        assert_eq!(restored.status.active_scene, "camera");
+        assert_eq!(restored.status.layers[0].id, "second");
+        assert_eq!(restored.remembered().scenes[0].layers[0].transform.x, 17);
+    }
+
+    #[test]
+    fn invalid_layer_assignment_and_scene_shader_roll_back_without_stopping_live() {
+        let fake = Wrote {
+            refuse: Some("shader:invalid".into()),
+            ..Default::default()
+        };
+        let events = fake.scene_events.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let old = layer("old", Kind::Camera, "cam", 0);
+        engine.status.layers = vec![old.clone()];
+        engine.status.on_air = true;
+        let mut next = layer("new", Kind::Screen, "display", 0);
+        next.shader = Some("bad.wgsl".into());
+        engine.status.scenes.push(Scene {
+            name: "next".into(),
+            layers: vec![next],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "next".into()
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status.layers, [old]);
+        assert!(engine.status.on_air);
+        assert_eq!(engine.status.active_scene, "default");
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "prepare Screen:display",
+                "rollback display",
+                "rollback prepared"
+            ]
+        );
+        assert!(matches!(
+            engine.handle(Command::LayerShader {
+                id: "old".into(),
+                path: Some("bad.wgsl".into())
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status.layers[0].shader, None);
+        engine.status.scenes.push(Scene {
+            name: "global".into(),
+            layers: vec![],
+            elements: vec![],
+            order: vec![],
+            shader: Some("bad.wgsl".into()),
+        });
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "global".into()
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status.active_scene, "default");
+    }
+
+    #[test]
+    fn runtime_failure_hides_only_the_affected_shader_in_status_and_persistence() {
+        let fake = Wrote {
+            refuse: Some("runtime:layer".into()),
+            ..Default::default()
+        };
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let mut disabled = layer("disabled", Kind::Camera, "cam", 0);
+        disabled.shader = Some("failed.wgsl".into());
+        let mut healthy = layer("healthy", Kind::Screen, "1", 0);
+        healthy.shader = Some("good.wgsl".into());
+        engine.status.layers = vec![disabled, healthy];
+        engine.status.shader = Some("scene.wgsl".into());
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status")
+        };
+        assert_eq!(status.layers[0].shader, None);
+        assert_eq!(status.layers[1].shader.as_deref(), Some("good.wgsl"));
+        assert_eq!(status.shader.as_deref(), Some("scene.wgsl"));
+        assert_eq!(engine.remembered().layers[0].shader, None);
+        assert_eq!(
+            engine.remembered().layers[1].shader.as_deref(),
+            Some("good.wgsl")
+        );
+
+        let fake = Wrote {
+            refuse: Some("runtime:global".into()),
+            ..Default::default()
+        };
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        engine.status.shader = Some("failed.wgsl".into());
+        engine.status.layers = vec![layer("healthy", Kind::Camera, "cam", 0)];
+        engine.status.layers[0].shader = Some("good.wgsl".into());
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status")
+        };
+        assert_eq!(status.shader, None);
+        assert_eq!(status.layers[0].shader.as_deref(), Some("good.wgsl"));
+        assert_eq!(engine.remembered().scenes[0].shader, None);
+    }
+
+    #[test]
+    fn restore_skips_bad_shader_paths_without_losing_sources_or_other_scenes() {
+        let mut engine =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        let mut saved_layer = layer("desktop", Kind::Screen, "1", 0);
+        saved_layer.shader = Some("bad.wgsl".into());
+        let setup = crate::remembered::Remembered {
+            scenes: vec![
+                Scene {
+                    name: "default".into(),
+                    layers: vec![saved_layer],
+                    elements: vec![],
+                    order: vec![],
+                    shader: Some("bad.wgsl".into()),
+                },
+                Scene {
+                    name: "later".into(),
+                    layers: vec![],
+                    elements: vec![],
+                    order: vec![],
+                    shader: Some("good.wgsl".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        engine.restore(&setup);
+        assert_eq!(engine.status.layers.len(), 1);
+        assert_eq!(engine.status.layers[0].shader, None);
+        assert_eq!(engine.status.shader, None);
+        assert_eq!(
+            engine.remembered().scenes[1].shader.as_deref(),
+            Some("good.wgsl")
+        );
+    }
+
+    #[test]
+    fn clone_edit_delete_and_retain_inactive_layouts() {
+        let mut engine = Engine::new();
+        assert!(matches!(
+            engine.handle(Command::SceneDuplicate {
+                name: "second".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneDelete {
+                name: "second".into()
+            }),
+            Reply::Error { .. }
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneSwitch {
+                name: "default".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneDelete {
+                name: "second".into()
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.remembered().scenes.len(), 1);
+    }
+
+    #[test]
+    fn a_created_scene_is_empty_and_switched_to_and_a_duplicate_is_the_active_one() {
+        let mut engine =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        engine.handle(Command::LayerCamera {
+            id: "face".into(),
+            device: "MacBook Pro Camera".into(),
+        });
+        engine.handle(Command::SceneElementAdd {
+            element: Element {
+                id: "title".into(),
+                x: 10,
+                y: 10,
+                width: 300,
+                height: 90,
+                visible: true,
+                shader: None,
+                content: ElementContent::Text { text: "Hi".into() },
+            },
+        });
+        let Reply::Status(copied) = engine.handle(Command::SceneDuplicate {
+            name: "copy".into(),
+        }) else {
+            panic!("a duplicate answers with the status")
+        };
+        assert_eq!(copied.active_scene, "copy");
+        assert_eq!(copied.layers.len(), 1, "the capture carries on");
+        let copy = copied.scenes.iter().find(|s| s.name == "copy").unwrap();
+        assert_eq!(copy.ordered_ids(), ["face", "title"]);
+
+        let Reply::Status(empty) = engine.handle(Command::SceneCreate {
+            name: "blank".into(),
+        }) else {
+            panic!("a create answers with the status")
+        };
+        assert_eq!(empty.active_scene, "blank");
+        assert!(empty.layers.is_empty(), "nothing from the scene before");
+        let blank = empty.scenes.iter().find(|s| s.name == "blank").unwrap();
+        assert!(blank.elements.is_empty() && blank.shader.is_none());
+        let copy = empty.scenes.iter().find(|s| s.name == "copy").unwrap();
+        assert_eq!(copy.layers.len(), 1, "the scene left keeps its layers");
+
+        for taken in ["blank", "copy", "default"] {
+            assert!(matches!(
+                engine.handle(Command::SceneCreate { name: taken.into() }),
+                Reply::Error { .. }
+            ));
+            assert!(matches!(
+                engine.handle(Command::SceneDuplicate { name: taken.into() }),
+                Reply::Error { .. }
+            ));
+        }
+        assert_eq!(engine.status().active_scene, "blank");
+    }
+
+    // A plan is confirmed by its fingerprint: the live goes on what was printed
+    // and refused on anything else, so an agent cannot confirm a plan it did not
+    // see and a person cannot go on a screen that changed under the prompt.
+    #[test]
+    fn a_live_confirmed_on_a_stale_plan_is_refused() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        let Reply::Plan(plan) = engine.handle(Command::Plan) else {
+            panic!("plan answers with a plan")
+        };
+        assert!(matches!(
+            engine.handle(Command::Live {
+                plan: plan.fingerprint.wrapping_add(1)
+            }),
+            Reply::Error { .. }
+        ));
+        assert!(published.lock().expect("published").is_empty());
+        engine.handle(Command::Mute { on: true });
+        assert!(
+            matches!(
+                engine.handle(Command::Live {
+                    plan: plan.fingerprint
+                }),
+                Reply::Error { .. }
+            ),
+            "muting after the plan is a change a person confirms"
+        );
+        let Reply::Plan(fresh) = engine.handle(Command::Plan) else {
+            panic!()
+        };
+        assert_eq!(
+            engine.handle(Command::Live {
+                plan: fresh.fingerprint
+            }),
+            Reply::Ok
+        );
+        assert!(engine.status().on_air);
+    }
+
+    #[test]
+    fn the_music_a_panel_can_offer_comes_back_with_the_devices() {
+        let mut engine =
+            Engine::with_sources(Box::new(ThisMachine)).with_library(Box::new(ThreeGenres));
+        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
+            panic!("devices answers with devices")
+        };
+        assert_eq!(
+            devices
+                .genres
+                .iter()
+                .map(|g| g.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lofi", "edm", "synthwave"],
+            "a panel that can play music has to be able to offer some"
+        );
+        assert_eq!(
+            devices.genres[0].name, "Lofi",
+            "the name is the readable one"
+        );
+    }
+
+    #[test]
+    fn a_panel_can_ask_what_the_machine_allows() {
+        let (mut engine, _) = publishing_engine(None);
+        assert_eq!(
+            engine.handle(Command::Grants),
+            Reply::Grants {
+                screen: Grant::Granted,
+                camera: Grant::Granted,
+                microphone: Grant::NotAsked,
+            },
+            "all three, always: the one that is wrong is what somebody is looking for"
+        );
+    }
+
+    #[test]
+    fn an_engine_that_captures_nothing_has_been_allowed_nothing() {
+        let mut engine = engine();
+        let Reply::Grants { screen, .. } = engine.handle(Command::Grants) else {
+            panic!("grants answers with grants")
+        };
+        assert_eq!(screen, Grant::Refused, "true rather than convenient");
+    }
+
+    #[test]
+    fn silence_is_the_floor_and_never_full_scale() {
+        // Zero dBFS is the loudest sound there is, so a derived default is the
+        // worst possible reading for "nothing is connected". A panel drew a
+        // full red meter for a microphone that was not open.
+        let floor = crate::levels::Meter::FLOOR_DB;
+        assert_eq!(Hearing::default().level_db, floor);
+        assert_eq!(Mixing::default().level_db, floor);
+        assert_eq!(Mixing::default().music_db, floor);
+        assert_eq!(Mixing::default().monitor_db, floor);
+
+        let mut engine = engine();
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert_eq!(status.hearing.level_db, floor, "nothing is plugged in");
+        assert_eq!(status.mixing.music_db, floor);
+    }
+
+    /// What the pipeline was last told a running timer had left.
+    type Counting = std::sync::Arc<std::sync::Mutex<Option<Duration>>>;
+
+    fn machine_watching_elements() -> (Engine, Shown, Counting) {
+        let shown: Shown = Default::default();
+        let counting: Counting = Default::default();
+        let pipeline = Wrote {
+            told: Default::default(),
+            cameras: Default::default(),
+            mics: Default::default(),
+            played: Default::default(),
+            levels: Default::default(),
+            shown: shown.clone(),
+            scene_events: Default::default(),
+            counting: counting.clone(),
+            published: Default::default(),
+            recorded: Default::default(),
+            mirrored: Default::default(),
+            gated: Default::default(),
+            heard_here: Default::default(),
+            speaker_calls: Default::default(),
+            previewed: Default::default(),
+            ran_out: Default::default(),
+            refuse: None,
+        };
+        (
+            Engine::with_sources(Box::new(ThisMachine))
+                .with_pipeline(Box::new(pipeline))
+                .with_destination(Some(DESTINATION.into())),
+            shown,
+            counting,
+        )
+    }
+
+    #[test]
+    fn panic_clears_scene_and_stops_media() {
+        let (mut engine, shown, _) = machine_watching_elements();
+        engine.handle(Command::Screen { display: 3 });
+        engine.handle(Command::HideEverything);
+        assert_eq!(engine.status().active_scene, "default");
+        assert!(elements_shown(&shown).last().is_some());
+        assert!(engine.status().layers.is_empty());
+        assert!(engine.status().muted);
+    }
+
+    // A bed that plays one file and then goes quiet is worse than no bed at
+    // all: the panel still names the track, so nobody notices until somebody
+    // watching says the stream went silent.
+    // The panic button is pressed when somebody walks into the room. What it
+    // has to guarantee is that nothing of yours reaches anybody, and half a
+    // guarantee is not one.
+    #[test]
+    fn the_panic_button_leaves_nothing_running() {
+        let (mut engine, played, _) = machine_with_music();
+        engine.handle(Command::Genre { name: "edm".into() });
+        engine.handle(Command::Mic {
+            device: Some("HyperX".into()),
+        });
+        engine.handle(Command::Camera {
+            device: Some("MacBook".into()),
+        });
+        engine.handle(Command::Monitor { on: true });
+
+        engine.handle(Command::HideEverything);
+
+        let now = engine.status();
+        assert_eq!(now.active_scene, "default");
+        assert!(now.layers.is_empty(), "the sources are off");
+        assert!(now.muted, "the microphone is muted");
+        assert_eq!(
+            now.mic, None,
+            "and closed: a muted microphone is still an open device"
+        );
+        assert_eq!(now.music, None, "the music stops");
+        assert!(!now.monitoring, "the speakers stop");
+        assert!(
+            !now.music_to_stream,
+            "and the bed stays off the stream until somebody says otherwise"
+        );
+        // It reached the pipeline and not only the status: a `None` at the end
+        // of what was played is the mixer being told to stop.
+        assert_eq!(played.lock().expect("played").last(), Some(&None));
+    }
+
+    // The engine that captures nothing is honest about it: nothing to hear, and
+    // nothing to write, even with a folder to write into.
+    #[test]
+    fn an_engine_that_captures_nothing_refuses_the_speakers_and_the_file() {
+        let mut engine = Engine::new().with_recordings(Some("/tmp/films".into()));
+        assert_eq!(
+            engine.status().record_dir.as_deref(),
+            None,
+            "read, never kept"
+        );
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert_eq!(status.record_dir.as_deref(), Some("/tmp/films"));
+        let reply = engine.handle(Command::RecordStart);
+        assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
+        assert!(!engine.status().recording);
+        let reply = engine.handle(Command::Monitor { on: true });
+        assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
+        assert!(!engine.status().monitoring);
+    }
+
+    #[test]
+    fn an_engine_no_panel_has_spoken_to_runs_until_it_is_told() {
+        let mut engine = engine();
+        for _ in 0..(PANEL_LEASE_TICKS * 5) {
+            engine.tick();
+        }
+        assert!(!engine.quitting(), "nothing told it to stop");
+    }
+
+    #[test]
+    fn a_panel_that_stops_saying_it_is_here_stops_the_engine() {
+        let mut engine = engine();
+        assert_eq!(engine.handle(Command::Present), Reply::Ok);
+        for _ in 0..(PANEL_LEASE_TICKS - 1) {
+            engine.tick();
+        }
+        assert!(!engine.quitting(), "still within the lease");
+        engine.tick();
+        assert!(engine.quitting(), "the lease ran out");
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert!(
+            status
+                .log
+                .iter()
+                .any(|line| line.contains("the panel went away")),
+            "and the log says why: {:?}",
+            status.log
+        );
+    }
+
+    #[test]
+    fn a_panel_that_keeps_saying_it_is_here_keeps_the_engine() {
+        let mut engine = engine();
+        for _ in 0..10 {
+            engine.handle(Command::Present);
+            for _ in 0..(PANEL_LEASE_TICKS - 5) {
+                engine.tick();
+            }
+        }
+        assert!(!engine.quitting());
+    }
+
+    #[test]
+    fn saying_so_writes_nothing_in_the_log() {
+        let mut engine = engine();
+        engine.handle(Command::Present);
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert!(
+            status.log.is_empty(),
+            "once a second would push everything else off: {:?}",
+            status.log
+        );
+    }
+
+    struct Replugged(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl Sources for Replugged {
+        fn available(&self) -> Result<Available, String> {
+            ThisMachine.available()
+        }
+        fn generation(&self) -> u64 {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn the_status_says_when_the_device_list_moved_so_a_face_reads_it_again() {
+        let plugged = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut engine = Engine::with_sources(Box::new(Replugged(plugged.clone())));
+        let Reply::Status(before) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert_eq!(before.devices_generation, 0);
+        plugged.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Reply::Status(after) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert_eq!(after.devices_generation, 1, "a headset came back");
+    }
+
+    #[test]
+    fn an_engine_with_nothing_plugged_in_never_moves_the_list() {
+        let mut engine = engine();
+        let Reply::Status(status) = engine.handle(Command::Status) else {
+            panic!("status answers with a status")
+        };
+        assert_eq!(status.devices_generation, 0);
+    }
+}

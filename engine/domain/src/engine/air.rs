@@ -209,3 +209,379 @@ impl Engine {
         Reply::Ok
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::fake::*;
+
+    #[test]
+    fn an_engine_that_captures_nothing_cannot_go_live() {
+        let mut engine = engine();
+        let reply = engine.handle(Command::GoLive);
+        assert!(
+            matches!(reply, Reply::Error { .. }),
+            "nothing is plugged in, so there is nothing to send, got {reply:?}"
+        );
+        assert!(!engine.status().on_air);
+        // Stopping what never started is not an error: a panel that lost track
+        // should be able to say stop and be believed.
+        assert_eq!(engine.handle(Command::Stop), Reply::Ok);
+        assert!(!engine.status().on_air);
+    }
+
+    // Both motors draw an empty scene at the full rate, so frames cannot keep
+    // black off the air: going live refuses what the plan says would stop it.
+    #[test]
+    fn an_empty_scene_cannot_go_live_though_it_has_frames() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        let id = engine.status().layers[0].id.clone();
+        engine.handle(Command::LayerVisible { id, on: false });
+        assert_eq!(
+            engine.handle(Command::GoLive),
+            Reply::Error {
+                message: "the scene is empty: nothing would be shared".into()
+            }
+        );
+        assert!(!engine.status().on_air);
+        assert!(published.lock().expect("published").is_empty());
+    }
+
+    #[test]
+    fn recording_needs_no_destination_so_it_does_not_touch_the_air() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.set_recordings(Some("/tmp/films".into()));
+        engine.handle(Command::RecordStart);
+        assert!(engine.status().recording);
+        assert!(!engine.status().on_air, "recording is not going live");
+        engine.handle(Command::RecordStop);
+        assert!(!engine.status().recording);
+    }
+
+    #[test]
+    fn recording_survives_going_live_and_coming_back_off() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.set_recordings(Some("/tmp/films".into()));
+        engine.handle(Command::RecordStart);
+        engine.handle(Command::GoLive);
+        engine.handle(Command::Stop);
+        assert!(
+            engine.status().recording,
+            "stopping the live must not stop the file"
+        );
+    }
+
+    // Straight to every armed destination, one door each, all of them or none:
+    // the engine hands the file's outlets to the pipeline, and a door that
+    // refuses takes the open ones down with it.
+    #[test]
+    fn going_live_sends_to_every_armed_destination_in_the_file() {
+        use crate::destinations::{add, write, Local};
+        let path =
+            std::env::temp_dir().join(format!("remuxd-test-dest-{}.json", std::process::id()));
+        let mut kept = Vec::new();
+        add(
+            &mut kept,
+            "yt",
+            "youtube",
+            "rtmp://a.rtmp.youtube.com/live2",
+            "yt-key",
+        )
+        .unwrap();
+        add(
+            &mut kept,
+            "tw",
+            "twitch",
+            "rtmp://live.twitch.tv/app",
+            "tw-key",
+        )
+        .unwrap();
+        write(&path, &kept).unwrap();
+        let (engine, published) = publishing_engine(None);
+        let mut engine = engine
+            .with_destination(None)
+            .with_app(Box::new(Local::new(path.clone())));
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        assert_eq!(
+            *published.lock().expect("published"),
+            vec![
+                Some("rtmp://a.rtmp.youtube.com/live2/yt-key".to_string()),
+                Some("rtmp://live.twitch.tv/app/tw-key".to_string())
+            ]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    // A live that ended is one line on the history file, whichever way it ended,
+    // naming where it went.
+    #[test]
+    fn a_live_that_ended_is_written_down() {
+        let path =
+            std::env::temp_dir().join(format!("remuxd-test-history-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (engine, published) = publishing_engine(None);
+        let mut engine = engine.with_history(Some(path.clone()));
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        engine.tick();
+        assert_eq!(engine.handle(Command::Stop), Reply::Ok);
+        let kept = crate::history::read(&path);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].ended >= kept[0].started);
+        // ended on its own: the relay hung up
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        published.lock().expect("published").push(None);
+        engine.tick();
+        assert!(!engine.status().on_air);
+        assert_eq!(crate::history::read(&path).len(), 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn going_live_sends_the_picture_to_the_destination() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        assert!(engine.status().on_air);
+        assert!(
+            engine.status().on_air_since.is_some(),
+            "the clock starts here, on the engine's own time, so every face \
+                 shows the same running time for the same live"
+        );
+        assert_eq!(
+            *published.lock().expect("published"),
+            vec![Some(DESTINATION.to_string())],
+            "go live must reach the pipeline, not just flip a flag"
+        );
+        engine.handle(Command::Stop);
+        assert_eq!(engine.status().on_air_since, None, "and stops with the air");
+    }
+
+    #[test]
+    fn an_engine_with_nowhere_to_go_does_not_claim_the_air() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.set_destination(None);
+        let reply = engine.handle(Command::GoLive);
+        assert!(
+            matches!(reply, Reply::Error { .. }),
+            "with no destination going live is an error, got {reply:?}"
+        );
+        assert!(!engine.status().on_air);
+        assert!(published.lock().expect("published").is_empty());
+    }
+
+    // The flag follows the stream: a relay that hangs up takes "on air" with it,
+    // on the next tick, and the log says so. It used to say on air for as long
+    // as nobody pressed Stop.
+    #[test]
+    fn a_stream_that_ends_on_its_own_takes_on_air_with_it() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        engine.tick();
+        assert!(
+            engine.status().on_air,
+            "a live that is going stays on air through a tick"
+        );
+        published.lock().expect("published").push(None);
+        engine.tick();
+        assert!(
+            !engine.status().on_air,
+            "the stream ended and the flag did not follow"
+        );
+        assert!(engine.status().on_air_since.is_none());
+        let said = engine.reported().log.join("\n");
+        assert!(
+            said.contains("ended on its own"),
+            "the log says nothing about it: {said}"
+        );
+    }
+
+    #[test]
+    fn a_publisher_that_refuses_leaves_the_engine_off_air() {
+        let (mut engine, _) = publishing_engine(Some("ffmpeg is not here".into()));
+        let reply = engine.handle(Command::GoLive);
+        assert!(
+            matches!(reply, Reply::Error { .. }),
+            "a live that could not start must say so, got {reply:?}"
+        );
+        assert!(
+            !engine.status().on_air,
+            "an engine that failed to publish must not report itself on air"
+        );
+    }
+
+    #[test]
+    fn stopping_takes_the_stream_down() {
+        let (mut engine, published) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        engine.handle(Command::GoLive);
+        assert_eq!(engine.handle(Command::Stop), Reply::Ok);
+        assert!(!engine.status().on_air);
+        assert_eq!(
+            *published.lock().expect("published"),
+            vec![Some(DESTINATION.to_string()), None],
+            "stop must take the stream down, not just flip a flag"
+        );
+    }
+
+    #[test]
+    fn recording_writes_a_file_and_says_so() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.set_recordings(Some("/tmp/films".into()));
+        assert_eq!(engine.handle(Command::RecordStart), Reply::Ok);
+        assert!(engine.status().recording);
+        assert!(!engine.status().on_air, "recording is not going live");
+        assert_eq!(engine.handle(Command::RecordStop), Reply::Ok);
+        assert!(!engine.status().recording);
+    }
+
+    #[test]
+    fn an_engine_with_nowhere_to_write_does_not_claim_to_be_recording() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.set_recordings(None);
+        let reply = engine.handle(Command::RecordStart);
+        assert!(
+            matches!(reply, Reply::Error { .. }),
+            "with no folder recording is an error, got {reply:?}"
+        );
+        assert!(!engine.status().recording);
+    }
+
+    #[test]
+    fn a_recorder_that_refuses_leaves_the_clock_stopped() {
+        let (mut engine, _) = publishing_engine(Some("the disk is full".into()));
+        engine.set_recordings(Some("/tmp/films".into()));
+        let reply = engine.handle(Command::RecordStart);
+        assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
+        assert!(
+            !engine.status().recording,
+            "a clock ticking over a file that was never opened is a lie"
+        );
+    }
+
+    #[test]
+    fn going_live_with_no_picture_is_refused_at_once() {
+        let (mut engine, published) = publishing_engine(None);
+        // `Wrote` reports nothing flowing until something is captured, which
+        // is what a cold engine looks like.
+        let reply = engine.handle(Command::GoLive);
+        assert!(
+            matches!(reply, Reply::Error { .. }),
+            "there is nothing to send, got {reply:?}"
+        );
+        assert!(!engine.status().on_air);
+        assert!(
+            published.lock().expect("published").is_empty(),
+            "it must not even reach the pipeline"
+        );
+    }
+
+    // A destination handed over after the fact is the destination: the refusal
+    // moves from "nowhere to send" to "no picture yet".
+    #[test]
+    fn a_destination_set_later_is_the_one_go_live_uses() {
+        let mut engine = engine();
+        let Reply::Error { message } = engine.handle(Command::GoLive) else {
+            panic!("nowhere to send is an error")
+        };
+        assert!(message.contains("nowhere"), "{message}");
+        engine.set_destination(Some("rtmp://hub/scene".into()));
+        let Reply::Error { message } = engine.handle(Command::GoLive) else {
+            panic!("no picture is an error")
+        };
+        assert!(message.contains("no picture"), "{message}");
+    }
+
+    // The clock the engine stamps with is the real one: a live that started
+    // reports a moment in this decade, not zero.
+    #[test]
+    fn the_engine_stamps_with_a_real_clock() {
+        let (mut engine, _) = publishing_engine(None);
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        let since = engine.status().on_air_since.expect("on air since");
+        assert!(
+            since > 1_700_000_000,
+            "{since} is not a moment on the real clock"
+        );
+    }
+
+    /// An app that names the relay, the way a signed-in one does.
+    struct NamesTheRelay;
+
+    impl Watching for NamesTheRelay {
+        fn reachable(&self) -> bool {
+            true
+        }
+        fn destinations(&self) -> Vec<Destination> {
+            Vec::new()
+        }
+        fn viewers(&self) -> Option<u32> {
+            None
+        }
+        fn arm(&self, _: i64, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn sandbox(&self, _: i64, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn retitle(&self, _: i64, _: Option<&str>, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn announce(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn categorize(&self, _: i64, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn search_categories(&self, _: i64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn scene(&self) -> Option<String> {
+            Some("rtmp://hub:1935/scene?user=remux&pass=token".into())
+        }
+    }
+
+    // An engine started with no destination and signed in to an app goes live
+    // where the app says the scene goes: nobody read a key out of a database
+    // to start it.
+    #[test]
+    fn an_engine_with_no_destination_of_its_own_goes_live_where_the_app_says() {
+        let published: Published = Default::default();
+        let pipeline = Wrote {
+            published: published.clone(),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_sources(Box::new(ThisMachine))
+            .with_pipeline(Box::new(pipeline))
+            .with_app(Box::new(NamesTheRelay));
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        assert_eq!(
+            *published.lock().expect("published"),
+            vec![Some(
+                "rtmp://hub:1935/scene?user=remux&pass=token".to_string()
+            )]
+        );
+    }
+
+    // And one started with a destination keeps it: what the operator said wins
+    // over what the app would have said.
+    #[test]
+    fn a_destination_of_its_own_outranks_the_app_s() {
+        let (mut engine, published) = publishing_engine(None);
+        engine = engine.with_app(Box::new(NamesTheRelay));
+        engine.handle(Command::Screen { display: 1 });
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        assert_eq!(
+            *published.lock().expect("published"),
+            vec![Some(DESTINATION.to_string())]
+        );
+    }
+}
