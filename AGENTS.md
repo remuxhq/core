@@ -72,6 +72,7 @@ the documentation; a measurement behind a decision goes in the comment beside it
   a person gets, from `dist/`; `make release.publish` the GitHub release of the version.
 - A release is its notes: `docs/releases/<version>.md` says what changed and why, for a
   person, in the commit that bumps the version. `release.yml` refuses a tag without them.
+  `docs/release.md` is the whole process (the `release` skill walks it).
 
 ## Conventions
 
