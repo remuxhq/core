@@ -1086,6 +1086,68 @@ fn plain(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn scene_cli_parses_names_and_shows_list() {
+        let words = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| (*item).into())
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            super::parse(&words(&["scene", "create", "Close Up"])),
+            Ok(crate::protocol::Command::SceneCreate {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "duplicate", "Close Up"])),
+            Ok(crate::protocol::Command::SceneDuplicate {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "switch", "Close Up"])),
+            Ok(crate::protocol::Command::SceneSwitch {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "delete", "Close Up"])),
+            Ok(crate::protocol::Command::SceneDelete {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "list"])),
+            Ok(crate::protocol::Command::Status)
+        );
+        assert!(super::parse(&words(&["scene", "create"])).is_err());
+        assert!(
+            super::render_scene_list(&crate::protocol::Status::default()).contains("* default")
+        );
+    }
+
+    #[test]
+    fn a_layer_filter_takes_a_path_or_off() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            super::parse(&words("scene layer filter face effect.wgsl")),
+            Ok(crate::protocol::Command::LayerShader {
+                id: "face".into(),
+                path: Some("effect.wgsl".into())
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer filter face off")),
+            Ok(crate::protocol::Command::LayerShader {
+                id: "face".into(),
+                path: None
+            })
+        );
+        assert!(super::parse(&words("scene layer filter face")).is_err());
+    }
+
+    #[test]
     fn layer_commands_are_strict_and_round_trip() {
         let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         assert_eq!(

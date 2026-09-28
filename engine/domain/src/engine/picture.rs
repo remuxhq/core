@@ -1048,3 +1048,338 @@ impl Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{layer, ThisMachine, Wrote};
+    use super::*;
+    use crate::layers::Kind;
+
+    fn text(id: &str, line: &str) -> Element {
+        Element {
+            id: id.into(),
+            x: 120,
+            y: 60,
+            width: 640,
+            height: 160,
+            visible: true,
+            shader: None,
+            content: ElementContent::Text { text: line.into() },
+        }
+    }
+
+    #[test]
+    fn elements_are_ordered_persist_and_render_without_capture() {
+        let fake = Wrote::default();
+        let shown = fake.shown.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        assert_eq!(engine.status().scenes.len(), 1);
+        let a = text("first", "Welcome");
+        let b = text("second", "Hello");
+        assert!(matches!(
+            engine.handle(Command::SceneElementAdd { element: a.clone() }),
+            Reply::Status(_)
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneElementAdd { element: b.clone() }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status().scenes[0].elements, [a.clone(), b.clone()]);
+        assert_eq!(shown.lock().unwrap().last().unwrap().0, [a, b]);
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        let mut restored = Engine::new();
+        restored.restore(&saved);
+        assert_eq!(restored.status().scenes[0].elements.len(), 2);
+        assert!(matches!(
+            engine.handle(Command::SceneElementRemove { id: "first".into() }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status().scenes[0].elements[0].id, "second");
+    }
+
+    #[test]
+    fn captures_and_generated_layers_share_one_order_and_identity() {
+        let mut engine =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        engine.handle(Command::LayerScreen {
+            id: "desk".into(),
+            display: 1,
+        });
+        engine.handle(Command::SceneElementAdd {
+            element: text("label", "Hi"),
+        });
+        engine.handle(Command::LayerCamera {
+            id: "face".into(),
+            device: "MacBook Pro Camera".into(),
+        });
+        engine.handle(Command::Mirror { on: true });
+        engine.handle(Command::LayerMirror {
+            id: "face".into(),
+            on: false,
+        });
+        assert!(
+            !engine
+                .status()
+                .layers
+                .iter()
+                .find(|layer| layer.id == "face")
+                .unwrap()
+                .mirrored
+        );
+        engine.handle(Command::LayerMirror {
+            id: "face".into(),
+            on: true,
+        });
+        assert!(
+            engine
+                .status()
+                .layers
+                .iter()
+                .find(|layer| layer.id == "face")
+                .unwrap()
+                .mirrored
+        );
+        assert_eq!(
+            engine.status().scenes[0].ordered_ids(),
+            ["desk", "label", "face"]
+        );
+        assert!(matches!(
+            engine.handle(Command::SceneElementAdd {
+                element: text("desk", "duplicate")
+            }),
+            Reply::Error { .. }
+        ));
+        engine.handle(Command::LayerMove {
+            id: "label".into(),
+            index: 2,
+        });
+        assert_eq!(
+            engine.status().scenes[0].ordered_ids(),
+            ["desk", "face", "label"]
+        );
+        engine.handle(Command::LayerVisible {
+            id: "label".into(),
+            on: false,
+        });
+        assert!(!engine.status().scenes[0].elements[0].visible);
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        let mut restored =
+            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+        restored.restore(&saved);
+        assert_eq!(
+            restored.status().scenes[0].ordered_ids(),
+            ["desk", "face", "label"]
+        );
+        assert!(
+            restored
+                .status()
+                .layers
+                .iter()
+                .find(|layer| layer.id == "face")
+                .unwrap()
+                .mirrored
+        );
+        restored.handle(Command::LayerRemove { id: "label".into() });
+        assert_eq!(restored.status().scenes[0].ordered_ids(), ["desk", "face"]);
+    }
+
+    #[test]
+    fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
+        let mut engine = Engine::new().with_pipeline(Box::new(Wrote::default()));
+        engine.handle(Command::SceneElementAdd {
+            element: text("title", "Before"),
+        });
+        assert!(matches!(
+            engine.handle(Command::LayerShader {
+                id: "title".into(),
+                path: Some("good.wgsl".into())
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(
+            engine.status().scenes[0].elements[0].shader.as_deref(),
+            Some("good.wgsl")
+        );
+        assert!(matches!(
+            engine.handle(Command::LayerShader {
+                id: "title".into(),
+                path: Some("bad.wgsl".into())
+            }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(
+            engine.status().scenes[0].elements[0].shader.as_deref(),
+            Some("good.wgsl")
+        );
+        let mut invalid = text("invalid", "No");
+        invalid.shader = Some("bad.wgsl".into());
+        assert!(matches!(
+            engine.handle(Command::SceneElementAdd { element: invalid }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(engine.status().scenes[0].elements.len(), 1);
+        engine.handle(Command::SceneDuplicate {
+            name: "next".into(),
+        });
+        assert!(matches!(
+            engine.handle(Command::LayerShader {
+                id: "title".into(),
+                path: None
+            }),
+            Reply::Status(_)
+        ));
+        engine.handle(Command::SceneSwitch {
+            name: "default".into(),
+        });
+        assert_eq!(
+            engine
+                .status()
+                .scenes
+                .iter()
+                .find(|s| s.name == "default")
+                .unwrap()
+                .elements[0]
+                .shader
+                .as_deref(),
+            Some("good.wgsl")
+        );
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        assert_eq!(
+            saved.scenes[0].elements[0].shader.as_deref(),
+            Some("good.wgsl")
+        );
+
+        let mut restored = Engine::new().with_pipeline(Box::new(Wrote::refusing("shader:invalid")));
+        restored.restore(&saved);
+        assert_eq!(
+            restored.status().scenes[0].elements[0].shader.as_deref(),
+            Some("good.wgsl")
+        );
+        restored.handle(Command::LayerShader {
+            id: "title".into(),
+            path: None,
+        });
+        restored.handle(Command::SceneDuplicate { name: "bad".into() });
+        restored
+            .status
+            .scenes
+            .iter_mut()
+            .find(|s| s.name == "bad")
+            .unwrap()
+            .elements[0]
+            .shader = Some("bad.wgsl".into());
+        restored.handle(Command::SceneSwitch {
+            name: "default".into(),
+        });
+        let previous = restored.status.active_scene.clone();
+        assert!(matches!(
+            restored.handle(Command::SceneSwitch { name: "bad".into() }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(restored.status.active_scene, previous);
+    }
+
+    #[test]
+    fn timers_are_transient_per_scene_and_never_switch_automatically() {
+        let fake = Wrote::default();
+        let shown = fake.shown.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        let timer = Element {
+            id: "clock".into(),
+            x: 600,
+            y: 400,
+            width: 700,
+            height: 180,
+            visible: true,
+            shader: None,
+            content: ElementContent::Timer { seconds: 0 },
+        };
+        engine.handle(Command::SceneElementAdd {
+            element: timer.clone(),
+        });
+        engine.handle(Command::SceneTimerStart { id: "clock".into() });
+        assert_eq!(shown.lock().unwrap().last().unwrap().1[0].1, Duration::ZERO);
+        assert_eq!(engine.status().active_scene, "default");
+        engine.handle(Command::SceneElementSet {
+            element: Element {
+                content: ElementContent::Timer { seconds: 90 },
+                ..timer.clone()
+            },
+        });
+        engine.handle(Command::SceneTimerStart { id: "clock".into() });
+        assert!(shown.lock().unwrap().last().unwrap().1[0].1 > Duration::from_secs(89));
+        engine.handle(Command::SceneTimerStop { id: "clock".into() });
+        assert!(engine.counting.is_empty());
+        engine.handle(Command::SceneElementSet {
+            element: timer.clone(),
+        });
+        engine.handle(Command::SceneTimerStart { id: "clock".into() });
+        let saved = engine.remembered();
+        assert!(crate::remembered::write(&saved)
+            .unwrap()
+            .contains("\"seconds\": 0"));
+        assert!(!crate::remembered::write(&saved)
+            .unwrap()
+            .contains("deadline"));
+        engine.handle(Command::SceneDuplicate {
+            name: "other".into(),
+        });
+        assert!(engine.counting.is_empty());
+        engine.handle(Command::SceneSwitch {
+            name: "default".into(),
+        });
+        assert!(engine.counting.is_empty());
+        let mut restarted = Engine::new();
+        restarted.restore(&saved);
+        assert_eq!(restarted.status().scenes[0].elements, [timer]);
+        assert!(restarted.counting.is_empty());
+    }
+
+    #[test]
+    fn layer_and_scene_shaders_belong_to_the_scene_they_were_set_in() {
+        let mut engine = Engine::new().with_pipeline(Box::new(Wrote::default()));
+        engine.status.layers = vec![layer("face", Kind::Camera, "cam", 0)];
+        let set = engine.handle(Command::LayerShader {
+            id: "face".into(),
+            path: Some("layer.wgsl".into()),
+        });
+        let Reply::Status(status) = set else {
+            panic!("expected status")
+        };
+        assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
+        engine.handle(Command::Shader {
+            path: Some("global.wgsl".into()),
+        });
+        engine.handle(Command::SceneDuplicate {
+            name: "second".into(),
+        });
+        engine.handle(Command::LayerShader {
+            id: "face".into(),
+            path: None,
+        });
+        engine.handle(Command::Shader { path: None });
+        engine.handle(Command::SceneSwitch {
+            name: "default".into(),
+        });
+        let status = engine.status();
+        assert_eq!(status.shader.as_deref(), Some("global.wgsl"));
+        assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        assert_eq!(saved.scenes[0].shader.as_deref(), Some("global.wgsl"));
+        assert_eq!(
+            saved.scenes[0].layers[0].shader.as_deref(),
+            Some("layer.wgsl")
+        );
+        let second = saved
+            .scenes
+            .iter()
+            .find(|scene| scene.name == "second")
+            .unwrap();
+        assert_eq!(second.shader, None);
+        assert_eq!(second.layers[0].shader, None);
+    }
+}

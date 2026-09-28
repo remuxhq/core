@@ -193,6 +193,7 @@ mod tests {
         let back = read(older);
         assert_eq!(back.mic.as_deref(), Some("HyperX DuoCast"));
         assert!(back.layers.is_empty());
+        assert!(back.scenes.is_empty());
     }
 
     #[test]

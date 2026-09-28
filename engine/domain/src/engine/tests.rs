@@ -1,5 +1,7 @@
 use super::*;
+use crate::layers::{Kind, Layer, Source, Transform};
 use crate::protocol::Category;
+use crate::scenes::Scene;
 use crate::sources::{DisplayId, WindowId};
 
 fn engine() -> Engine {
@@ -69,7 +71,7 @@ fn independent_audio_layers_are_addressed_by_id_and_remembered() {
 /// decision the engine makes about sources. The built-in is display 1 and
 /// the monitor is display 3, an ordering a real machine produces and the
 /// reason position is never the handle.
-struct ThisMachine;
+pub(super) struct ThisMachine;
 
 impl Sources for ThisMachine {
     fn available(&self) -> Result<Available, String> {
@@ -968,22 +970,439 @@ fn asking_for_a_device_that_is_not_plugged_in_says_what_is() {
     assert_eq!(engine.status().mic, None, "and change nothing");
 }
 
-/// A pipeline that writes down what it was told, so a test can ask whether
-/// the capture was actually pointed somewhere rather than only whether the
-/// status changed. The two disagreeing is the bug worth catching.
-#[path = "scene_tests.rs"]
-mod scene_tests;
+#[test]
+fn deleted_starter_scene_is_not_recreated_on_restore() {
+    let mut engine = Engine::new();
+    engine.handle(Command::SceneCreate {
+        name: "Custom".into(),
+    });
+    engine.handle(Command::SceneDelete {
+        name: "default".into(),
+    });
+    let saved = crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+    let mut next = Engine::new();
+    next.restore(&saved);
+    assert_eq!(next.status().scenes.len(), 1);
+    assert_eq!(next.status().active_scene, "Custom");
+}
+
+#[test]
+fn old_generated_presets_are_ignored_without_losing_custom_scenes() {
+    let saved = crate::remembered::read(
+        r#"{"active_scene":"BRB","scenes":[{"name":"default","layers":[]},{"name":"BRB","layers":[],"graphic":{"kind":"back-in-a-moment","text":"back"}},{"name":"My scene","layers":[],"elements":[{"id":"note","kind":"text","text":"Hi","x":2,"y":3,"width":100,"height":80}]}]}"#,
+    );
+    let mut engine = Engine::new();
+    engine.restore(&saved);
+    assert_eq!(engine.status().active_scene, "default");
+    assert_eq!(engine.status().scenes.len(), 2);
+    assert_eq!(engine.status().scenes[1].elements[0].id, "note");
+    assert_eq!(engine.status().scenes[1].ordered_ids(), ["note"]);
+}
+
+pub(super) fn layer(id: &str, kind: Kind, handle: &str, x: i32) -> Layer {
+    Layer {
+        id: id.into(),
+        source: Source {
+            kind,
+            handle: handle.into(),
+            name: id.into(),
+            width: 640,
+            height: 480,
+            stable: None,
+        },
+        transform: Transform {
+            x,
+            ..Transform::native((640, 480))
+        },
+        visible: true,
+        crop: None,
+        shape: None,
+        shader: None,
+        mirrored: false,
+    }
+}
+
+#[test]
+fn scene_switch_prepares_then_commits_and_closes_only_unshared_captures() {
+    let fake = Wrote::default();
+    let events = fake.scene_events.clone();
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    let before = vec![
+        layer("camera", Kind::Camera, "cam", 0),
+        layer("old", Kind::Screen, "1", 0),
+    ];
+    let after = vec![
+        layer("closeup", Kind::Camera, "cam", 900),
+        layer("new", Kind::Window, "2", 10),
+    ];
+    engine.status.layers = before.clone();
+    engine.status.scenes.push(Scene {
+        name: "next".into(),
+        layers: after.clone(),
+        elements: vec![],
+        order: vec![],
+        shader: None,
+    });
+    engine.status.on_air = true;
+    engine.status.recording = true;
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "next".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert!(engine.status.on_air);
+    assert!(engine.status.recording);
+    assert_eq!(engine.status.layers, after);
+    assert_eq!(engine.status.scenes[0].layers, before);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["prepare Window:2", "commit layout", "close Screen:1"]
+    );
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "default".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(engine.status.layers, before);
+}
+
+#[test]
+fn failed_preparation_preserves_active_layout_and_live() {
+    let fake = Wrote {
+        refuse: Some("capture unavailable".into()),
+        ..Default::default()
+    };
+    let events = fake.scene_events.clone();
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    let old = layer("face", Kind::Camera, "cam", 0);
+    engine.status.layers = vec![old.clone()];
+    engine.status.on_air = true;
+    engine.status.scenes.push(Scene {
+        name: "other".into(),
+        layers: vec![layer("new", Kind::Camera, "other-cam", 10)],
+        elements: vec![],
+        order: vec![],
+        shader: None,
+    });
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "other".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status.active_scene, "default");
+    assert_eq!(engine.status.layers, [old]);
+    assert!(engine.status.on_air);
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["prepare Camera:other-cam", "rollback prepared"]
+    );
+}
+
+#[test]
+fn second_capture_failure_rolls_back_prepared_source_before_touching_live() {
+    let fake = Wrote {
+        refuse: Some("scene:missing".into()),
+        ..Default::default()
+    };
+    let events = fake.scene_events.clone();
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    let previous = layer("face", Kind::Camera, "camera", 0);
+    engine.status.layers = vec![previous.clone()];
+    engine.status.on_air = true;
+    engine.status.scenes.push(Scene {
+        name: "next".into(),
+        layers: vec![
+            layer("screen", Kind::Screen, "1", 0),
+            layer("bad", Kind::Window, "missing", 0),
+        ],
+        elements: vec![],
+        order: vec![],
+        shader: None,
+    });
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "next".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status.active_scene, "default");
+    assert_eq!(engine.status.layers, [previous]);
+    assert!(engine.status.on_air);
+    assert_eq!(
+        *events.lock().unwrap(),
+        [
+            "prepare Screen:1",
+            "prepare Window:missing",
+            "rollback 1",
+            "rollback prepared"
+        ]
+    );
+}
+
+#[test]
+fn legacy_layers_restore_as_default_and_named_scenes_round_trip() {
+    let old = layer("desktop", Kind::Screen, "1", 17);
+    let legacy = crate::remembered::read(&serde_json::json!({"layers": [old]}).to_string());
+    let mut engine = Engine::with_sources(Box::new(ThisMachine));
+    engine.restore(&legacy);
+    assert_eq!(engine.status.active_scene, "default");
+    assert_eq!(engine.remembered().scenes[0].layers, engine.status.layers);
+
+    let mut setup = engine.remembered();
+    setup.scenes.push(Scene {
+        name: "camera".into(),
+        layers: vec![layer("second", Kind::Screen, "3", 88)],
+        elements: vec![],
+        order: vec![],
+        shader: None,
+    });
+    setup.active_scene = "camera".into();
+    let saved = crate::remembered::read(&crate::remembered::write(&setup).unwrap());
+    let mut restored = Engine::with_sources(Box::new(ThisMachine));
+    restored.restore(&saved);
+    assert_eq!(restored.status.active_scene, "camera");
+    assert_eq!(restored.status.layers[0].id, "second");
+    assert_eq!(restored.remembered().scenes[0].layers[0].transform.x, 17);
+}
+
+#[test]
+fn invalid_layer_assignment_and_scene_shader_roll_back_without_stopping_live() {
+    let fake = Wrote {
+        refuse: Some("shader:invalid".into()),
+        ..Default::default()
+    };
+    let events = fake.scene_events.clone();
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    let old = layer("old", Kind::Camera, "cam", 0);
+    engine.status.layers = vec![old.clone()];
+    engine.status.on_air = true;
+    let mut next = layer("new", Kind::Screen, "display", 0);
+    next.shader = Some("bad.wgsl".into());
+    engine.status.scenes.push(Scene {
+        name: "next".into(),
+        layers: vec![next],
+        elements: vec![],
+        order: vec![],
+        shader: None,
+    });
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "next".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status.layers, [old]);
+    assert!(engine.status.on_air);
+    assert_eq!(engine.status.active_scene, "default");
+    assert_eq!(
+        *events.lock().unwrap(),
+        [
+            "prepare Screen:display",
+            "rollback display",
+            "rollback prepared"
+        ]
+    );
+    assert!(matches!(
+        engine.handle(Command::LayerShader {
+            id: "old".into(),
+            path: Some("bad.wgsl".into())
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status.layers[0].shader, None);
+    engine.status.scenes.push(Scene {
+        name: "global".into(),
+        layers: vec![],
+        elements: vec![],
+        order: vec![],
+        shader: Some("bad.wgsl".into()),
+    });
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "global".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status.active_scene, "default");
+}
+
+#[test]
+fn runtime_failure_hides_only_the_affected_shader_in_status_and_persistence() {
+    let fake = Wrote {
+        refuse: Some("runtime:layer".into()),
+        ..Default::default()
+    };
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    let mut disabled = layer("disabled", Kind::Camera, "cam", 0);
+    disabled.shader = Some("failed.wgsl".into());
+    let mut healthy = layer("healthy", Kind::Screen, "1", 0);
+    healthy.shader = Some("good.wgsl".into());
+    engine.status.layers = vec![disabled, healthy];
+    engine.status.shader = Some("scene.wgsl".into());
+    let Reply::Status(status) = engine.handle(Command::Status) else {
+        panic!("status")
+    };
+    assert_eq!(status.layers[0].shader, None);
+    assert_eq!(status.layers[1].shader.as_deref(), Some("good.wgsl"));
+    assert_eq!(status.shader.as_deref(), Some("scene.wgsl"));
+    assert_eq!(engine.remembered().layers[0].shader, None);
+    assert_eq!(
+        engine.remembered().layers[1].shader.as_deref(),
+        Some("good.wgsl")
+    );
+
+    let fake = Wrote {
+        refuse: Some("runtime:global".into()),
+        ..Default::default()
+    };
+    let mut engine = Engine::new().with_pipeline(Box::new(fake));
+    engine.status.shader = Some("failed.wgsl".into());
+    engine.status.layers = vec![layer("healthy", Kind::Camera, "cam", 0)];
+    engine.status.layers[0].shader = Some("good.wgsl".into());
+    let Reply::Status(status) = engine.handle(Command::Status) else {
+        panic!("status")
+    };
+    assert_eq!(status.shader, None);
+    assert_eq!(status.layers[0].shader.as_deref(), Some("good.wgsl"));
+    assert_eq!(engine.remembered().scenes[0].shader, None);
+}
+
+#[test]
+fn restore_skips_bad_shader_paths_without_losing_sources_or_other_scenes() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    let mut saved_layer = layer("desktop", Kind::Screen, "1", 0);
+    saved_layer.shader = Some("bad.wgsl".into());
+    let setup = crate::remembered::Remembered {
+        scenes: vec![
+            Scene {
+                name: "default".into(),
+                layers: vec![saved_layer],
+                elements: vec![],
+                order: vec![],
+                shader: Some("bad.wgsl".into()),
+            },
+            Scene {
+                name: "later".into(),
+                layers: vec![],
+                elements: vec![],
+                order: vec![],
+                shader: Some("good.wgsl".into()),
+            },
+        ],
+        ..Default::default()
+    };
+    engine.restore(&setup);
+    assert_eq!(engine.status.layers.len(), 1);
+    assert_eq!(engine.status.layers[0].shader, None);
+    assert_eq!(engine.status.shader, None);
+    assert_eq!(
+        engine.remembered().scenes[1].shader.as_deref(),
+        Some("good.wgsl")
+    );
+}
+
+#[test]
+fn clone_edit_delete_and_retain_inactive_layouts() {
+    let mut engine = Engine::new();
+    assert!(matches!(
+        engine.handle(Command::SceneDuplicate {
+            name: "second".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert!(matches!(
+        engine.handle(Command::SceneDelete {
+            name: "second".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::SceneSwitch {
+            name: "default".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert!(matches!(
+        engine.handle(Command::SceneDelete {
+            name: "second".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(engine.remembered().scenes.len(), 1);
+}
+
+#[test]
+fn a_created_scene_is_empty_and_switched_to_and_a_duplicate_is_the_active_one() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    engine.handle(Command::LayerCamera {
+        id: "face".into(),
+        device: "MacBook Pro Camera".into(),
+    });
+    engine.handle(Command::SceneElementAdd {
+        element: Element {
+            id: "title".into(),
+            x: 10,
+            y: 10,
+            width: 300,
+            height: 90,
+            visible: true,
+            shader: None,
+            content: ElementContent::Text { text: "Hi".into() },
+        },
+    });
+    let Reply::Status(copied) = engine.handle(Command::SceneDuplicate {
+        name: "copy".into(),
+    }) else {
+        panic!("a duplicate answers with the status")
+    };
+    assert_eq!(copied.active_scene, "copy");
+    assert_eq!(copied.layers.len(), 1, "the capture carries on");
+    let copy = copied.scenes.iter().find(|s| s.name == "copy").unwrap();
+    assert_eq!(copy.ordered_ids(), ["face", "title"]);
+
+    let Reply::Status(empty) = engine.handle(Command::SceneCreate {
+        name: "blank".into(),
+    }) else {
+        panic!("a create answers with the status")
+    };
+    assert_eq!(empty.active_scene, "blank");
+    assert!(empty.layers.is_empty(), "nothing from the scene before");
+    let blank = empty.scenes.iter().find(|s| s.name == "blank").unwrap();
+    assert!(blank.elements.is_empty() && blank.shader.is_none());
+    let copy = empty.scenes.iter().find(|s| s.name == "copy").unwrap();
+    assert_eq!(copy.layers.len(), 1, "the scene left keeps its layers");
+
+    for taken in ["blank", "copy", "default"] {
+        assert!(matches!(
+            engine.handle(Command::SceneCreate { name: taken.into() }),
+            Reply::Error { .. }
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneDuplicate { name: taken.into() }),
+            Reply::Error { .. }
+        ));
+    }
+    assert_eq!(engine.status().active_scene, "blank");
+}
 
 type Published = std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
 
+/// A pipeline that writes down what it was told, so a test can ask whether
+/// the capture was actually pointed somewhere rather than only whether the
+/// status changed. The two disagreeing is the bug worth catching.
 #[derive(Default)]
-struct Wrote {
+pub(super) struct Wrote {
     told: std::sync::Arc<std::sync::Mutex<Vec<Behind>>>,
     cameras: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
     mics: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
     played: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
     levels: Faders,
-    shown: Shown,
+    pub(super) shown: Shown,
     counting: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
     /// Every destination it was told to publish to, and a `None` for every
     /// time it was told to stop, in order.
@@ -1002,6 +1421,16 @@ struct Wrote {
     ran_out: std::sync::Arc<std::sync::Mutex<bool>>,
     refuse: Option<String>,
     scene_events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Wrote {
+    /// One that refuses what `reason` names, as `scene_transition` reads it.
+    pub(super) fn refusing(reason: &str) -> Self {
+        Self {
+            refuse: Some(reason.into()),
+            ..Default::default()
+        }
+    }
 }
 
 impl Picture for Wrote {
