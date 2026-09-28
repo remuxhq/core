@@ -2,11 +2,12 @@
 
 A release is a pull request. A person decides to cut one and names the version, the
 `release` skill walks the steps below, and merging the pull request publishes it:
-`release.yml` runs on every push to main that changes `engine/cli/Cargo.toml`, and
-publishes that version unless it is already released.
+`release.yml` runs after every green `ci` on main, and publishes the version
+`engine/cli/Cargo.toml` says unless it is already released. A red main publishes
+nothing.
 
 A release is three things: every crate at the new version, the notes for people in
-`docs/releases/<version>.md`, and the published release. On that push,
+`docs/releases/<version>.md`, and the published release. On that run,
 `release.yml` checks the version, builds the tarball for every target (macOS on Apple silicon,
 Linux x86_64 and aarch64), then tags the commit it built as `v<version>` and publishes
 the release with each tarball, its `.sha256`, and the notes as its body.
@@ -95,7 +96,7 @@ gh pr checks --watch
 
 ## 6. Publishing
 
-Merging the pull request publishes it. Then watch the run:
+Merging the pull request publishes it once `ci` is green on main. Then watch the run:
 
 ```sh
 sleep 5; run=$(gh run list -w release.yml -b main -L 1 --json databaseId --jq '.[0].databaseId')
