@@ -1,6 +1,6 @@
 //! The two kinds of source this motor adds to libobs.
 //!
-//! `remux_filter`: an operator's WGSL filter (the contract both motors share),
+//! `remux_shader`: an operator's WGSL filter (the contract both motors share),
 //! compiled by the `ShaderCompiler` this motor is given (remux-shader's, in the
 //! daemon) into an OBS effect, on a layer's source or on the
 //! scene. It fills two uniforms every frame: `time`, seconds since the motor
@@ -18,7 +18,7 @@ use crate::c;
 use libobs as sys;
 use remuxd_domain::picture::shader::ShaderCompiler;
 
-pub const FILTER: &str = "remux_filter";
+pub const SHADER: &str = "remux_shader";
 pub const ELEMENT: &str = "remux_element";
 
 /// The clock `time` reads: one for every filter, from the first registration.
@@ -36,7 +36,7 @@ pub fn register() {
         // libobs reads as "not provided".
         // SAFETY: an all-zero obs_source_info is a valid empty one.
         let mut filter: sys::obs_source_info = unsafe { std::mem::zeroed() };
-        filter.id = c"remux_filter".as_ptr();
+        filter.id = c"remux_shader".as_ptr();
         filter.type_ = sys::obs_source_type_OBS_SOURCE_TYPE_FILTER;
         filter.output_flags = sys::OBS_SOURCE_VIDEO;
         filter.get_name = Some(filter_name);
@@ -125,7 +125,7 @@ pub fn filter(path: &str) -> Result<*mut sys::obs_source_t, String> {
         let settings = sys::obs_data_create();
         sys::obs_data_set_string(settings, c"path".as_ptr(), c(path).as_ptr());
         let made = sys::obs_source_create(
-            c(FILTER).as_ptr(),
+            c(SHADER).as_ptr(),
             c"filter".as_ptr(),
             settings,
             std::ptr::null_mut(),
@@ -146,7 +146,7 @@ struct Filter {
 }
 
 unsafe extern "C" fn filter_name(_: *mut c_void) -> *const c_char {
-    c"remux filter".as_ptr()
+    c"remux shader".as_ptr()
 }
 
 unsafe extern "C" fn filter_create(
