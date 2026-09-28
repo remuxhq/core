@@ -61,6 +61,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
   a person gets, from `dist/`; `make release.publish` the GitHub release of the version.
+- A release is its notes: `docs/releases/<version>.md` says what changed and why, for a
+  person, in the commit that bumps the version. `release.yml` refuses a tag without them.
 
 ## Conventions
 
