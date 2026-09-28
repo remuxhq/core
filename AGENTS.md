@@ -70,10 +70,12 @@ the documentation; a measurement behind a decision goes in the comment beside it
   commit. A release needs none of it; `install.sh` asks only for OBS.
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
-  a person gets, from `dist/`; `make release.publish` the GitHub release of the version.
-- A release is its notes: `docs/releases/<version>.md` says what changed and why, for a
-  person, in the commit that bumps the version. `release.yml` refuses a tag without them.
-  `docs/release.md` is the whole process (the `release` skill walks it).
+  a person gets, from `dist/`, to try a release before it is published.
+- A release is orchestrated, never automated: `docs/release.md` is the whole process and
+  the `release` skill walks it. The version and its notes (`docs/releases/<version>.md`,
+  what changed and why, for a person) land in one pull request; once it is merged, and a
+  person says so, the skill dispatches `release.yml`, which refuses a version without
+  notes, builds every target, and makes the tag and the release. Nothing else publishes.
 
 ## Conventions
 

@@ -1,14 +1,20 @@
 # Releasing remux
 
-A release is three things: every crate at the new version, the notes for people in
-`docs/releases/<version>.md`, and a tag `v<version>`. The tag is what publishes:
-`release.yml` builds the tarball for every target (macOS on Apple silicon, Linux
-x86_64 and aarch64), attaches each with its `.sha256`, and uses the notes as the
-release's body. `install.sh` installs the latest release by default.
+A release is orchestrated, not automated. A person decides to cut one, the
+`release` skill walks the steps below, and nothing publishes until that person says
+so. There is one way to publish: dispatching `release.yml` by hand. A push, a tag or
+a pull request never starts it.
 
-The workflow refuses a tag whose `docs/releases/<version>.md` is missing or empty,
-or whose version disagrees with `engine/cli/Cargo.toml`. That refusal is the gate:
-the notes are the record of why a release is what it is.
+A release is three things: every crate at the new version, the notes for people in
+`docs/releases/<version>.md`, and the published release. Dispatched with a version,
+`release.yml` checks it, builds the tarball for every target (macOS on Apple silicon,
+Linux x86_64 and aarch64), then tags the commit it built as `v<version>` and publishes
+the release with each tarball, its `.sha256`, and the notes as its body.
+`install.sh` installs the latest release by default.
+
+The workflow refuses a version whose `docs/releases/<version>.md` is missing or
+empty, that disagrees with `engine/cli/Cargo.toml`, or that is already released.
+That refusal is the gate: the notes are the record of why a release is what it is.
 
 ## 1. What changed since the last release
 
@@ -79,17 +85,17 @@ gh pr create --title "remux $new" --body-file docs/releases/$new.md
 gh pr checks --watch
 ```
 
-## 6. The tag
+## 6. Publishing
 
-After the pull request is merged. A tag is public, and publishing it is a person's
-decision:
+After the pull request is merged, and only when the person says to publish:
 
 ```sh
-git switch main && git pull --ff-only
-git tag -a v$new -m "remux $new" && git push origin v$new
-gh run watch "$(gh run list -w release -L 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+gh workflow run release.yml --ref main -f version=$new
+sleep 5; run=$(gh run list -w release.yml -L 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$run" --exit-status
 gh release view v$new --json assets --jq '.assets[].name'   # a tarball and a .sha256 per target
 ```
 
-`make release` builds this machine's tarball into `dist/` and `make release.install`
-installs it, for trying a release before tagging it.
+The workflow makes the tag; nobody tags by hand. `make release` builds this
+machine's tarball into `dist/` and `make release.install` installs it, for trying a
+release before publishing it.
