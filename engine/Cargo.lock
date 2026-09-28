@@ -791,7 +791,6 @@ dependencies = [
  "png",
  "remux-mixer",
  "remux-shader",
- "remux-wire",
  "remuxd-domain",
  "serde_json",
 ]
