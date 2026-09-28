@@ -1691,11 +1691,12 @@ def watching(daemon):
     screens = daemon.ask({"cmd": "devices"})["screens"]
     expect(screens, "no screen to compose")
     daemon.ask({"cmd": "screen", "display": int(screens[0]["id"])})
+    # Watching first, as the panel does: the region is made when a face
+    # first asks for it, and a status before that names none.
+    daemon.ask({"cmd": "watching", "on": True})
     region = daemon.ask({"cmd": "status"})["preview"]
     expect(region, "this engine has no preview region")
     name = region["name"]
-
-    daemon.ask({"cmd": "watching", "on": True})
     time.sleep(1.0)
     first = rings(name)
     time.sleep(2.0)
@@ -1722,6 +1723,45 @@ def watching(daemon):
     back = rings(name)
     expect(back[0] > still[0], f"watched again, the ring did not come back: {still} -> {back}")
     return f"scene ring {first[0]}->{second[0]} watched, {lapsed[0]}->{still[0]} lapsed, {back[0]} back"
+
+
+@check("shot", alone=True)
+def shot(_shared):
+    """A shot is not a watch: it wakes the rings for the frame it takes and
+    leaves them as the faces left them.
+
+    `remux shot` on an engine nobody had watched left libobs scaling every
+    frame into the ring on the CPU for nobody: 45% of a core, idle, 1080p30,
+    until the engine restarted. Its own engine, because the bug is the ring's
+    first picture: one a watch already woke answered from what it kept, and
+    that picture was as old as the watch. A shot after a watch lapsed is the
+    third ask, and must be of now, not of then.
+    """
+    with Daemon(REMUXD) as engine:
+        screens = engine.ask({"cmd": "devices"})["screens"]
+        expect(screens, "no screen to compose")
+        engine.ask({"cmd": "screen", "display": int(screens[0]["id"])})
+
+        def settled(said):
+            taken = engine.ask({"cmd": "shot", "of": "scene"})
+            expect(taken.get("reply") == "shot", f"{said}: {taken}")
+            region = engine.ask({"cmd": "status"})["preview"]
+            expect(region, "this engine has no preview region")
+            after = rings(region["name"])
+            time.sleep(1.0)
+            idle = rings(region["name"])
+            expect(idle == after, f"{said}, the rings kept moving: {after} -> {idle}")
+            return idle[0]
+
+        cold = settled("a shot of an engine nobody watched")
+        again = settled("a second shot")
+        engine.ask({"cmd": "watching", "on": True})
+        # Four seconds without a renewal is past the three-second lease.
+        time.sleep(4.0)
+        lapsed = rings(engine.ask({"cmd": "status"})["preview"]["name"])[0]
+        late = settled("a shot after the watch lapsed")
+        expect(late > lapsed, f"a shot after the watch lapsed was the old picture: ring {lapsed} -> {late}")
+        return f"scene ring still at {cold}, {again}, and {late} after the watch lapsed at {lapsed}"
 
 
 @check("monitor", alone=True)

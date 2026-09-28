@@ -645,13 +645,22 @@ impl Picture for ObsPipeline {
         ring.watch(true);
         ring.render(true);
         let until = Instant::now() + Duration::from_secs(1);
-        loop {
+        let shot = loop {
             std::thread::sleep(Duration::from_millis(20));
-            let shot = taken(self.preview.as_ref()?);
+            let shot = self.preview.as_deref().and_then(taken);
             if shot.is_some() || Instant::now() >= until {
-                return shot;
+                break shot;
             }
+        };
+        // Back to sleep unless a face is watching: left awake, libobs scaled
+        // every frame into the ring on the CPU for nobody, 45% of a core of
+        // an idle engine at 1080p30 (`sample`, all of it in swscale).
+        let watched = self.previewing;
+        if let Some(ring) = self.preview.as_deref_mut() {
+            ring.watch(watched);
+            ring.render(watched);
         }
+        shot
     }
 
     fn layer_shot(&mut self, id: &str) -> Option<(Vec<u8>, u32, u32)> {

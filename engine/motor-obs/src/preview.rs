@@ -144,6 +144,13 @@ impl Ring {
             }
         }
         self.callback_on = on;
+        // Asleep, the kept picture is only getting older: forgotten, so a
+        // shot wakes the ring for one of now instead.
+        if !on {
+            if let Ok(mut last) = self.last.lock() {
+                last.clear();
+            }
+        }
     }
 
     /// Which source the camera's and the screen's rings show; null for none.
@@ -171,6 +178,14 @@ impl Ring {
             }
         }
         self.render_on = on;
+        // As `watch`: asleep, the camera's and the screen's pictures go too.
+        if !on {
+            for alone in [&self.camera, &self.screen] {
+                if let Ok(mut it) = alone.lock() {
+                    it.last.clear();
+                }
+            }
+        }
     }
 
     /// One source alone, once: rendered on the next frame, at most a second
