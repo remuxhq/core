@@ -5,6 +5,7 @@
 //! One port at a time: what is not ported yet answers as `NoPipeline` does.
 
 pub mod effect;
+mod gate;
 mod picture;
 mod pipeline;
 pub mod place;

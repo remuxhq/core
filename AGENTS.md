@@ -49,7 +49,10 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
   the layers and elements on one scene, `effect.rs` the two sources it adds to libobs
   (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/shader/`
-  is everything about filters: the WGSL contract and its OBS effect.
+  is everything about filters: the WGSL contract and its OBS effect. `engine/mixer/` is
+  its audio twin: the `Filter` contract every motor hosts (interleaved samples in place,
+  a latency the host takes back) and remux's filters, the gate first; `gate.rs` in
+  motor-obs hosts it as `remux_gate`.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `engine/cli/`: `remux`. The words are `words.rs` (typed words to a `Command`, a `Reply`
   to prose, help and the guide); its prose is a contract.
@@ -69,6 +72,7 @@ the documentation; a measurement behind a decision goes in the comment beside it
   a person gets, from `dist/`; `make release.publish` the GitHub release of the version.
 - A release is its notes: `docs/releases/<version>.md` says what changed and why, for a
   person, in the commit that bumps the version. `release.yml` refuses a tag without them.
+  `docs/release.md` is the whole process (the `release` skill walks it).
 
 ## Conventions
 
