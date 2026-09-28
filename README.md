@@ -18,8 +18,8 @@ remux stop && remux history
 
 `install.sh` says what it will do and asks: the release for this machine, checked by
 sha256, under `~/.local/share/remux`; `remux` on the PATH; the engine as a service of
-your session (`remux daemon status|log|restart`). OBS is the one dependency: the
-engine is libobs. `install-relay.sh` and `install-chat.sh` add a relay and a chat
+your session (`remux daemon status|log|restart`). To run it, OBS is the one
+dependency: the engine is libobs. `install-relay.sh` and `install-chat.sh` add a relay and a chat
 bridge of your own; `uninstall.sh` takes everything out. [remux.live](https://remux.live).
 
 ## The tree
@@ -34,6 +34,40 @@ bridge of your own; `uninstall.sh` takes everything out. [remux.live](https://re
   workflow runs it per target.
 
 `AGENTS.md` says how to work on it. `make help` lists the targets.
+
+## Building it
+
+What a developer installs before `make remuxd.check` passes. Nothing here is needed
+to run a release: those are build and test tools, and `install.sh` only asks for OBS.
+
+macOS 15+, Apple silicon:
+
+```
+xcode-select --install          # clang, which reads OBS's headers, and codesign
+curl https://sh.rustup.rs -sSf | sh   # engine/rust-toolchain.toml pins the version
+brew install simde              # OBS's headers include it on ARM
+make obs.fetch                  # the OBS the engine links, pinned, in engine/target/obs
+make remuxd.identity            # once: the certificate, so a grant survives a rebuild
+```
+
+Linux, X11 (Ubuntu 24.04+):
+
+```
+sudo apt-get install obs-studio libobs-dev clang
+curl https://sh.rustup.rs -sSf | sh
+sudo apt-get install xvfb       # only without a display: the socket tests start a daemon
+```
+
+Both, for the gate and the scanners:
+
+```
+cargo install cargo-nextest cargo-llvm-cov --locked
+rustup component add llvm-tools-preview
+make security.tools             # gitleaks, cargo-audit, cargo-deny
+```
+
+Then `make remuxd.check` (the gate), `make security` (the scanners) and `make
+remuxd.run` (the engine in the foreground).
 
 ## What it runs on
 
