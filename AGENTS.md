@@ -74,11 +74,12 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
   a person gets, from `dist/`, to try a release before it is published.
-- A release is orchestrated, never automated: `docs/release.md` is the whole process and
-  the `release` skill walks it. The version and its notes (`docs/releases/<version>.md`,
-  what changed and why, for a person) land in one pull request; once it is merged, and a
-  person says so, the skill dispatches `release.yml`, which refuses a version without
-  notes, builds every target, and makes the tag and the release. Nothing else publishes.
+- A release is a pull request: `docs/release.md` is the whole process and the `release`
+  skill walks it. A person names the version; it and its notes
+  (`docs/releases/<version>.md`, what changed and why, for a person) land in one pull
+  request. Its merge, once `ci` is green on main, runs `release.yml`, which refuses a
+  version without notes, leaves one already released alone, builds every target, and
+  makes the tag and the release. Nothing else publishes.
 
 ## Conventions
 

@@ -11,7 +11,7 @@
 # to install with your package manager. Safe to run again: the same version
 # is reinstalled in place, a newer one takes over.
 #
-#   REMUX_VERSION           a version instead of the latest (0.2.0)
+#   REMUX_VERSION           a version instead of the latest (0.2.1)
 #   REMUX_RELEASE_URL       where the tarballs are (file:///…/dist for a local `make release`)
 #   REMUX_HOME              where versions live (~/.local/share/remux)
 #   REMUX_YES=1  or -y      do not ask
