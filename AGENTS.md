@@ -3,7 +3,7 @@
 Live media for one person, from a shell, on macOS and Linux. The engine (`engine/`,
 Rust) drives a screen, a camera, a microphone and a music bed into one 1080p30 scene,
 records it, and sends it by RTMP, one ffmpeg per armed destination kept on this
-machine. The `remux` CLI (`cli/`) is the face, for humans (tmux) and for agents. A
+machine. The `remux` CLI (`engine/cli/`) is the face, for humans (tmux) and for agents. A
 relay and a chat bridge of one's own live in `byo/`; anybody may serve the chat wire
 (`docs/wire.md`) or a relay (`docs/relay.md`).
 
@@ -35,12 +35,15 @@ the documentation; a measurement behind a decision goes in the comment beside it
 
 ## Layout
 
-- `engine/domain/`: every decision, serde only. Contexts under `src/engine/`: picture,
-  sound, air, app; ports `Picture`, `Sound`, `Air`, `Sources`, `Watching`.
-  `destinations` (the file; `Local` is the `Watching` with no account), `session` and
-  `login` (`remux login`), `wire` (what a server and the engine say to each other) and
-  `chat` (the feed), `config`, `os`, `history`, `plan`, `layers`, `scenes`, `audio_layers`,
-  `music`, `gate`.
+- `engine/domain/`: every decision, serde only, grouped by the engine's four contexts.
+  `picture/` (scene, layers, scenes, sources, camera, preview, timer), `sound/`
+  (audio_layers, music, clips, and `mixer/`: gate, levels), `air/` (destinations, the
+  file whose `Local` is the `Watching` with no account; plan, recording, history,
+  journal), `app/` (chat, the feed; wire, what a server and the engine say to each
+  other; session and login, `remux login`). `engine/` holds the contexts' verbs and
+  ports (`Picture`, `Sound`, `Air`, `Sources`, `Watching`); `protocol` is the language
+  between faces and engine; `config`, `os`, `log`, `socket`, `daemon` and the rest at
+  the top are the host.
 - `engine/remuxd/`: the daemon: `boot` (the daemon as a function, given a motor), the
   socket, `wire.rs` (the one WebSocket to whoever serves the wire).
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
@@ -48,7 +51,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
   (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/shader/`
   is everything about filters: the WGSL contract and its OBS effect.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
-- `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
+- `engine/cli/`: `remux`. The words are `words.rs` (typed words to a `Command`, a `Reply`
+  to prose, help and the guide); its prose is a contract.
 - `byo/`, `docs/`, `scripts/`, `install*.sh`, `uninstall.sh`.
 
 ## Commands

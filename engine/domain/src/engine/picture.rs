@@ -42,7 +42,7 @@ pub trait Picture: Send {
     /// layer mirror properties instead.
     fn mirror(&mut self, on: bool);
     /// An overlay's capture is started before the engine announces it in Status.
-    fn layer_add(&mut self, _layer: &crate::layers::Layer) -> Result<(u32, u32), String> {
+    fn layer_add(&mut self, _layer: &crate::picture::layers::Layer) -> Result<(u32, u32), String> {
         Err("this pipeline cannot capture layers".into())
     }
     fn layer_remove(&mut self, _id: &str) {}
@@ -50,21 +50,21 @@ pub trait Picture: Send {
     /// On failure restore the old capture or explicitly report its loss.
     fn layer_replace(
         &mut self,
-        old: &crate::layers::Layer,
-        new: &crate::layers::Layer,
+        old: &crate::picture::layers::Layer,
+        new: &crate::picture::layers::Layer,
     ) -> Result<(u32, u32), LayerSwapError>;
     /// Prepare every new physical capture before changing the compositor or
     /// releasing the old scene. On error the old scene must remain intact.
     fn scene_transition(
         &mut self,
-        _from: &[crate::layers::Layer],
-        _to: &[crate::layers::Layer],
+        _from: &[crate::picture::layers::Layer],
+        _to: &[crate::picture::layers::Layer],
         _elements: &[Element],
         _shader: Option<&str>,
     ) -> Result<(), String> {
         Err("this pipeline cannot switch scenes".into())
     }
-    fn layers_changed(&mut self, _layers: &[crate::layers::Layer]) {}
+    fn layers_changed(&mut self, _layers: &[crate::picture::layers::Layer]) {}
     /// Route system audio from exactly one display layer, or disconnect it.
     fn screen_audio(&mut self, _id: Option<&str>) -> Result<(), String> {
         Ok(())
@@ -74,7 +74,7 @@ pub trait Picture: Send {
     /// Compile before replacing this layer's shader. `None` removes it.
     fn layer_shader(
         &mut self,
-        _layer: &crate::layers::Layer,
+        _layer: &crate::picture::layers::Layer,
         path: Option<&str>,
     ) -> Result<(), String> {
         if path.is_none() {
@@ -105,7 +105,7 @@ pub trait Picture: Send {
     /// Where a panel can map the preview, when there is one. Read every time
     /// rather than kept: an engine that lost its region should stop claiming
     /// to have one.
-    fn preview(&self) -> Option<crate::preview::Preview> {
+    fn preview(&self) -> Option<crate::picture::preview::Preview> {
         None
     }
     /// Whether anybody is drawing the preview, so the pipeline can stop making
@@ -134,9 +134,10 @@ impl Engine {
     /// "the one called VG2791R" are different amounts of confidence
     /// and a person about to go live wants the second.
     pub(super) fn choose_screen(&mut self, display: u32) -> Reply {
-        if let Err(message) =
-            self.single_layer(&[crate::layers::Kind::Screen, crate::layers::Kind::Window])
-        {
+        if let Err(message) = self.single_layer(&[
+            crate::picture::layers::Kind::Screen,
+            crate::picture::layers::Kind::Window,
+        ]) {
             return Reply::Error { message };
         }
         match self.screen_source(display) {
@@ -146,9 +147,10 @@ impl Engine {
     }
 
     pub(super) fn choose_window(&mut self, query: String) -> Reply {
-        if let Err(message) =
-            self.single_layer(&[crate::layers::Kind::Screen, crate::layers::Kind::Window])
-        {
+        if let Err(message) = self.single_layer(&[
+            crate::picture::layers::Kind::Screen,
+            crate::picture::layers::Kind::Window,
+        ]) {
             return Reply::Error { message };
         }
         match self.window_source(&query) {
@@ -164,7 +166,7 @@ impl Engine {
     pub(super) fn choose_camera(&mut self, device: Option<String>) -> Reply {
         match device {
             Some(query) => {
-                if let Err(message) = self.single_layer(&[crate::layers::Kind::Camera]) {
+                if let Err(message) = self.single_layer(&[crate::picture::layers::Kind::Camera]) {
                     return Reply::Error { message };
                 }
                 match self.camera_source(&query) {
@@ -172,7 +174,7 @@ impl Engine {
                     Err(message) => Reply::Error { message },
                 }
             }
-            None => match self.single_layer(&[crate::layers::Kind::Camera]) {
+            None => match self.single_layer(&[crate::picture::layers::Kind::Camera]) {
                 Ok(Some(id)) => self.layer_remove(id),
                 Ok(None) => Reply::Status(Box::new(self.reported())),
                 Err(message) => Reply::Error { message },
@@ -180,7 +182,10 @@ impl Engine {
         }
     }
 
-    fn single_layer(&self, kinds: &[crate::layers::Kind]) -> Result<Option<String>, String> {
+    fn single_layer(
+        &self,
+        kinds: &[crate::picture::layers::Kind],
+    ) -> Result<Option<String>, String> {
         let mut found = self
             .status
             .layers
@@ -202,10 +207,13 @@ impl Engine {
             .expect("there is always a free layer ID")
     }
 
-    fn select_single_source(&mut self, source: crate::layers::Source) -> Reply {
-        let visual = [crate::layers::Kind::Screen, crate::layers::Kind::Window];
-        let camera = [crate::layers::Kind::Camera];
-        let (kinds, prefix): (&[_], &str) = if source.kind == crate::layers::Kind::Camera {
+    fn select_single_source(&mut self, source: crate::picture::layers::Source) -> Reply {
+        let visual = [
+            crate::picture::layers::Kind::Screen,
+            crate::picture::layers::Kind::Window,
+        ];
+        let camera = [crate::picture::layers::Kind::Camera];
+        let (kinds, prefix): (&[_], &str) = if source.kind == crate::picture::layers::Kind::Camera {
             (&camera, "camera")
         } else {
             (&visual, "source")
@@ -227,7 +235,10 @@ impl Engine {
                 message: "choose a screen or a window to share".into(),
             };
         }
-        match self.single_layer(&[crate::layers::Kind::Screen, crate::layers::Kind::Window]) {
+        match self.single_layer(&[
+            crate::picture::layers::Kind::Screen,
+            crate::picture::layers::Kind::Window,
+        ]) {
             Ok(Some(id)) => self.layer_remove(id),
             Ok(None) => Reply::Status(Box::new(self.reported())),
             Err(message) => Reply::Error { message },
@@ -402,8 +413,8 @@ impl Engine {
     /// thing with less to go wrong.
     pub(super) fn shot(&mut self, of: Framed) -> Reply {
         let kind = match of {
-            Framed::Camera => Some(crate::layers::Kind::Camera),
-            Framed::Screen => Some(crate::layers::Kind::Screen),
+            Framed::Camera => Some(crate::picture::layers::Kind::Camera),
+            Framed::Screen => Some(crate::picture::layers::Kind::Screen),
             Framed::Scene => None,
         };
         if let Some(kind) = kind {
@@ -478,15 +489,18 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 
-    pub(super) fn camera_position(&mut self, at: Option<crate::scene::CameraPosition>) -> Reply {
-        match crate::layers::camera(&self.status.layers, None) {
+    pub(super) fn camera_position(
+        &mut self,
+        at: Option<crate::picture::scene::CameraPosition>,
+    ) -> Reply {
+        match crate::picture::layers::camera(&self.status.layers, None) {
             Ok(layer) => self.layer_position(layer.id.clone(), at),
             Err(message) => Reply::Error { message },
         }
     }
 
-    pub(super) fn camera_shape(&mut self, shape: crate::scene::CameraShape) -> Reply {
-        match crate::layers::camera(&self.status.layers, None) {
+    pub(super) fn camera_shape(&mut self, shape: crate::picture::scene::CameraShape) -> Reply {
+        match crate::picture::layers::camera(&self.status.layers, None) {
             Ok(layer) => self.layer_shape(layer.id.clone(), shape),
             Err(message) => Reply::Error { message },
         }
@@ -503,7 +517,9 @@ impl Engine {
     }
 
     pub(super) fn layer_replace_camera(&mut self, id: String, device: String) -> Reply {
-        if let Err(message) = self.validate_replacement(&id, &[crate::layers::Kind::Camera]) {
+        if let Err(message) =
+            self.validate_replacement(&id, &[crate::picture::layers::Kind::Camera])
+        {
             return Reply::Error { message };
         }
         match self.camera_source(&device) {
@@ -525,7 +541,10 @@ impl Engine {
     pub(super) fn layer_replace_screen(&mut self, id: String, display: u32) -> Reply {
         if let Err(message) = self.validate_replacement(
             &id,
-            &[crate::layers::Kind::Screen, crate::layers::Kind::Window],
+            &[
+                crate::picture::layers::Kind::Screen,
+                crate::picture::layers::Kind::Window,
+            ],
         ) {
             return Reply::Error { message };
         }
@@ -548,7 +567,10 @@ impl Engine {
     pub(super) fn layer_replace_window(&mut self, id: String, query: String) -> Reply {
         if let Err(message) = self.validate_replacement(
             &id,
-            &[crate::layers::Kind::Screen, crate::layers::Kind::Window],
+            &[
+                crate::picture::layers::Kind::Screen,
+                crate::picture::layers::Kind::Window,
+            ],
         ) {
             return Reply::Error { message };
         }
@@ -558,7 +580,7 @@ impl Engine {
         }
     }
 
-    fn screen_source(&self, display: u32) -> Result<crate::layers::Source, String> {
+    fn screen_source(&self, display: u32) -> Result<crate::picture::layers::Source, String> {
         let available = self.sources.available()?;
         let screen = available
             .screens
@@ -570,8 +592,8 @@ impl Engine {
                     list_of(available.screens.iter().map(|s| s.name.clone()))
                 )
             })?;
-        Ok(crate::layers::Source {
-            kind: crate::layers::Kind::Screen,
+        Ok(crate::picture::layers::Source {
+            kind: crate::picture::layers::Kind::Screen,
             handle: display.to_string(),
             name: screen.name.clone(),
             width: 0,
@@ -580,7 +602,7 @@ impl Engine {
         })
     }
 
-    fn window_source(&self, query: &str) -> Result<crate::layers::Source, String> {
+    fn window_source(&self, query: &str) -> Result<crate::picture::layers::Source, String> {
         let available = self.sources.available()?;
         let window = available
             .windows
@@ -594,8 +616,8 @@ impl Engine {
             })
             .or_else(|| pick(query, &available.windows))
             .ok_or_else(|| format!("no window matches {query:?}"))?;
-        Ok(crate::layers::Source {
-            kind: crate::layers::Kind::Window,
+        Ok(crate::picture::layers::Source {
+            kind: crate::picture::layers::Kind::Window,
             handle: window.id.0.to_string(),
             name: window_label(window),
             width: 0,
@@ -604,7 +626,7 @@ impl Engine {
         })
     }
 
-    fn camera_source(&self, query: &str) -> Result<crate::layers::Source, String> {
+    fn camera_source(&self, query: &str) -> Result<crate::picture::layers::Source, String> {
         let available = self.sources.available()?;
         let camera = pick_device(query, &available.cameras).ok_or_else(|| {
             format!(
@@ -612,8 +634,8 @@ impl Engine {
                 list_of(available.cameras.iter().map(|c| c.name.clone()))
             )
         })?;
-        Ok(crate::layers::Source {
-            kind: crate::layers::Kind::Camera,
+        Ok(crate::picture::layers::Source {
+            kind: crate::picture::layers::Kind::Camera,
             handle: camera.id.clone(),
             name: camera.name.clone(),
             width: 0,
@@ -622,13 +644,16 @@ impl Engine {
         })
     }
 
-    fn layer_with_source(id: String, source: crate::layers::Source) -> crate::layers::Layer {
-        crate::layers::Layer {
+    fn layer_with_source(
+        id: String,
+        source: crate::picture::layers::Source,
+    ) -> crate::picture::layers::Layer {
+        crate::picture::layers::Layer {
             id,
-            shape: (source.kind == crate::layers::Kind::Camera)
-                .then_some(crate::scene::CameraShape::Rectangle),
+            shape: (source.kind == crate::picture::layers::Kind::Camera)
+                .then_some(crate::picture::scene::CameraShape::Rectangle),
             source,
-            transform: crate::layers::Transform::default(),
+            transform: crate::picture::layers::Transform::default(),
             visible: true,
             crop: None,
             shader: None,
@@ -636,7 +661,11 @@ impl Engine {
         }
     }
 
-    fn validate_replacement(&self, id: &str, kinds: &[crate::layers::Kind]) -> Result<(), String> {
+    fn validate_replacement(
+        &self,
+        id: &str,
+        kinds: &[crate::picture::layers::Kind],
+    ) -> Result<(), String> {
         let layer = self
             .status
             .layers
@@ -656,22 +685,29 @@ impl Engine {
         Ok(())
     }
 
-    fn replace_layer_source(&mut self, id: String, source: crate::layers::Source) -> Reply {
+    fn replace_layer_source(
+        &mut self,
+        id: String,
+        source: crate::picture::layers::Source,
+    ) -> Reply {
         let Some(index) = self.status.layers.iter().position(|layer| layer.id == id) else {
             return Reply::Error {
                 message: format!("no layer {id:?}"),
             };
         };
         let old = self.status.layers[index].clone();
-        let visual = [crate::layers::Kind::Screen, crate::layers::Kind::Window];
-        if (old.source.kind == crate::layers::Kind::Camera)
-            != (source.kind == crate::layers::Kind::Camera)
+        let visual = [
+            crate::picture::layers::Kind::Screen,
+            crate::picture::layers::Kind::Window,
+        ];
+        if (old.source.kind == crate::picture::layers::Kind::Camera)
+            != (source.kind == crate::picture::layers::Kind::Camera)
         {
             return Reply::Error {
                 message: format!("layer {id:?} cannot change between camera and display/window"),
             };
         }
-        if source.kind != crate::layers::Kind::Camera && !visual.contains(&source.kind) {
+        if source.kind != crate::picture::layers::Kind::Camera && !visual.contains(&source.kind) {
             return Reply::Error {
                 message: "unsupported source".into(),
             };
@@ -687,8 +723,9 @@ impl Engine {
         }
         let mut next = old.clone();
         next.source = source;
-        next.shape = if next.source.kind == crate::layers::Kind::Camera {
-            old.shape.or(Some(crate::scene::CameraShape::Rectangle))
+        next.shape = if next.source.kind == crate::picture::layers::Kind::Camera {
+            old.shape
+                .or(Some(crate::picture::scene::CameraShape::Rectangle))
         } else {
             None
         };
@@ -706,7 +743,7 @@ impl Engine {
                 self.status.layers[index] = next;
                 self.sync_scene_layers();
                 if sound_was_here
-                    && self.status.layers[index].source.kind != crate::layers::Kind::Screen
+                    && self.status.layers[index].source.kind != crate::picture::layers::Kind::Screen
                 {
                     self.status.screen_sound_layer = None;
                     self.status.screen_sound = false;
@@ -768,7 +805,7 @@ impl Engine {
         Ok(())
     }
 
-    fn add_layer(&mut self, mut layer: crate::layers::Layer) -> Reply {
+    fn add_layer(&mut self, mut layer: crate::picture::layers::Layer) -> Reply {
         let size = match self.pipeline.layer_add(&layer) {
             Ok(size) if size.0 > 0 && size.1 > 0 && size.0 <= 8192 && size.1 <= 8192 => size,
             Ok(_) => {
@@ -781,7 +818,7 @@ impl Engine {
         };
         layer.source.width = size.0;
         layer.source.height = size.1;
-        layer.transform = crate::layers::Transform::native(size);
+        layer.transform = crate::picture::layers::Transform::native(size);
         self.status.layers.push(layer);
         self.sync_scene_layers();
         Reply::Status(Box::new(self.reported()))
@@ -865,7 +902,11 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 
-    pub(super) fn layer_crop(&mut self, id: String, crop: Option<crate::layers::Crop>) -> Reply {
+    pub(super) fn layer_crop(
+        &mut self,
+        id: String,
+        crop: Option<crate::picture::layers::Crop>,
+    ) -> Reply {
         let Some(layer) = self.status.layers.iter_mut().find(|layer| layer.id == id) else {
             return Reply::Error {
                 message: format!("no layer {id:?}"),
@@ -882,7 +923,7 @@ impl Engine {
     }
 
     pub(super) fn layer_mirror(&mut self, id: String, on: bool) -> Reply {
-        if let Err(message) = crate::layers::camera(&self.status.layers, Some(&id)) {
+        if let Err(message) = crate::picture::layers::camera(&self.status.layers, Some(&id)) {
             return Reply::Error { message };
         }
         let layer = self
@@ -896,8 +937,12 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 
-    pub(super) fn layer_shape(&mut self, id: String, shape: crate::scene::CameraShape) -> Reply {
-        if let Err(message) = crate::layers::camera(&self.status.layers, Some(&id)) {
+    pub(super) fn layer_shape(
+        &mut self,
+        id: String,
+        shape: crate::picture::scene::CameraShape,
+    ) -> Reply {
+        if let Err(message) = crate::picture::layers::camera(&self.status.layers, Some(&id)) {
             return Reply::Error { message };
         }
         let layer = self
@@ -914,9 +959,9 @@ impl Engine {
     pub(super) fn layer_position(
         &mut self,
         id: String,
-        at: Option<crate::scene::CameraPosition>,
+        at: Option<crate::picture::scene::CameraPosition>,
     ) -> Reply {
-        if let Err(message) = crate::layers::camera(&self.status.layers, Some(&id)) {
+        if let Err(message) = crate::picture::layers::camera(&self.status.layers, Some(&id)) {
             return Reply::Error { message };
         }
         let layer = self
@@ -925,7 +970,7 @@ impl Engine {
             .iter_mut()
             .find(|layer| layer.id == id)
             .expect("validated camera");
-        let (wide, tall) = crate::scene::CAMERA_OUTPUT;
+        let (wide, tall) = crate::picture::scene::CAMERA_OUTPUT;
         if let Some(at) = at {
             if at.x >= wide || at.y >= tall {
                 return Reply::Error {
@@ -946,7 +991,7 @@ impl Engine {
     pub(super) fn layer_transform(
         &mut self,
         id: String,
-        transform: crate::layers::Transform,
+        transform: crate::picture::layers::Transform,
     ) -> Reply {
         if let Err(message) = transform.validate() {
             return Reply::Error { message };
@@ -1053,8 +1098,8 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::engine::fake::*;
-    use crate::layers::Kind;
-    use crate::sources::{DisplayId, WindowId};
+    use crate::picture::layers::Kind;
+    use crate::picture::sources::{DisplayId, WindowId};
 
     fn text(id: &str, line: &str) -> Element {
         Element {
@@ -1390,35 +1435,35 @@ mod tests {
     #[test]
     fn camera_shape_and_position_belong_to_one_named_layer() {
         let (mut engine, _, _) = machine_with_music();
-        assert!(crate::layers::camera(&engine.status().layers, None).is_err());
+        assert!(crate::picture::layers::camera(&engine.status().layers, None).is_err());
         engine.handle(Command::LayerCamera {
             id: "left".into(),
             device: "HP".into(),
         });
         assert_eq!(
-            crate::layers::camera(&engine.status().layers, None)
+            crate::picture::layers::camera(&engine.status().layers, None)
                 .unwrap()
                 .id,
             "left"
         );
         assert!(matches!(
             engine.handle(Command::CameraShape {
-                shape: crate::scene::CameraShape::Circle
+                shape: crate::picture::scene::CameraShape::Circle
             }),
             Reply::Status(_)
         ));
         assert_eq!(
             engine.status().layers[0].shape,
-            Some(crate::scene::CameraShape::Circle)
+            Some(crate::picture::scene::CameraShape::Circle)
         );
         engine.handle(Command::LayerCamera {
             id: "right".into(),
             device: "MacBook".into(),
         });
-        assert!(crate::layers::camera(&engine.status().layers, None).is_err());
+        assert!(crate::picture::layers::camera(&engine.status().layers, None).is_err());
         assert!(matches!(
             engine.handle(Command::CameraShape {
-                shape: crate::scene::CameraShape::Rectangle
+                shape: crate::picture::scene::CameraShape::Rectangle
             }),
             Reply::Error { .. }
         ));
@@ -1430,7 +1475,7 @@ mod tests {
         assert!(matches!(
             engine.handle(Command::LayerShape {
                 id: "missing".into(),
-                shape: crate::scene::CameraShape::Circle
+                shape: crate::picture::scene::CameraShape::Circle
             }),
             Reply::Error { .. }
         ));
@@ -1444,21 +1489,21 @@ mod tests {
         assert!(matches!(
             engine.handle(Command::LayerShape {
                 id: "right".into(),
-                shape: crate::scene::CameraShape::Circle
+                shape: crate::picture::scene::CameraShape::Circle
             }),
             Reply::Status(_)
         ));
         assert_eq!(
             engine.status().layers[0].shape,
-            Some(crate::scene::CameraShape::Circle)
+            Some(crate::picture::scene::CameraShape::Circle)
         );
         assert_eq!(
             engine.status().layers[1].shape,
-            Some(crate::scene::CameraShape::Circle)
+            Some(crate::picture::scene::CameraShape::Circle)
         );
         engine.handle(Command::LayerPosition {
             id: "right".into(),
-            at: Some(crate::scene::CameraPosition { x: 1900, y: 1000 }),
+            at: Some(crate::picture::scene::CameraPosition { x: 1900, y: 1000 }),
         });
         assert_eq!(
             engine.status().layers[1].transform.x,
@@ -1482,7 +1527,7 @@ mod tests {
         assert!(matches!(
             engine.handle(Command::LayerShape {
                 id: "app".into(),
-                shape: crate::scene::CameraShape::Circle
+                shape: crate::picture::scene::CameraShape::Circle
             }),
             Reply::Error { .. }
         ));
@@ -1516,7 +1561,7 @@ mod tests {
         ));
         assert_eq!(
             engine.status().layers[0].source.kind,
-            crate::layers::Kind::Screen
+            crate::picture::layers::Kind::Screen
         );
         assert_eq!(engine.status().layers[0].source.handle, "3");
         assert_eq!(engine.status().layers[0].source.name, "VG2791R");
@@ -1531,7 +1576,7 @@ mod tests {
 
     #[test]
     fn layers_are_ordered_ephemeral_and_failed_capture_does_not_appear() {
-        use crate::layers::{Kind, Transform};
+        use crate::picture::layers::{Kind, Transform};
         let (mut engine, _, _) = machine_with_music();
         engine.handle(Command::LayerCamera {
             id: "face".into(),
@@ -1572,7 +1617,7 @@ mod tests {
         });
         assert_eq!(engine.status().layers[1].transform, transform);
         assert_eq!(engine.status().layers[1].id, "face");
-        let crop = crate::layers::Crop {
+        let crop = crate::picture::layers::Crop {
             x: 10,
             y: 20,
             width: 600,
@@ -1586,7 +1631,7 @@ mod tests {
         assert!(matches!(
             engine.handle(Command::LayerCrop {
                 id: "face".into(),
-                crop: Some(crate::layers::Crop { x: 1000, ..crop })
+                crop: Some(crate::picture::layers::Crop { x: 1000, ..crop })
             }),
             Reply::Error { .. }
         ));
@@ -1620,7 +1665,7 @@ mod tests {
         assert!(engine.status().layers.is_empty());
     }
 
-    fn unique_name(status: &Status, kinds: &[crate::layers::Kind]) -> Option<String> {
+    fn unique_name(status: &Status, kinds: &[crate::picture::layers::Kind]) -> Option<String> {
         let mut found = status
             .layers
             .iter()
@@ -1632,12 +1677,15 @@ mod tests {
     fn screen_name(status: &Status) -> Option<String> {
         unique_name(
             status,
-            &[crate::layers::Kind::Screen, crate::layers::Kind::Window],
+            &[
+                crate::picture::layers::Kind::Screen,
+                crate::picture::layers::Kind::Window,
+            ],
         )
     }
 
     fn camera_name(status: &Status) -> Option<String> {
-        unique_name(status, &[crate::layers::Kind::Camera])
+        unique_name(status, &[crate::picture::layers::Kind::Camera])
     }
 
     // A screen is chosen by its display id, never by its position: the
@@ -1780,7 +1828,7 @@ mod tests {
 
     #[test]
     fn camera_position_changes_the_pipeline_mid_live_and_can_be_restored() {
-        use crate::scene::CameraPosition;
+        use crate::picture::scene::CameraPosition;
         let pipeline = Wrote::default();
         let mut engine = Engine::with_sources(Box::new(ThisMachine))
             .with_pipeline(Box::new(pipeline))
@@ -1799,7 +1847,7 @@ mod tests {
         let face = after
             .layers
             .iter()
-            .find(|l| l.source.kind == crate::layers::Kind::Camera)
+            .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
             .unwrap();
         assert_eq!((face.transform.x, face.transform.y), (300, 200));
         assert!(after.on_air, "moving the camera must not stop the stream");
@@ -1825,7 +1873,7 @@ mod tests {
                 .status()
                 .layers
                 .iter()
-                .find(|l| l.source.kind == crate::layers::Kind::Camera)
+                .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
                 .unwrap();
             assert_eq!(
                 (face.transform.x, face.transform.y),
@@ -1838,7 +1886,7 @@ mod tests {
             .status()
             .layers
             .iter()
-            .find(|l| l.source.kind == crate::layers::Kind::Camera)
+            .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
             .unwrap();
         assert_eq!((face.transform.x, face.transform.y), (0, 0));
         assert!(engine.status().on_air);
@@ -1846,7 +1894,7 @@ mod tests {
 
     #[test]
     fn changing_camera_shape_on_air_keeps_position_and_publication() {
-        use crate::scene::{CameraPosition, CameraShape};
+        use crate::picture::scene::{CameraPosition, CameraShape};
         let published: Published = Default::default();
         let pipeline = Wrote {
             published: published.clone(),
@@ -1872,7 +1920,7 @@ mod tests {
         let face = rectangle
             .layers
             .iter()
-            .find(|l| l.source.kind == crate::layers::Kind::Camera)
+            .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
             .unwrap();
         assert_eq!(face.shape, Some(CameraShape::Rectangle));
         assert_eq!((face.transform.x, face.transform.y), (300, 200));
@@ -1895,7 +1943,7 @@ mod tests {
         let face = circle
             .layers
             .iter()
-            .find(|l| l.source.kind == crate::layers::Kind::Camera)
+            .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
             .unwrap();
         assert_eq!(face.shape, Some(CameraShape::Circle));
         assert_eq!((face.transform.x, face.transform.y), (300, 200));
@@ -2275,11 +2323,6 @@ mod tests {
             Reply::Shot { .. }
         ));
         assert!(hidden.screen_sound && hidden.screen_sound_layer.as_deref() == Some("desk"));
-        let said = crate::cli::render(&Reply::Status(hidden.clone()));
-        assert!(
-            said.contains("hidden") && said.contains("screen sound paused"),
-            "{said}"
-        );
         assert!(
             !levels.lock().unwrap().unwrap().5,
             "hidden display audio must leave the mix"
@@ -2339,7 +2382,7 @@ mod tests {
             id: "face".into(),
             device: "HP".into(),
         });
-        let transform = crate::layers::Transform {
+        let transform = crate::picture::layers::Transform {
             x: 80,
             y: 50,
             width: 600,
@@ -2350,7 +2393,7 @@ mod tests {
             id: id.clone(),
             transform,
         });
-        let crop = crate::layers::Crop {
+        let crop = crate::picture::layers::Crop {
             x: 20,
             y: 30,
             width: 400,
@@ -2374,7 +2417,10 @@ mod tests {
         assert_eq!(switched.layers[0].transform, transform);
         assert_eq!(switched.layers[0].crop, Some(crop));
         assert_eq!(switched.layers[0].source.name, "VG2791R");
-        assert_eq!(switched.layers[0].source.kind, crate::layers::Kind::Screen);
+        assert_eq!(
+            switched.layers[0].source.kind,
+            crate::picture::layers::Kind::Screen
+        );
         // The fake records the stop before the new source opens, not two captures
         // with different generated IDs overlapping even briefly.
         assert_eq!(
@@ -2406,7 +2452,7 @@ mod tests {
         });
         engine.handle(Command::LayerCrop {
             id: "desk".into(),
-            crop: Some(crate::layers::Crop {
+            crop: Some(crate::picture::layers::Crop {
                 x: 1500,
                 y: 0,
                 width: 300,
@@ -2431,7 +2477,10 @@ mod tests {
             panic!("window swap")
         };
         assert_eq!(window.layers[0].id, "desk");
-        assert_eq!(window.layers[0].source.kind, crate::layers::Kind::Window);
+        assert_eq!(
+            window.layers[0].source.kind,
+            crate::picture::layers::Kind::Window
+        );
         assert_eq!(window.layers[0].crop, None);
         assert!(!window.screen_sound);
         assert_eq!(window.screen_sound_layer, None);

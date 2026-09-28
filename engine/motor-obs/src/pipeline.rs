@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use remuxd_domain::engine::{Air, Pipeline, Sound, SoundLevels};
-use remuxd_domain::gate::GateParams;
-use remuxd_domain::music::Track;
 use remuxd_domain::protocol::{Grant, Hearing, Mixing, Outgoing};
+use remuxd_domain::sound::mixer::gate::GateParams;
+use remuxd_domain::sound::music::Track;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::c;
@@ -818,10 +818,10 @@ impl ObsPipeline {
     /// a microphone by id, one application by name, or the whole screen's.
     fn audio_source(
         &self,
-        kind: remuxd_domain::audio_layers::Kind,
+        kind: remuxd_domain::sound::audio_layers::Kind,
         said: &str,
     ) -> Result<*mut sys::obs_source_t, String> {
-        use remuxd_domain::audio_layers::Kind;
+        use remuxd_domain::sound::audio_layers::Kind;
         let table = &crate::platform::TABLE;
         // SAFETY: settings released after the create.
         unsafe {
@@ -1052,7 +1052,7 @@ impl Sound for ObsPipeline {
         // libobs meters after the filters, so a closed gate reads as silence
         // here. Silence is the domain's floor, as the native motor says it.
         let level_db = self.heard.db(&self.heard.level_mdb);
-        let floor = remuxd_domain::levels::Meter::FLOOR_DB;
+        let floor = remuxd_domain::sound::mixer::levels::Meter::FLOOR_DB;
         Hearing {
             samples: self.heard.updates.load(Ordering::Relaxed) * 480,
             level_db: level_db.max(floor),
@@ -1200,7 +1200,9 @@ impl Sound for ObsPipeline {
     /// leaves the one that is.
     fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
         let made = match app {
-            Some(app) => Some(self.audio_source(remuxd_domain::audio_layers::Kind::App, app)?),
+            Some(app) => {
+                Some(self.audio_source(remuxd_domain::sound::audio_layers::Kind::App, app)?)
+            }
             None => None,
         };
         // SAFETY: the old one comes off channel 5 before release; the new
@@ -1226,9 +1228,9 @@ impl Sound for ObsPipeline {
     /// output channel into what leaves.
     fn audio_layer_add(
         &mut self,
-        layer: &remuxd_domain::audio_layers::Layer,
+        layer: &remuxd_domain::sound::audio_layers::Layer,
     ) -> Result<(), String> {
-        use remuxd_domain::audio_layers::Kind;
+        use remuxd_domain::sound::audio_layers::Kind;
         let said = match layer.source.kind {
             Kind::Mic => layer.source.device.clone(),
             Kind::App => layer.source.name.clone(),
@@ -1278,7 +1280,7 @@ impl Sound for ObsPipeline {
     fn mixing(&self) -> Mixing {
         // Silence is the domain's floor, as the native motor reports it, not
         // libobs's -120.
-        let floor = remuxd_domain::levels::Meter::FLOOR_DB;
+        let floor = remuxd_domain::sound::mixer::levels::Meter::FLOOR_DB;
         let db = |mdb: &AtomicU64| (mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0).max(floor);
         let music = |mdb: &AtomicU64| {
             if self.music.is_null() {
@@ -1368,7 +1370,7 @@ impl Air for ObsPipeline {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since| since.as_secs() as i64)
             .unwrap_or(0);
-        let path = format!("{into}/{}", remuxd_domain::recording::name(now));
+        let path = format!("{into}/{}", remuxd_domain::air::recording::name(now));
         // SAFETY: released by `start_output`.
         let settings = unsafe {
             let settings = sys::obs_data_create();

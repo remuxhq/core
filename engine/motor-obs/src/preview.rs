@@ -1,5 +1,5 @@
 //! The preview, written where a face reads it: the shared-memory ring
-//! (`remuxd_domain::preview`), filled here from
+//! (`remuxd_domain::picture::preview`), filled here from
 //! libobs's raw video callback, scaled to 960x540 BGRA by libobs itself.
 //! The last frame is kept for `remux shot`.
 
@@ -7,7 +7,7 @@ use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use remuxd_domain::preview::{
+use remuxd_domain::picture::preview::{
     fills, Preview, CAMERA_SEQUENCE_AT, MAGIC, SCREEN_SEQUENCE_AT, SEQUENCE_AT, SLOTS,
 };
 

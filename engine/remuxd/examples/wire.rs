@@ -6,7 +6,7 @@
 use std::net::TcpListener;
 use std::time::Duration;
 
-use remuxd_domain::wire::Line;
+use remuxd_domain::app::wire::Line;
 
 fn main() {
     let port = std::env::args().nth(1).unwrap_or_else(|| "9999".into());

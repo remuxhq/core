@@ -1,7 +1,7 @@
 //! Independent audio layers: one capture per ID, separate from the legacy
 //! one-mic/one-app controls. Never report a source that failed to open.
 use super::*;
-use crate::audio_layers::{Layer, Source};
+use crate::sound::audio_layers::{Layer, Source};
 
 impl Engine {
     pub(super) fn audio_layer_add(&mut self, id: String, source: Source) -> Reply {
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn independent_audio_layers_are_addressed_by_id_and_remembered() {
-        use crate::audio_layers::Source;
+        use crate::sound::audio_layers::Source;
         let mut engine = engine();
         for id in ["browser", "editor"] {
             assert!(matches!(

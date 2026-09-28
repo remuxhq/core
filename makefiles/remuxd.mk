@@ -118,7 +118,7 @@ remuxd.seam: ## Prove the domain crate cannot see an Apple framework
 	@# domain's (paths, the service) and the libobs motor's (the machine).
 	@# `cfg(unix)` around std's file modes (0600) is std's own shim, not an OS.
 	@# The working tree, not the index: a new file is the one most likely to slip.
-	@named=$$(grep -rlE 'target_os|cfg\(windows' engine/domain/src engine/remuxd/src engine/wire cli/src engine/motor-obs/src \
+	@named=$$(grep -rlE 'target_os|cfg\(windows' engine/domain/src engine/remuxd/src engine/wire engine/cli/src engine/motor-obs/src \
 		| grep -v -e '^engine/domain/src/os.rs$$' -e '^engine/motor-obs/src/platform.rs$$' || true); \
 	if [ -n "$$named" ]; then \
 		echo "an OS is named outside the tables:"; echo "$$named"; \
@@ -130,7 +130,7 @@ remuxd.seam: ## Prove the domain crate cannot see an Apple framework
 	echo "seam: no OS named outside domain/src/os.rs and motor-obs/src/platform.rs"
 	@# And no path of one OS in code, comments aside: /Applications, ~/Library, /opt/homebrew, /usr/lib, ~/Movies, launchd, systemd.
 	@paths=$$(grep -rnE '"[^"]*(/Applications|/System/Library|Library/Application Support|LaunchAgents|/opt/homebrew|/usr/local|/usr/lib|/usr/share|Movies/|Videos/|\.local/state|systemd|launchctl|systemctl|xdg-open)[^"]*"' \
-		engine/domain/src engine/remuxd/src engine/wire cli/src engine/motor-obs/src \
+		engine/domain/src engine/remuxd/src engine/wire engine/cli/src engine/motor-obs/src \
 		| grep -v -e '^engine/domain/src/os.rs:' -e '^engine/motor-obs/src/platform.rs:' -e '^[^:]*:[0-9]*:[[:space:]]*//' -e 'assert' || true); \
 	if [ -n "$$paths" ]; then \
 		echo "a path of one OS is written outside the tables:"; echo "$$paths"; exit 1; \
@@ -138,7 +138,7 @@ remuxd.seam: ## Prove the domain crate cannot see an Apple framework
 	echo "seam: no path of one OS outside the tables"
 
 remuxd.test: ## Tests, mid-loop. F=name to filter
-	@$(CARGO) nextest run --locked -p remuxd-domain -p remuxd  $(F)
+	@$(CARGO) nextest run --locked -p remuxd-domain -p remuxd -p remux $(F)
 
 # Coverage is measured on the domain crate alone, which is now a crate boundary
 # rather than a path regex. The daemon's own files are transport and adapters:
@@ -147,13 +147,13 @@ remuxd.test: ## Tests, mid-loop. F=name to filter
 # enough to be ignored. Same principle as mix.exs ignoring Application and Repo.
 #
 # Lines and functions, not branches: Rust emits branch counters only on nightly.
+# The CLI's words are decisions and counted; its socket and its service
+# (main.rs, daemon.rs) are transport, left out the way the motors are.
 remuxd.cover: ## Coverage of the decisions, and fail under the gate
-	@$(CARGO) llvm-cov nextest --locked -p remuxd-domain --summary-only \
+	@$(CARGO) llvm-cov nextest --locked -p remuxd-domain -p remux --summary-only \
+		--ignore-filename-regex 'cli/src/(main|daemon)\.rs' \
 		--fail-under-lines 90 --fail-under-functions 90
 
-# The parity suite: every feature driven against a real daemon over its real
-# socket. Same reason it is not in remuxd.check as : it needs this
-# machine. S=name runs one.
 # The engine, configured, in the foreground: everything it needs comes from
 # one place, so the last step of anything is one command rather than an
 # environment somebody assembles from memory.

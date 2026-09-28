@@ -8,13 +8,13 @@
 //! machine as the files, and a music folder that stops working because the
 //! control plane is down would be an absurd way to lose a live.
 //!
-//! What counts as a track and what it is called is [`remuxd_domain::music`],
+//! What counts as a track and what it is called is [`remuxd_domain::sound::music`],
 //! which is pure. This is the filesystem and nothing else.
 
 use std::path::{Path, PathBuf};
 
 use remuxd_domain::engine::Library;
-use remuxd_domain::music::{genre_title, track_from, Playlist, Track};
+use remuxd_domain::sound::music::{genre_title, track_from, Playlist, Track};
 
 /// The folder, behind the engine's port.
 ///
@@ -66,7 +66,7 @@ pub fn playlists(root: &Path) -> Vec<Playlist> {
 /// One genre, with its tracks in the order the files sort.
 ///
 /// Sorted rather than in whatever order the filesystem hands them over,
-/// because the order is what [`remuxd_domain::music::Rotation`] shuffles, and
+/// because the order is what [`remuxd_domain::sound::music::Rotation`] shuffles, and
 /// a shuffle of an unstable order is unreproducible when something goes wrong.
 pub fn playlist(root: &Path, name: &str) -> Playlist {
     let folder = root.join(name);

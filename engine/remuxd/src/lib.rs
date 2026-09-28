@@ -13,4 +13,7 @@ pub mod wire;
 
 pub use remuxd_domain::log;
 
-pub use remuxd_domain::{engine, gate, levels, music, protocol, sources};
+pub use remuxd_domain::picture::sources;
+pub use remuxd_domain::sound::mixer::{gate, levels};
+pub use remuxd_domain::sound::music;
+pub use remuxd_domain::{engine, protocol};

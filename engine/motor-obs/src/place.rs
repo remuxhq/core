@@ -7,8 +7,8 @@
 //! source's aspect, and turned clockwise about the viewport's middle: an item
 //! aligned on its centre, bounded to the viewport, rotated.
 
-use remuxd_domain::layers::{Kind, Layer};
-use remuxd_domain::scene::CameraShape;
+use remuxd_domain::picture::layers::{Kind, Layer};
+use remuxd_domain::picture::scene::CameraShape;
 
 /// A rectangle in a source's own pixels, from its top left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +104,7 @@ pub fn placement(layer: &Layer, size: (u32, u32)) -> Placement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use remuxd_domain::layers::{Crop, Source, Transform};
+    use remuxd_domain::picture::layers::{Crop, Source, Transform};
 
     fn layer(kind: Kind) -> Layer {
         Layer {

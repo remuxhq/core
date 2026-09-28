@@ -43,7 +43,7 @@ pub enum Command {
     },
     AudioLayerAdd {
         id: String,
-        source: crate::audio_layers::Source,
+        source: crate::sound::audio_layers::Source,
     },
     AudioLayerRemove {
         id: String,
@@ -160,17 +160,17 @@ pub enum Command {
     },
     LayerTransform {
         id: String,
-        transform: crate::layers::Transform,
+        transform: crate::picture::layers::Transform,
     },
     /// Cut a source in its native pixels; null restores the entire source.
     LayerCrop {
         id: String,
-        crop: Option<crate::layers::Crop>,
+        crop: Option<crate::picture::layers::Crop>,
     },
     /// A camera's mask, independent of every other camera in the scene.
     LayerShape {
         id: String,
-        shape: crate::scene::CameraShape,
+        shape: crate::picture::scene::CameraShape,
     },
     LayerMirror {
         id: String,
@@ -180,16 +180,16 @@ pub enum Command {
     /// `None` restores the layer's original native position (0,0).
     LayerPosition {
         id: String,
-        at: Option<crate::scene::CameraPosition>,
+        at: Option<crate::picture::scene::CameraPosition>,
     },
     /// Top-left pixel of the camera viewport on the 1920x1080 scene.
     /// `None` restores the default corner.
     CameraPosition {
-        at: Option<crate::scene::CameraPosition>,
+        at: Option<crate::picture::scene::CameraPosition>,
     },
     /// Choose the composited camera's crop without changing its device or position.
     CameraShape {
-        shape: crate::scene::CameraShape,
+        shape: crate::picture::scene::CameraShape,
     },
     Mirror {
         on: bool,
@@ -283,10 +283,10 @@ pub enum Command {
 
     // ---- scene content ----------------------------------------------------
     SceneElementAdd {
-        element: crate::scenes::Element,
+        element: crate::picture::scenes::Element,
     },
     SceneElementSet {
-        element: crate::scenes::Element,
+        element: crate::picture::scenes::Element,
     },
     SceneElementRemove {
         id: String,
@@ -348,7 +348,7 @@ pub enum Command {
     /// What the OS is letting this engine do.
     Grants,
     /// The last of the chat, as the engine has it off its wire
-    /// (`remuxd_domain::chat`): what was said after the line numbered
+    /// (`remuxd_domain::app::chat`): what was said after the line numbered
     /// `since`, zero for everything. With `follow`, the daemon answers once
     /// and then keeps the connection, pushing a `chat` reply for every line
     /// after it, until the client hangs up.
@@ -408,7 +408,7 @@ pub enum Reply {
     /// inline would make every other answer, including `Ok`, three hundred
     /// bytes wide. It serialises exactly the same, so the wire does not know.
     Status(Box<Status>),
-    Plan(crate::plan::Plan),
+    Plan(crate::air::plan::Plan),
     Devices(Devices),
     Error {
         message: String,
@@ -540,7 +540,7 @@ pub struct Hearing {
     /// compare it against is a number somebody guesses at, and the whole point
     /// of the two thin bars beside the sliders is seeing the room and the line
     /// at the same time.
-    pub gate_levels: crate::gate::GateLevels,
+    pub gate_levels: crate::sound::mixer::gate::GateLevels,
     /// What the gate is doing to the level right now, in dB.
     pub gain_db: f64,
     /// Blocks the mixer made with less voice than a block holds, because the
@@ -585,10 +585,10 @@ impl Default for Hearing {
         // full red for a microphone that was not even open.
         Self {
             samples: 0,
-            level_db: crate::levels::Meter::FLOOR_DB,
-            peak_db: crate::levels::Meter::FLOOR_DB,
+            level_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
             gate_open: false,
-            gate_levels: crate::gate::GateLevels::default(),
+            gate_levels: crate::sound::mixer::gate::GateLevels::default(),
             gain_db: 0.0,
             starved: 0,
             buffered: 0,
@@ -648,16 +648,16 @@ impl Default for Mixing {
         // Same reason as `Hearing`: nothing playing is the floor.
         Self {
             frames: 0,
-            level_db: crate::levels::Meter::FLOOR_DB,
-            peak_db: crate::levels::Meter::FLOOR_DB,
-            music_db: crate::levels::Meter::FLOOR_DB,
-            music_peak_db: crate::levels::Meter::FLOOR_DB,
-            music_out_db: crate::levels::Meter::FLOOR_DB,
-            music_out_peak_db: crate::levels::Meter::FLOOR_DB,
-            app_db: crate::levels::Meter::FLOOR_DB,
+            level_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            music_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            music_peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            music_out_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            music_out_peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            app_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
             playing: false,
             ducked_db: 0.0,
-            monitor_db: crate::levels::Meter::FLOOR_DB,
+            monitor_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
         }
     }
 }
@@ -736,7 +736,7 @@ pub fn default_scene_name() -> String {
 }
 
 fn floor() -> f64 {
-    crate::levels::Meter::FLOOR_DB
+    crate::sound::mixer::levels::Meter::FLOOR_DB
 }
 
 fn yes_volume() -> f64 {
@@ -761,15 +761,15 @@ pub struct Status {
     pub on_air_since: Option<i64>,
     /// Scene layers, back to front. Their choices and layout survive a restart.
     #[serde(default)]
-    pub layers: Vec<crate::layers::Layer>,
+    pub layers: Vec<crate::picture::layers::Layer>,
     /// Named layouts; the active entry reflects the current layers.
     #[serde(default)]
-    pub scenes: Vec<crate::scenes::Scene>,
+    pub scenes: Vec<crate::picture::scenes::Scene>,
     #[serde(default = "default_scene_name")]
     pub active_scene: String,
     /// Independent audio captures, not ordered visual scene layers.
     #[serde(default)]
-    pub audio_layers: Vec<crate::audio_layers::Layer>,
+    pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
     /// The selected scene shader, if any. Never its source.
     #[serde(default)]
     pub shader: Option<String>,
@@ -806,7 +806,7 @@ pub struct Status {
     /// Where the gate's thresholds are. On the status for the same reason as
     /// everything else here: a panel with five sliders on it has to be able to
     /// draw them where they are, and the engine is what knows.
-    pub gate: crate::gate::GateParams,
+    pub gate: crate::sound::mixer::gate::GateParams,
     /// Whether the app is reachable. See [`Reply::Chat`] for why it travels
     /// beside the list rather than being inferred from it.
     pub app: bool,
@@ -863,14 +863,14 @@ pub struct Status {
     pub server: Option<String>,
     /// Where a panel can read the preview without asking for it. `None` on an
     /// engine that could not make the region, and a client that sees `None`
-    /// falls back to [`Command::Shot`]. See [`crate::preview`].
+    /// falls back to [`Command::Shot`]. See [`crate::picture::preview`].
     #[serde(default)]
-    pub preview: Option<crate::preview::Preview>,
+    pub preview: Option<crate::picture::preview::Preview>,
     /// What is leaving, measured where it leaves. See [`Outgoing`].
     #[serde(default)]
     pub outgoing: Outgoing,
     /// What the engine has done, newest last, stamped. See
-    /// [`crate::journal`]. Empty on a fresh engine and never long: two hundred
+    /// [`crate::air::journal`]. Empty on a fresh engine and never long: two hundred
     /// lines is as far back as anybody reads while something is wrong.
     #[serde(default)]
     pub log: Vec<String>,
@@ -906,7 +906,7 @@ impl Default for Status {
             recording_since: None,
             on_air_since: None,
             layers: Vec::new(),
-            scenes: crate::scenes::defaults(),
+            scenes: crate::picture::scenes::defaults(),
             active_scene: default_scene_name(),
             audio_layers: Vec::new(),
             shader: None,
@@ -920,7 +920,7 @@ impl Default for Status {
             mixing: Mixing::default(),
             viewers: None,
             faders: Faders::default(),
-            gate: crate::gate::GateParams::default(),
+            gate: crate::sound::mixer::gate::GateParams::default(),
             app: false,
             monitoring: false,
             speakers: None,
@@ -1059,7 +1059,7 @@ impl Default for Faders {
         Self {
             mic: 1.0,
             music: 0.85,
-            duck_db: crate::music::DUCK_DEFAULT_DB,
+            duck_db: crate::sound::music::DUCK_DEFAULT_DB,
         }
     }
 }
@@ -1181,13 +1181,13 @@ mod tests {
         );
         assert_eq!(
             encode(&Command::CameraPosition {
-                at: Some(crate::scene::CameraPosition { x: 300, y: 200 })
+                at: Some(crate::picture::scene::CameraPosition { x: 300, y: 200 })
             }),
             "{\"cmd\":\"camera-position\",\"at\":{\"x\":300,\"y\":200}}\n"
         );
         assert_eq!(
             encode(&Command::CameraShape {
-                shape: crate::scene::CameraShape::Rectangle
+                shape: crate::picture::scene::CameraShape::Rectangle
             }),
             "{\"cmd\":\"camera-shape\",\"shape\":\"rectangle\"}\n"
         );
@@ -1236,9 +1236,9 @@ mod tests {
     fn independent_audio_layers_are_labeled_in_status_json() {
         let mut status = Status::default();
         status.audio_layers.push(
-            crate::audio_layers::Layer::new(
+            crate::sound::audio_layers::Layer::new(
                 "call".into(),
-                crate::audio_layers::Source::app("Zoom".into()),
+                crate::sound::audio_layers::Source::app("Zoom".into()),
             )
             .unwrap(),
         );

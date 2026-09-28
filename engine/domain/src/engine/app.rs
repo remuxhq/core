@@ -428,8 +428,8 @@ mod tests {
 
     /// An engine whose wire has said three things, numbered from seven.
     fn told_engine() -> Engine {
-        use crate::chat::Feed;
-        use crate::wire::Line;
+        use crate::app::chat::Feed;
+        use crate::app::wire::Line;
         let mut feed = Feed::starting_at(7);
         for (id, body) in [("m7", "hello"), ("m8", "gg"), ("m9", "first!")] {
             feed.push(Line {

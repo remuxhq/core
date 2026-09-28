@@ -2,7 +2,7 @@
 # Build the release tarball of remux for the machine this runs on: the CLI
 # and the engine on the libobs motor (the GPL build), the docs, the BYO
 # files, the scripts, and the tarball's sha256 beside it. The version is
-# cli/Cargo.toml's; `make release.publish` puts it on GitHub under the
+# engine/cli/Cargo.toml's; `make release.publish` puts it on GitHub under the
 # tag of the same number.
 #
 #   sh scripts/release.sh [dist dir]      -> dist/remux-<version>-<target>.tar.gz
@@ -19,7 +19,7 @@ set -eu
 cd "$(dirname "$0")/.."
 DIST="${1:-$PWD/dist}"
 have_libobs() { ls /usr/lib/*/libobs.so.0 /usr/lib64/libobs.so.0 /usr/lib/libobs.so.0 >/dev/null 2>&1 || { command -v ldconfig >/dev/null && ldconfig -p 2>/dev/null | grep -q 'libobs\.so\.0'; }; }
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' cli/Cargo.toml | head -1)
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
 OS=$(uname -s); ARCH=$(uname -m)
 case "$OS-$ARCH" in
   Darwin-arm64)  TARGET="aarch64-apple-darwin" ;;

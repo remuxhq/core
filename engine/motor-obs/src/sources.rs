@@ -8,8 +8,8 @@ use std::ffi::CStr;
 use std::sync::{Arc, Mutex};
 
 use remuxd_domain::engine::{Available, Sources};
+use remuxd_domain::picture::sources::{DisplayId, Screen, Window, WindowId};
 use remuxd_domain::protocol::Named;
-use remuxd_domain::sources::{DisplayId, Screen, Window, WindowId};
 
 use crate::c;
 use libobs as sys;

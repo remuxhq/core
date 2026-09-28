@@ -90,9 +90,9 @@ impl Engine {
         }
         // And a picture of nothing is black on the air: the plan's blocker,
         // kept here too for a face that goes live without a plan.
-        if crate::plan::empty(&self.reported()) {
+        if crate::air::plan::empty(&self.reported()) {
             return Reply::Error {
-                message: crate::plan::EMPTY.into(),
+                message: crate::air::plan::EMPTY.into(),
             };
         }
         // The platforms first, all of them or none: a live carrying
@@ -122,7 +122,7 @@ impl Engine {
         self.status.on_air = true;
         self.status.on_air_since = Some(now());
         let names = self.watching.destinations();
-        self.live = Some(crate::history::Sampler::start(
+        self.live = Some(crate::air::history::Sampler::start(
             now(),
             outlets
                 .iter()
@@ -149,7 +149,7 @@ impl Engine {
         };
         let record = live.finish(now(), self.watching.viewers_peak());
         if let Some(path) = &self.history {
-            if let Err(why) = crate::history::append(path, &record) {
+            if let Err(why) = crate::air::history::append(path, &record) {
                 self.journal.note(now(), format!("! {why}"));
             }
         }
@@ -277,7 +277,7 @@ mod tests {
     // refuses takes the open ones down with it.
     #[test]
     fn going_live_sends_to_every_armed_destination_in_the_file() {
-        use crate::destinations::{add, write, Local};
+        use crate::air::destinations::{add, write, Local};
         let path =
             std::env::temp_dir().join(format!("remuxd-test-dest-{}.json", std::process::id()));
         let mut kept = Vec::new();
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
         engine.tick();
         assert_eq!(engine.handle(Command::Stop), Reply::Ok);
-        let kept = crate::history::read(&path);
+        let kept = crate::air::history::read(&path);
         assert_eq!(kept.len(), 1);
         assert!(kept[0].ended >= kept[0].started);
         // ended on its own: the relay hung up
@@ -335,7 +335,7 @@ mod tests {
         published.lock().expect("published").push(None);
         engine.tick();
         assert!(!engine.status().on_air);
-        assert_eq!(crate::history::read(&path).len(), 2);
+        assert_eq!(crate::air::history::read(&path).len(), 2);
         let _ = std::fs::remove_file(path);
     }
 

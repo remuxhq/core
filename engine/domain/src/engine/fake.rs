@@ -2,8 +2,8 @@
 //! down what it was told, a library, and engines built on them.
 
 use super::*;
-use crate::layers::{Kind, Layer, Source, Transform};
-use crate::sources::{DisplayId, WindowId};
+use crate::picture::layers::{Kind, Layer, Source, Transform};
+use crate::picture::sources::{DisplayId, WindowId};
 
 pub(super) fn engine() -> Engine {
     Engine::new()
@@ -143,12 +143,12 @@ pub(super) struct Wrote {
 impl Picture for Wrote {
     fn scene_transition(
         &mut self,
-        from: &[crate::layers::Layer],
-        to: &[crate::layers::Layer],
+        from: &[crate::picture::layers::Layer],
+        to: &[crate::picture::layers::Layer],
         elements: &[Element],
         shader: Option<&str>,
     ) -> Result<(), String> {
-        let plan = crate::scenes::transition(from, to);
+        let plan = crate::picture::scenes::transition(from, to);
         let mut events = self.scene_events.lock().unwrap();
         let mut prepared = Vec::new();
         for key in &plan.open {
@@ -213,8 +213,8 @@ impl Picture for Wrote {
     }
     fn layer_replace(
         &mut self,
-        old: &crate::layers::Layer,
-        new: &crate::layers::Layer,
+        old: &crate::picture::layers::Layer,
+        new: &crate::picture::layers::Layer,
     ) -> Result<(u32, u32), crate::engine::LayerSwapError> {
         if let Some(reason) = &self.refuse {
             return Err(crate::engine::LayerSwapError {
@@ -232,36 +232,30 @@ impl Picture for Wrote {
                 restored: false,
             })
     }
-    fn layer_add(&mut self, layer: &crate::layers::Layer) -> Result<(u32, u32), String> {
+    fn layer_add(&mut self, layer: &crate::picture::layers::Layer) -> Result<(u32, u32), String> {
         self.refuse.clone().map_or_else(
             || {
                 match layer.source.kind {
-                    crate::layers::Kind::Screen => {
-                        self.told
-                            .lock()
-                            .unwrap()
-                            .push(Behind::Screen(crate::sources::DisplayId(
-                                layer.source.handle.parse().unwrap(),
-                            )))
+                    crate::picture::layers::Kind::Screen => self.told.lock().unwrap().push(
+                        Behind::Screen(crate::picture::sources::DisplayId(
+                            layer.source.handle.parse().unwrap(),
+                        )),
+                    ),
+                    crate::picture::layers::Kind::Window => {
+                        self.told.lock().unwrap().push(Behind::Window(
+                            crate::picture::sources::WindowId(layer.source.handle.parse().unwrap()),
+                        ))
                     }
-                    crate::layers::Kind::Window => {
-                        self.told
-                            .lock()
-                            .unwrap()
-                            .push(Behind::Window(crate::sources::WindowId(
-                                layer.source.handle.parse().unwrap(),
-                            )))
-                    }
-                    crate::layers::Kind::Camera => self
+                    crate::picture::layers::Kind::Camera => self
                         .cameras
                         .lock()
                         .unwrap()
                         .push(Some(layer.source.handle.clone())),
                 }
                 Ok(match layer.source.kind {
-                    crate::layers::Kind::Camera => (1280, 720),
-                    crate::layers::Kind::Window => (853, 479),
-                    crate::layers::Kind::Screen => (1920, 1080),
+                    crate::picture::layers::Kind::Camera => (1280, 720),
+                    crate::picture::layers::Kind::Window => (853, 479),
+                    crate::picture::layers::Kind::Screen => (1920, 1080),
                 })
             },
             Err,
@@ -282,7 +276,7 @@ impl Picture for Wrote {
     }
     fn layer_shader(
         &mut self,
-        _layer: &crate::layers::Layer,
+        _layer: &crate::picture::layers::Layer,
         path: Option<&str>,
     ) -> Result<(), String> {
         if path == Some("bad.wgsl") {
@@ -425,7 +419,7 @@ impl Sound for Wrote {
             samples: 4800,
             level_db: -21.0,
             peak_db: -17.0,
-            gate_levels: crate::gate::GateLevels {
+            gate_levels: crate::sound::mixer::gate::GateLevels {
                 full: 0.05,
                 hf: 0.001,
             },
@@ -544,7 +538,7 @@ impl Library for ThreeGenres {
             .iter()
             .map(|name| Playlist {
                 name: (*name).to_string(),
-                title: crate::music::genre_title(name),
+                title: crate::sound::music::genre_title(name),
                 tracks: (0..6)
                     .map(|n| Track {
                         title: format!("{name} {n}"),

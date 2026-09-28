@@ -1,4 +1,4 @@
-//! The wire's client: one WebSocket to whatever serves `remuxd_domain::wire`,
+//! The wire's client: one WebSocket to whatever serves `remuxd_domain::app::wire`,
 //! frames down into the feed and the account's state, frames up out of the
 //! outbox, reconnecting on its own. The words are the domain's; this is the
 //! socket and the thread.
@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use remuxd_domain::chat::Feed;
+use remuxd_domain::app::chat::Feed;
+use remuxd_domain::app::session::Session;
+use remuxd_domain::app::wire::{Adapter, Down, Up};
 use remuxd_domain::protocol::{Destination, Found};
-use remuxd_domain::session::Session;
-use remuxd_domain::wire::{Adapter, Down, Up};
 use serde_json::json;
 
 /// What the wire has said, readable without waiting, and what waits to be
@@ -120,7 +120,7 @@ impl Source {
         if let Some(url) = remuxd_domain::config::chat_url() {
             return Some(Source::Fixed(url));
         }
-        remuxd_domain::session::read(&remuxd_domain::session::path()).map(Source::Account)
+        remuxd_domain::app::session::read(&remuxd_domain::app::session::path()).map(Source::Account)
     }
 
     /// Where to connect. For an account, `/api/session` answers with the
@@ -143,7 +143,7 @@ impl Source {
                         .ok_or_else(|| format!("the web said {} and no {key}", answer.status))
                 };
                 *shared.scene.lock().expect("scene") = Some(text("rtmp")?);
-                Ok(remuxd_domain::wire::url(
+                Ok(remuxd_domain::app::wire::url(
                     &session.base,
                     &text("socket_token")?,
                 ))

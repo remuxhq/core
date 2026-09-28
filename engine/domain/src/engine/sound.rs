@@ -16,7 +16,10 @@ pub struct SoundLevels {
 /// The sound's half of the media path: the microphone, the music, the mixer
 /// and the speakers. See [`crate::engine::Pipeline`] for why it is a port.
 pub trait Sound: Send {
-    fn audio_layer_add(&mut self, _layer: &crate::audio_layers::Layer) -> Result<(), String> {
+    fn audio_layer_add(
+        &mut self,
+        _layer: &crate::sound::audio_layers::Layer,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn audio_layer_remove(&mut self, _id: &str) {}
@@ -92,7 +95,7 @@ impl Engine {
     pub(super) fn volume(&mut self, level: f64) -> Reply {
         // Up to 200%, which is what a fader offers. Clamping at unity
         // here makes a quiet microphone unraisable.
-        self.status.faders.mic = level.clamp(0.0, crate::music::MAX_GAIN);
+        self.status.faders.mic = level.clamp(0.0, crate::sound::music::MAX_GAIN);
         self.sound()
     }
 
@@ -131,13 +134,13 @@ impl Engine {
 
     /// `remux play clap`: the file the name means, once, over everything.
     pub(super) fn play_clip(&mut self, name: &str) -> Reply {
-        let root = crate::clips::root();
-        let Some(path) = crate::clips::find(name, &root, |p| p.is_file()) else {
+        let root = crate::sound::clips::root();
+        let Some(path) = crate::sound::clips::find(name, &root, |p| p.is_file()) else {
             return Reply::Error {
                 message: format!(
                     "no clip called {name}: not a file, and not in {} ({})",
                     root.display(),
-                    match crate::clips::list(&root).as_slice() {
+                    match crate::sound::clips::list(&root).as_slice() {
                         [] => "which is empty".to_string(),
                         names => names.join(", "),
                     }
@@ -199,7 +202,7 @@ impl Engine {
             .status
             .layers
             .iter()
-            .filter(|layer| layer.source.kind == crate::layers::Kind::Screen);
+            .filter(|layer| layer.source.kind == crate::picture::layers::Kind::Screen);
         let Some(first) = screens.next() else {
             return Reply::Error {
                 message: "no display layer; add one before enabling screen sound".into(),
@@ -215,12 +218,9 @@ impl Engine {
     }
 
     pub(super) fn layer_screen_sound(&mut self, id: String, on: bool) -> Reply {
-        if !self
-            .status
-            .layers
-            .iter()
-            .any(|layer| layer.id == id && layer.source.kind == crate::layers::Kind::Screen)
-        {
+        if !self.status.layers.iter().any(|layer| {
+            layer.id == id && layer.source.kind == crate::picture::layers::Kind::Screen
+        }) {
             return Reply::Error {
                 message: format!("no display layer {id:?}"),
             };
@@ -336,7 +336,7 @@ impl Engine {
     /// because a panel moves one slider at a time; what comes back is
     /// the whole set, so every other face redraws from one answer.
     pub(super) fn gate(&mut self, patch: serde_json::Value) -> Reply {
-        let patch = crate::gate::parse_gate_params(&patch);
+        let patch = crate::sound::mixer::gate::parse_gate_params(&patch);
         let mut params = self.status.gate;
         if let Some(v) = patch.hf {
             params.hf = v;
@@ -1085,12 +1085,12 @@ mod tests {
     #[test]
     fn the_faders_read_in_db_and_the_speakers_read_off_the_status() {
         let (mut engine, _) = speaking_engine();
-        assert_eq!(engine.music_db(), crate::music::fader_db(0.85));
-        assert_eq!(engine.mic_db(), crate::music::fader_db(1.0));
-        assert_eq!(engine.duck_db(), crate::music::DUCK_DEFAULT_DB);
+        assert_eq!(engine.music_db(), crate::sound::music::fader_db(0.85));
+        assert_eq!(engine.mic_db(), crate::sound::music::fader_db(1.0));
+        assert_eq!(engine.duck_db(), crate::sound::music::DUCK_DEFAULT_DB);
         assert!(!engine.monitoring());
         engine.handle(Command::MusicVolume { level: 0.25 });
-        assert_eq!(engine.music_db(), crate::music::fader_db(0.25));
+        assert_eq!(engine.music_db(), crate::sound::music::fader_db(0.25));
         engine.handle(Command::Genre {
             name: "lofi".into(),
         });
