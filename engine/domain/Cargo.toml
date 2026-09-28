@@ -14,13 +14,11 @@ description = "Everything the engine decides. No Apple framework reaches this cr
 #
 # What is here is serde and the two things the wire needs beside it: base64
 # for a picture in a line of JSON, and schemars, which prints the schema
-# `remux schema` shows; and the two filter contracts every motor hosts,
-# remux-shader for the picture and remux-mixer for the sound, so a motor
-# depends on the domain alone. None of them knows what a display is.
+# `remux schema` shows; and remux-mixer, whose gate the sound context tunes.
+# None of them knows what a display is.
 [dependencies]
 base64 = "0.22"
 remux-mixer = { path = "../mixer" }
-remux-shader = { path = "../shader" }
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }

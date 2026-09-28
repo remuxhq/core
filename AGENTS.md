@@ -52,8 +52,7 @@ the documentation; a measurement behind a decision goes in the comment beside it
   is everything about filters: the WGSL contract and its OBS effect. `engine/mixer/` is
   its audio twin: the `Filter` contract every motor hosts (interleaved samples in place,
   a latency the host takes back) and remux's filters, the gate first; `gate.rs` in
-  motor-obs hosts it as `remux_gate`. The domain re-exports both contracts
-  (`picture::shader`, `sound::mixer`), so a motor depends on the domain alone.
+  motor-obs hosts it as `remux_gate`.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `engine/cli/`: `remux`. The words are `words.rs` (typed words to a `Command`, a `Reply`
   to prose, help and the guide); its prose is a contract.
