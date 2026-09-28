@@ -255,6 +255,53 @@ mod tests {
     }
 
     #[test]
+    fn the_picture_names_a_camera_and_the_elements_and_elements_alone_are_not_empty() {
+        let element = |id: &str, content| crate::scenes::Element {
+            id: id.into(),
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 100,
+            visible: true,
+            shader: None,
+            content,
+        };
+        let mut scene = crate::scenes::defaults().remove(0);
+        scene.elements = vec![
+            element(
+                "title",
+                crate::scenes::ElementContent::Text {
+                    text: "Chegando".into(),
+                },
+            ),
+            element(
+                "clock",
+                crate::scenes::ElementContent::Timer { seconds: 60 },
+            ),
+        ];
+        let mut face = crate::health::tests::screen_layer("FaceTime");
+        face.id = "face".into();
+        face.source.kind = crate::layers::Kind::Camera;
+        let mut status = Status {
+            layers: vec![face],
+            scenes: vec![scene],
+            ..ready()
+        };
+        let plan = Plan::of(&status);
+        assert_eq!(
+            plan.picture,
+            "face (camera FaceTime), title (text Chegando), clock (timer 60 s)"
+        );
+        assert_eq!(plan.camera.as_deref(), Some("FaceTime"));
+        status.layers.clear();
+        assert!(
+            !empty(&status),
+            "a scene with only words in it has a picture"
+        );
+        assert!(Plan::of(&status).blockers.is_empty());
+    }
+
+    #[test]
     fn the_fingerprint_moves_with_what_a_person_confirms_and_with_nothing_else() {
         let a = Plan::of(&ready());
         let mut retitled = ready();
