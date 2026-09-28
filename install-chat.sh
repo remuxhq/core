@@ -6,7 +6,7 @@
 #
 # What it does, and says before doing: checks for python3 (3.9 or newer, the
 # standard library only), puts `remux-chat` in ~/.local/bin, which runs the
-# bridge in the foreground, and points the engine at it (remux chat --url).
+# bridge in the foreground, and points the engine at it (remux chat url).
 # The channel and the video go in ~/.config/remux/config.toml under [byo], or
 # on remux-chat's command line. Safe to run again. Needs remux installed
 # first (install.sh); the YouTube Data API key goes in byo.env
@@ -66,4 +66,4 @@ say "installed $BIN_DIR/remux-chat"
 say ""
 say "next:  remux-chat --twitch <channel> --youtube <video id>     in its own pane"
 say "       (or [byo] twitch = \"…\", youtube = \"…\" in ~/.config/remux/config.toml, then just remux-chat)"
-say "       remux chat -f                                          the lines, as they come"
+say "       remux chat read -f                                     the lines, as they come"

@@ -13,10 +13,12 @@ share.
 port it drives; `mod.rs` holds the state, the dispatcher and what crosses contexts
 (the panic button, the tick, the status):
 
-- `picture`: what is behind the picture, the cards, the layout, the preview lease.
-  Port: `Picture`.
+- `picture`: the active scene's layers (captures) and elements (text, timers) in one
+  back-to-front order, the scenes and their switch, the filters (OBS effects), the
+  preview lease. Port: `Picture`.
 - `sound`: the microphone, the gate, the denoiser, the music and its rotation, the
-  clips, the faders, the speakers, the screen's sound. Port: `Sound`.
+  clips, the faders, the speakers, the screen's sound, one application's sound, the
+  audio layers. Port: `Sound`.
 - `air`: going live and recording, the two levers on the same picture; the live written
   down when it ends. Port: `Air`.
 - `app`: what the engine asks on a face's behalf (arm, retitle, announce, the chat, the
@@ -34,8 +36,8 @@ the panic button.
 - `wire`: what a server and the engine say to each other (`docs/wire.md`); `chat` is
   the feed every face reads.
 - `config`, `os`: what is in effect, and the one table of what differs per OS.
-- `plan`, `scenes`, `history`, `clips`, `remembered`, `music`, `gate`: pure, with the
-  file beside.
+- `plan`, `layers`, `scenes`, `audio_layers`, `history`, `clips`, `remembered`, `music`,
+  `gate`: pure, with the file beside.
 
 ## Rules
 

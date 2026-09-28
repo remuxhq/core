@@ -41,11 +41,14 @@ the documentation; a measurement behind a decision goes in the comment beside it
   sound, air, app; ports `Picture`, `Sound`, `Air`, `Sources`, `Watching`.
   `destinations` (the file; `Local` is the `Watching` with no account), `session` and
   `login` (`remux login`), `wire` (what a server and the engine say to each other) and
-  `chat` (the feed), `config`, `os`, `history`, `plan`, `scenes`, `music`, `gate`.
+  `chat` (the feed), `config`, `os`, `history`, `plan`, `layers`, `scenes`, `audio_layers`,
+  `music`, `gate`.
 - `engine/remuxd/`: the daemon: `boot` (the daemon as a function, given a motor), the
   socket, `wire.rs` (the one WebSocket to whoever serves the wire); `smoke/` the parity
   checks, `cli.py` and the lab.
-- `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS.
+- `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
+  the layers and elements on one scene, `effect.rs` the two sources it adds to libobs
+  (an operator's OBS effect as a filter, an element's box of text).
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
 - `byo/`, `docs/`, `scripts/`, `install*.sh`, `uninstall.sh`.
