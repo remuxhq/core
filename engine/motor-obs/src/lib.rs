@@ -6,7 +6,9 @@
 
 pub mod effect;
 pub mod ffi;
+mod picture;
 mod pipeline;
+pub mod place;
 pub mod platform;
 mod preview;
 mod sources;
@@ -21,7 +23,7 @@ pub use sources::ObsSources;
 
 pub use platform::app;
 
-pub(crate) fn c(s: &str) -> CString {
+pub fn c(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
 }
 

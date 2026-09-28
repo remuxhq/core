@@ -28,7 +28,21 @@ pub struct Ring {
     camera: Mutex<Alone>,
     screen: Mutex<Alone>,
     render_on: bool,
+    /// One source asked for once, alone, at its own shape.
+    snap: Mutex<Option<Snap>>,
 }
+
+/// A source rendered alone once, fitted into 960x540, for a shot of one
+/// layer or one element.
+struct Snap {
+    source: *mut c_void,
+    width: u32,
+    height: u32,
+    taken: Option<Vec<u8>>,
+}
+
+// SAFETY: as `Alone`.
+unsafe impl Send for Snap {}
 
 /// One source rendered alone, 960x540, for its ring.
 #[derive(Default)]
@@ -99,6 +113,7 @@ impl Ring {
             camera: Mutex::new(Alone::default()),
             screen: Mutex::new(Alone::default()),
             render_on: false,
+            snap: Mutex::new(None),
         }))
     }
 
@@ -158,10 +173,120 @@ impl Ring {
         self.render_on = on;
     }
 
+    /// One source alone, once: rendered on the next frame, at most a second
+    /// away, and handed back as a JPEG of its own shape.
+    pub fn snap(&mut self, source: *mut c_void) -> Option<(Vec<u8>, u32, u32)> {
+        let (w, h) = unsafe {
+            (
+                ffi::obs_source_get_width(source),
+                ffi::obs_source_get_height(source),
+            )
+        };
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let scale = (WIDE as f64 / w as f64)
+            .min(TALL as f64 / h as f64)
+            .min(1.0);
+        let (width, height) = (
+            ((w as f64 * scale).round() as u32).max(1),
+            ((h as f64 * scale).round() as u32).max(1),
+        );
+        *self.snap.lock().ok()? = Some(Snap {
+            source,
+            width,
+            height,
+            taken: None,
+        });
+        let was_on = self.render_on;
+        self.render(true);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let taken = loop {
+            if let Some(taken) = self
+                .snap
+                .lock()
+                .ok()
+                .and_then(|mut s| s.as_mut().and_then(|s| s.taken.take()))
+            {
+                break Some(taken);
+            }
+            if std::time::Instant::now() >= until {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        if let Ok(mut s) = self.snap.lock() {
+            *s = None;
+        }
+        self.render(was_on);
+        let taken = taken?;
+        let mut out = Vec::new();
+        jpeg_encoder::Encoder::new(&mut out, 80)
+            .encode(
+                &taken,
+                width as u16,
+                height as u16,
+                jpeg_encoder::ColorType::Bgra,
+            )
+            .ok()?;
+        Some((out, width, height))
+    }
+
+    /// The asked-for snap, inside the graphics context: rendered, staged and
+    /// copied out, its texture and stage gone again before this returns.
+    unsafe fn take_snap(&self) {
+        let Ok(mut asked) = self.snap.try_lock() else {
+            return;
+        };
+        let Some(snap) = asked.as_mut().filter(|s| s.taken.is_none()) else {
+            return;
+        };
+        let (w, h) = (
+            ffi::obs_source_get_width(snap.source),
+            ffi::obs_source_get_height(snap.source),
+        );
+        if w == 0 || h == 0 {
+            return;
+        }
+        let texrender = ffi::gs_texrender_create(ffi::GS_BGRA, ffi::GS_ZS_NONE);
+        let stage = ffi::gs_stagesurface_create(snap.width, snap.height, ffi::GS_BGRA);
+        if ffi::gs_texrender_begin(texrender, snap.width, snap.height) {
+            let clear = ffi::Vec4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            };
+            ffi::gs_clear(ffi::GS_CLEAR_COLOR, &clear, 0.0, 0);
+            ffi::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
+            ffi::obs_source_video_render(snap.source);
+            ffi::gs_texrender_end(texrender);
+            ffi::gs_stage_texture(stage, ffi::gs_texrender_get_texture(texrender));
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let mut linesize: u32 = 0;
+            if ffi::gs_stagesurface_map(stage, &mut data, &mut linesize) && !data.is_null() {
+                let row = (snap.width * 4) as usize;
+                let mut whole = Vec::with_capacity(row * snap.height as usize);
+                for y in 0..snap.height as usize {
+                    whole.extend_from_slice(std::slice::from_raw_parts(
+                        data.add(y * linesize as usize),
+                        row,
+                    ));
+                }
+                ffi::gs_stagesurface_unmap(stage);
+                snap.taken = Some(whole);
+            }
+        }
+        ffi::gs_stagesurface_destroy(stage);
+        ffi::gs_texrender_destroy(texrender);
+    }
+
     extern "C" fn on_render(param: *mut c_void, _cx: u32, _cy: u32) {
         // SAFETY: `param` is the ring; this runs inside libobs's graphics
         // context, where the gs_* calls are allowed.
         let ring = unsafe { &*(param as *const Self) };
+        // SAFETY: as above.
+        unsafe { ring.take_snap() };
         for (alone, offset_of, counts_at) in [
             (
                 &ring.camera,

@@ -1,6 +1,5 @@
-//! Pictures the motor draws itself, as PNG files an `image_source` shows:
-//! the circle mask of the camera. The words (the cards) are libobs's own
-//! text source.
+//! Pictures the motor draws itself, as PNG files libobs reads: the circle
+//! mask of a camera.
 
 use std::path::{Path, PathBuf};
 
@@ -11,12 +10,19 @@ pub fn folder() -> PathBuf {
     dir
 }
 
-/// A mask the size given: white inside the circle that fits it, clear
-/// outside. What `mask_filter` cuts a camera to.
-pub fn circle_mask(path: &Path, (width, height): (u32, u32)) -> Result<PathBuf, String> {
+/// A mask the size of a source: white inside the circle that fits the
+/// square `region` of it, clear everywhere else. `mask_filter` stretches its
+/// image over the whole source before the item's crop, so the circle is drawn
+/// where the crop will leave it.
+pub fn circle_mask(
+    path: &Path,
+    (width, height): (u32, u32),
+    region: crate::place::Region,
+) -> Result<PathBuf, String> {
     let mut rgba = vec![0u8; (width * height * 4) as usize];
-    let (cx, cy) = (width as f64 / 2.0, height as f64 / 2.0);
-    let radius = cx.min(cy);
+    let cx = f64::from(region.x) + f64::from(region.width) / 2.0;
+    let cy = f64::from(region.y) + f64::from(region.height) / 2.0;
+    let radius = f64::from(region.width.min(region.height)) / 2.0;
     for y in 0..height {
         for x in 0..width {
             let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
