@@ -26,8 +26,9 @@ git diff --stat "$last"..origin/main
 ```
 
 Read the merged pull requests and the diff of anything a person meets: the CLI's
-words and help, `install*.sh`, what the engine does on the air. If nothing changed
-for a person, there is nothing to release.
+words and help, `install*.sh`, what the engine does on the air. A release with
+nothing changed for a person is still a release when the person asks for one; its
+notes say what changed inside.
 
 ## 2. The version
 
@@ -36,6 +37,10 @@ The person who asks for the release names it. When they name none, ask:
 - **Patch** (0.1.1 to 0.1.2): fixes, and changes a person does not have to learn.
 - **Minor** (0.1 to 0.2): a new command, a changed word, a behaviour a person
   notices. While remux is 0.x, a breaking change is a minor too.
+
+Versions only go up, and a version on main is fixed once merged, published or not:
+its number and its notes are never renamed or rewritten. What comes after it is the
+next version, with notes of its own.
 
 ## 3. The bump
 
@@ -56,8 +61,8 @@ its own lockfile.
 
 ## 4. The notes
 
-`docs/releases/<version>.md`, for a person who uses remux, not for whoever wrote
-the code:
+`docs/releases/<version>.md`, a new file per version, for a person who uses remux
+first:
 
 ```
 remux 0.1.2.
@@ -66,6 +71,9 @@ remux 0.1.2.
 - ...
 - For developers: <a new build prerequisite, when there is one>.
 ```
+
+When nothing changed for a person, the notes say what changed in the architecture,
+one bullet per change, and end with "Nothing changes for a person using remux."
 
 - One bullet per change a person notices, the most important first. Five is plenty.
 - What it does, not how: "the gate's keys boost and floor act now", not "hosted under
