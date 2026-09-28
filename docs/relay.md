@@ -21,6 +21,4 @@ per platform whose key is set in the environment (`TWITCH_KEY`, `YOUTUBE_KEY`, f
 walk-through.
 
 Any other RTMP server works the same way, on this machine or elsewhere: give the
-engine its URL and its key. The smokes' lab (`engine/remuxd/smoke/lab/`) is the same
-shape in Docker, a platform's door and a relay in front of it, with the egress script
-beside.
+engine its URL and its key.

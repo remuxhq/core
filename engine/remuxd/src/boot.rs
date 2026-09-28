@@ -18,7 +18,7 @@ pub struct Motor {
 }
 
 /// Where Go live sends the picture, from the environment and never from a
-/// client: `REMUXD_RTMP` overrides the destinations, which is how the smokes
+/// client: `REMUXD_RTMP` overrides the destinations, which is how a test
 /// send a live to one door or a file.
 fn destination() -> Option<String> {
     std::env::var("REMUXD_RTMP").ok().filter(|s| !s.is_empty())

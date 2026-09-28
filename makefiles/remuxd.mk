@@ -1,6 +1,6 @@
 ##@ remuxd (the engine, Rust, runs on the host)
 
-.PHONY: smoke.lab.up smoke.lab.down obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.deps remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.cli  remuxd.run
+.PHONY: remuxd.lint remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.deps remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
 
 remuxd.deps: ## What the engine needs on this machine
 	@command -v cargo >/dev/null || { echo "cargo missing: https://rustup.rs"; exit 1; }
@@ -67,12 +67,24 @@ remuxd.build.obs: ## Build the engine with the libobs motor alone (macOS: agains
 	@$(CARGO) build --locked --release -p remuxd -p remux --features remuxd/obs
 	$(sign)
 
-remuxd.check: ## The gate: seam, format, clippy as errors, tests, coverage
+remuxd.check: ## The gate: remuxd.lint, remuxd.tests, remuxd.cover
+	@$(MAKE) remuxd.lint
+	@$(MAKE) remuxd.tests
+	@$(MAKE) remuxd.cover
+
+# The gate's parts, which CI calls by name so a job runs what a person runs.
+# motor-obs is a workspace of its own (it links the machine's OBS), so
+# `--all` never reaches it: it is formatted, linted and tested by its manifest.
+remuxd.lint: ## Seam, format and clippy as errors, the engine's workspace and motor-obs's
 	@$(MAKE) remuxd.seam
 	@$(CARGO) fmt --all -- --check
+	@$(CARGO) fmt --manifest-path motor-obs/Cargo.toml -- --check
 	@$(CARGO) clippy --locked --all-targets --all-features -- -D warnings
-	@$(CARGO) nextest run --locked --all-targets 
-	@$(MAKE) remuxd.cover
+	@$(CARGO) clippy --locked --manifest-path motor-obs/Cargo.toml --all-targets -- -D warnings
+
+remuxd.tests: ## Every test, the engine's workspace and motor-obs's
+	@$(CARGO) nextest run --locked --all-targets
+	@$(CARGO) test --locked --manifest-path motor-obs/Cargo.toml
 
 # The seam, asserted rather than trusted. remuxd-domain holds every decision
 # and must never learn what an Apple framework is; keeping that true is the
@@ -142,15 +154,13 @@ remuxd.cover: ## Coverage of the decisions, and fail under the gate
 # The parity suite: every feature driven against a real daemon over its real
 # socket. Same reason it is not in remuxd.check as : it needs this
 # machine. S=name runs one.
-# One of the faces, against a real daemon. The grammar itself is unit tested in
-# the domain; this is the half that needs a socket on the other end.
 # The engine, configured, in the foreground: everything it needs comes from
 # one place, so the last step of anything is one command rather than an
 # environment somebody assembles from memory.
 # The engine's environment, assembled once for the foreground and the
 # background: the music folder (recordings go where the OS table says). Where a live goes
-# is the destinations file's; `REMUXD_RTMP` overrides that when set, which
-# is what the smokes do. The operator's own folders win when
+# is the destinations file's; `REMUXD_RTMP` overrides that when set (a test
+# live, a file). The operator's own folders win when
 # ~/.config/remux/operator.env exists (0600, KEY=value lines).
 define remuxd-env
 export REMUX_MUSIC_DIR="$${REMUX_MUSIC_HOST:-./music}"; \
@@ -180,19 +190,4 @@ remuxd.start: remuxd.build ## Start the engine in the background if none is list
 	./engine/target/release/remux status >/dev/null 2>&1 \
 		|| { echo "remuxd did not answer in 30s; its log: remux daemon log"; exit 1; }; \
 	echo "remuxd: listening; its log: remux daemon log"
-
-remuxd.cli: remuxd.build ## Every CLI verb, round-tripped against a running engine
-	@python3 engine/remuxd/smoke/cli.py
-
-# One engine, several faces, and whether they agree about it. The point of the
-# socket is that there is one contract; a test of one client proves the client.
-smoke.lab.up: ## The free flow's lab: a platform's RTMP door and a relay of one's own (docker)
-	@docker compose -f engine/remuxd/smoke/lab/compose.yml up -d
-
-smoke.lab.down: ## Stop the lab
-	@docker compose -f engine/remuxd/smoke/lab/compose.yml down
-
-remuxd.smoke: remuxd.build ## Every parity check against a running engine (this build's motor). S=name for one
-	@$(CARGO) build --locked -p remuxd 2>/dev/null
-	@python3 engine/remuxd/smoke/parity.py $(S)
 

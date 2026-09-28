@@ -52,4 +52,4 @@ the panic button.
   HTTP call is transport; if it starts deciding, split it.
 - Stream keys and tokens are per-row data in the destinations file, never in code,
   config or logs; the shell writes them, the engine reads them.
-- The CLI's default prose is a contract (`smoke/cli.py`); `--json` is the shape.
+- The CLI's default prose is a contract (its unit tests); `--json` is the shape.

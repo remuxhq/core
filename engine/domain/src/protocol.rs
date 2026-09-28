@@ -77,8 +77,7 @@ pub enum Command {
     /// for five seconds stops itself, camera and microphone released, the
     /// way the panel's own Quit would have. A panel closed by any door, or
     /// one that crashed, leaves no daemon holding a camera with its light on.
-    /// An engine that never heard it runs until told: the CLI's engine, and
-    /// the smokes'.
+    /// An engine that never heard it runs until told: the CLI's engine.
     Present,
     /// Only the meters, so a panel can draw them at the rate they move.
     ///

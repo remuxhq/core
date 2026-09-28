@@ -5,7 +5,7 @@ bitrate. Run over what a download brought before it is dropped into the
 folder the engine plays from, and over the whole folder after.
 
     make music.check            # the whole folder
-    python3 engine/remuxd/smoke/library.py <dir>   # a staging folder
+    python3 scripts/music-check.py <dir>   # a staging folder
 """
 import json, os, struct, subprocess, sys
 OK_FRAMES = {"TIT2","TPE1","TALB","TYER","TDRC","TRCK","TCON","TSSE","TENC","COMM","TXXX","TPE2","TCOM","TPOS","TLEN","TDEN","TDTG","TDOR","TIT1","TIT3","TPUB","TCOP","TBPM","TKEY","TLAN","TMED","TOFN","TOPE","TOAL","TORY","USLT","TSRC","TSOP","TSOT","TSOA","TCMP",

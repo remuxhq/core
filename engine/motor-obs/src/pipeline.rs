@@ -716,7 +716,7 @@ impl ObsPipeline {
             self.rtmp(url)?
         } else {
             // Anything else is a file, as the native motor's ffmpeg takes it:
-            // the smokes send a live to one. An FLV is libobs's own writer of
+            // a test sends a live to one. An FLV is libobs's own writer of
             // what RTMP would carry (its ffmpeg muxer wrote nothing to one).
             let kind = if url.ends_with(".flv") {
                 "flv_output"

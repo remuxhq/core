@@ -13,7 +13,7 @@
 | engine | OBS (libobs) | `OBS_APP`, or `[daemon] obs_app` | `/Applications/OBS.app`; Linux the prefix, `/usr` |
 | CLI | the engine as a service | `remux daemon` | launchd `~/Library/LaunchAgents/com.remux.remuxd.plist`; Linux `~/.config/systemd/user/remuxd.service` |
 
-`REMUXD_RTMP` sends a live to one URL instead of the destinations (the smokes, a file).
+`REMUXD_RTMP` sends a live to one URL instead of the destinations (a test live, a file).
 
 ## Architecture and discipline
 
