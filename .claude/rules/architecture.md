@@ -31,13 +31,19 @@ the panic button.
 
 ## Beside the engine
 
-- `destinations`: the file (`~/.config/remux/destinations.json`) and `Local`, the
-  `Watching` over it.
-- `wire`: what a server and the engine say to each other (`docs/wire.md`); `chat` is
-  the feed every face reads.
-- `config`, `os`: what is in effect, and the one table of what differs per OS.
-- `plan`, `layers`, `scenes`, `audio_layers`, `history`, `clips`, `remembered`, `music`,
-  `gate`: pure, with the file beside.
+The domain's modules sit under the context they serve, so a building block is found
+where its verbs are:
+
+- `picture/`: scene, layers, scenes, sources, camera, preview, timer. Its filters are
+  `remux-shader`, a crate of its own for the WGSL parser.
+- `sound/`: audio_layers, music, clips; `sound/mixer/` is audio filtering (gate,
+  levels).
+- `air/`: destinations (the file, `~/.config/remux/destinations.json`, and `Local`,
+  the `Watching` over it), plan, recording, history, journal.
+- `app/`: wire (`docs/wire.md`), chat (the feed every face reads), session, login.
+- At the top, the host: `config`, `os` (what is in effect, and the one table of what
+  differs per OS), `log`, `socket`, `daemon`, `bug`, `wait`, `health`, `remembered`;
+  and `protocol`, the language between faces and engine.
 
 ## Rules
 

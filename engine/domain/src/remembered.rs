@@ -16,21 +16,21 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::gate::GateParams;
 use crate::protocol::Faders;
+use crate::sound::mixer::gate::GateParams;
 
 /// The setup, as it was last left.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Remembered {
     /// Ordered scene sources and their independent layouts. Missing devices are skipped.
     #[serde(default)]
-    pub layers: Vec<crate::layers::Layer>,
+    pub layers: Vec<crate::picture::layers::Layer>,
     #[serde(default)]
-    pub scenes: Vec<crate::scenes::Scene>,
+    pub scenes: Vec<crate::picture::scenes::Scene>,
     #[serde(default = "crate::protocol::default_scene_name")]
     pub active_scene: String,
     #[serde(default)]
-    pub audio_layers: Vec<crate::audio_layers::Layer>,
+    pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
     #[serde(default)]
     pub mic: Option<String>,
     #[serde(default)]
@@ -209,8 +209,12 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                ("screen-1", crate::layers::Kind::Screen, "2"),
-                ("camera-1", crate::layers::Kind::Camera, "FaceTime HD")
+                ("screen-1", crate::picture::layers::Kind::Screen, "2"),
+                (
+                    "camera-1",
+                    crate::picture::layers::Kind::Camera,
+                    "FaceTime HD"
+                )
             ]
         );
         assert_eq!(back.layers[1].transform.x, 1416);

@@ -51,9 +51,9 @@ impl Crop {
     /// Core Image has a bottom-left origin; the CLI names the top-left.
     /// A resized source that no longer contains the crop is hidden, never
     /// replaced with the full uncropped picture.
-    pub fn rect(self, size: (u32, u32)) -> Option<crate::scene::Rect> {
+    pub fn rect(self, size: (u32, u32)) -> Option<crate::picture::scene::Rect> {
         self.validate(size).ok()?;
-        Some(crate::scene::Rect {
+        Some(crate::picture::scene::Rect {
             x: f64::from(self.x),
             y: f64::from(size.1 - self.y - self.height),
             width: f64::from(self.width),
@@ -143,7 +143,7 @@ pub struct Layer {
     /// Camera-only mask; other sources have no shape. Existing camera layers
     /// are rectangular until the operator asks for a circle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shape: Option<crate::scene::CameraShape>,
+    pub shape: Option<crate::picture::scene::CameraShape>,
     /// Flip only this camera, independently of other cameras.
     #[serde(default)]
     pub mirrored: bool,
@@ -232,7 +232,7 @@ mod tests {
         assert!(valid.validate((640, 480)).is_ok());
         assert_eq!(
             valid.rect((640, 480)),
-            Some(crate::scene::Rect {
+            Some(crate::picture::scene::Rect {
                 x: 100.0,
                 y: 230.0,
                 width: 300.0,

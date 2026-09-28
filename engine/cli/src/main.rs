@@ -207,7 +207,7 @@ fn report_health(path: &std::path::Path, format: Format) -> ! {
 /// `remux destination add`: the shell writes the destinations file itself,
 /// so the key goes from stdin (or a file) to a 0600 file and nowhere else.
 fn keep_a_destination(platform: &str, name: &str, url: &str, key_from: &cli::KeyFrom) -> ! {
-    use remuxd_domain::destinations;
+    use remuxd_domain::air::destinations;
     let key = read_key(key_from);
     let path = destinations::path();
     let mut kept = destinations::read(&path);
@@ -256,7 +256,8 @@ fn read_key(key_from: &cli::KeyFrom) -> String {
 /// until they have and keeps the token in the session file. Nothing
 /// crosses the socket; the engine reads the file at its next start.
 fn log_in(base: &str) -> ! {
-    use remuxd_domain::{destinations::Key, login, session};
+    use remuxd_domain::air::destinations::Key;
+    use remuxd_domain::app::{login, session};
     let outcome = (|| -> Result<String, String> {
         let began = remux_wire::post_json(&format!("{base}/api/device"), &serde_json::json!({}))?;
         let started = login::started(began.status, &began.body)?;
@@ -404,7 +405,7 @@ fn report_a_bug(path: &std::path::Path, open: bool) -> ! {
 }
 
 fn log_out() -> ! {
-    use remuxd_domain::session;
+    use remuxd_domain::app::session;
     if session::forget(&session::path()) {
         println!("signed out; restart remuxd");
     } else {
@@ -414,7 +415,7 @@ fn log_out() -> ! {
 }
 
 fn forget_a_destination(which: &str) -> ! {
-    use remuxd_domain::destinations;
+    use remuxd_domain::air::destinations;
     let path = destinations::path();
     let mut kept = destinations::read(&path);
     if !destinations::remove(&mut kept, which) {

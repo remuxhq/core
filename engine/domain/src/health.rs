@@ -46,7 +46,7 @@ pub fn of(status: &Status, grants: &Grants) -> Health {
     if status
         .layers
         .iter()
-        .any(|l| l.source.kind == crate::layers::Kind::Camera)
+        .any(|l| l.source.kind == crate::picture::layers::Kind::Camera)
     {
         trouble.extend(grant("camera", grants.camera));
     }
@@ -81,18 +81,18 @@ pub(crate) mod tests {
     use super::*;
     use crate::protocol::Destination;
 
-    pub(crate) fn screen_layer(name: &str) -> crate::layers::Layer {
-        crate::layers::Layer {
+    pub(crate) fn screen_layer(name: &str) -> crate::picture::layers::Layer {
+        crate::picture::layers::Layer {
             id: "desk".into(),
-            source: crate::layers::Source {
-                kind: crate::layers::Kind::Screen,
+            source: crate::picture::layers::Source {
+                kind: crate::picture::layers::Kind::Screen,
                 handle: "1".into(),
                 name: name.into(),
                 width: 1920,
                 height: 1080,
                 stable: None,
             },
-            transform: crate::layers::Transform::native((1920, 1080)),
+            transform: crate::picture::layers::Transform::native((1920, 1080)),
             visible: true,
             crop: None,
             shape: None,
@@ -155,7 +155,7 @@ pub(crate) mod tests {
         let (mut status, grants) = ready();
         let mut face = screen_layer("FaceTime");
         face.id = "face".into();
-        face.source.kind = crate::layers::Kind::Camera;
+        face.source.kind = crate::picture::layers::Kind::Camera;
         status.layers.push(face);
         status.destinations[0].trouble = Some("youtube said 403".into());
         let said = of(&status, &grants);

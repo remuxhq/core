@@ -40,7 +40,8 @@ fn wire() -> (
     Box<dyn remuxd_domain::engine::Watching>,
 ) {
     use crate::wire::{keep, App, Shared, Source};
-    use remuxd_domain::{chat, destinations, session};
+    use remuxd_domain::air::destinations;
+    use remuxd_domain::app::{chat, session};
     let started = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_millis() as u64)
@@ -91,7 +92,7 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
             .with_library(Box::new(crate::library::Folder::default()))
             .with_destination(destination())
             .with_recordings(recordings())
-            .with_history(Some(remuxd_domain::history::path()))
+            .with_history(Some(remuxd_domain::air::history::path()))
             .with_app(watching)
             .with_chat(Arc::clone(&wire.feed)),
     ));

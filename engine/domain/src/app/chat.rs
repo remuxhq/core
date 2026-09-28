@@ -1,11 +1,11 @@
-//! The chat as the engine holds it, off the wire (`crate::wire`): the ring
+//! The chat as the engine holds it, off the wire (`crate::app::wire`): the ring
 //! every face reads. Where a chat of one's own comes from is
 //! `config::chat_url`. Pure; the socket is `remuxd::wire`.
 
 use std::collections::{BTreeSet, VecDeque};
 
+use crate::app::wire::{Delete, Line, Up};
 use crate::protocol::{ChatLine, CHAT_LINES};
-use crate::wire::{Delete, Line, Up};
 
 /// The last of the chat, as the engine holds it for every face: numbered as
 /// it arrived, bounded, with what a face took off (`hide`) and what waits to

@@ -1,5 +1,5 @@
 //! Ordered scene content and physical capture reuse.
-use crate::layers::{Kind, Layer};
+use crate::picture::layers::{Kind, Layer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

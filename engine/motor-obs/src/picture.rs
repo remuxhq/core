@@ -11,9 +11,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use remuxd_domain::engine::{LayerSwapError, Picture};
-use remuxd_domain::layers::{Kind, Layer, Source};
+use remuxd_domain::picture::layers::{Kind, Layer, Source};
+use remuxd_domain::picture::scenes::{Element, ElementContent};
 use remuxd_domain::protocol::{Flowing, Framed};
-use remuxd_domain::scenes::{Element, ElementContent};
 
 use crate::pipeline::ObsPipeline;
 use crate::place::{placement, Region};
@@ -72,7 +72,7 @@ fn size_of(source: *mut sys::obs_source_t) -> (u32, u32) {
 }
 
 fn clock(left: Duration) -> String {
-    remuxd_domain::timer::clock(left.as_secs_f64().ceil() as i64)
+    remuxd_domain::picture::timer::clock(left.as_secs_f64().ceil() as i64)
 }
 
 /// A timer's words now, and when it runs out if it is running.
@@ -80,9 +80,10 @@ fn timer_words(element: &Element, left: Option<Duration>) -> (String, Option<Ins
     match (&element.content, left) {
         (ElementContent::Text { text }, _) => (text.clone(), None),
         (ElementContent::Timer { .. }, Some(left)) => (clock(left), Some(Instant::now() + left)),
-        (ElementContent::Timer { seconds }, None) => {
-            (remuxd_domain::timer::clock(i64::from(*seconds)), None)
-        }
+        (ElementContent::Timer { seconds }, None) => (
+            remuxd_domain::picture::timer::clock(i64::from(*seconds)),
+            None,
+        ),
     }
 }
 
@@ -966,7 +967,7 @@ impl Picture for ObsPipeline {
             .map_or_else(Flowing::default, |d| Self::flowing_of(d.source))
     }
 
-    fn preview(&self) -> Option<remuxd_domain::preview::Preview> {
+    fn preview(&self) -> Option<remuxd_domain::picture::preview::Preview> {
         self.preview.as_ref().map(|ring| ring.said().clone())
     }
 

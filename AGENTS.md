@@ -35,12 +35,15 @@ the documentation; a measurement behind a decision goes in the comment beside it
 
 ## Layout
 
-- `engine/domain/`: every decision, serde only. Contexts under `src/engine/`: picture,
-  sound, air, app; ports `Picture`, `Sound`, `Air`, `Sources`, `Watching`.
-  `destinations` (the file; `Local` is the `Watching` with no account), `session` and
-  `login` (`remux login`), `wire` (what a server and the engine say to each other) and
-  `chat` (the feed), `config`, `os`, `history`, `plan`, `layers`, `scenes`, `audio_layers`,
-  `music`, `gate`.
+- `engine/domain/`: every decision, serde only, grouped by the engine's four contexts.
+  `picture/` (scene, layers, scenes, sources, camera, preview, timer), `sound/`
+  (audio_layers, music, clips, and `mixer/`: gate, levels), `air/` (destinations, the
+  file whose `Local` is the `Watching` with no account; plan, recording, history,
+  journal), `app/` (chat, the feed; wire, what a server and the engine say to each
+  other; session and login, `remux login`). `engine/` holds the contexts' verbs and
+  ports (`Picture`, `Sound`, `Air`, `Sources`, `Watching`); `protocol` is the language
+  between faces and engine; `config`, `os`, `log`, `socket`, `daemon` and the rest at
+  the top are the host.
 - `engine/remuxd/`: the daemon: `boot` (the daemon as a function, given a motor), the
   socket, `wire.rs` (the one WebSocket to whoever serves the wire).
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`

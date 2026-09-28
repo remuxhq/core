@@ -6,14 +6,14 @@
 //! `cargo test` and one you can only find out about by running it. The
 //! transport is [`crate::server`], and it is thin enough to read in one go.
 
-use crate::gate::GateParams;
-use crate::music::{fader_db, Playlist, Rotation, Track};
+use crate::picture::scenes::{Element, ElementContent};
+use crate::picture::sources::{pick, pick_device, DisplayId, Screen, Window, WindowId};
 use crate::protocol::{
     Command, Destination, Devices, Flowing, Found, Framed, Grant, Hearing, Mixing, Named, Reply,
     Status,
 };
-use crate::scenes::{Element, ElementContent};
-use crate::sources::{pick, pick_device, DisplayId, Screen, Window, WindowId};
+use crate::sound::mixer::gate::GateParams;
+use crate::sound::music::{fader_db, Playlist, Rotation, Track};
 use std::time::{Duration, Instant};
 
 mod air;
@@ -87,8 +87,8 @@ pub struct NoPipeline;
 impl Picture for NoPipeline {
     fn layer_replace(
         &mut self,
-        _old: &crate::layers::Layer,
-        new: &crate::layers::Layer,
+        _old: &crate::picture::layers::Layer,
+        new: &crate::picture::layers::Layer,
     ) -> Result<(u32, u32), picture::LayerSwapError> {
         self.layer_add(new)
             .map_err(|reason| picture::LayerSwapError {
@@ -98,8 +98,8 @@ impl Picture for NoPipeline {
     }
     fn scene_transition(
         &mut self,
-        _: &[crate::layers::Layer],
-        to: &[crate::layers::Layer],
+        _: &[crate::picture::layers::Layer],
+        to: &[crate::picture::layers::Layer],
         elements: &[Element],
         shader: Option<&str>,
     ) -> Result<(), String> {
@@ -112,12 +112,12 @@ impl Picture for NoPipeline {
             Ok(())
         }
     }
-    fn layer_add(&mut self, layer: &crate::layers::Layer) -> Result<(u32, u32), String> {
+    fn layer_add(&mut self, layer: &crate::picture::layers::Layer) -> Result<(u32, u32), String> {
         // No-capture mode accepts a scene layout, but cannot produce frames.
         Ok(match layer.source.kind {
-            crate::layers::Kind::Screen => (1920, 1080),
-            crate::layers::Kind::Camera => (1280, 720),
-            crate::layers::Kind::Window => (853, 479),
+            crate::picture::layers::Kind::Screen => (1920, 1080),
+            crate::picture::layers::Kind::Camera => (1280, 720),
+            crate::picture::layers::Kind::Window => (853, 479),
         })
     }
     fn show(
@@ -439,7 +439,7 @@ pub struct Engine {
     watching: Box<dyn Watching>,
     /// The chat, off whatever wire the daemon opened. Shared with that wire's
     /// thread, which pushes lines in and takes deletes out.
-    chat: std::sync::Arc<std::sync::Mutex<crate::chat::Feed>>,
+    chat: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
     /// Where the picture goes when somebody presses Go live.
     ///
     /// It carries a credential, so the engine takes it from whoever started it
@@ -449,9 +449,9 @@ pub struct Engine {
     /// a broken one.
     destination: Option<String>,
     /// What has happened, for the window that shows it. See
-    /// [`crate::journal`]: the engine narrates itself, so "why is nothing
+    /// [`crate::air::journal`]: the engine narrates itself, so "why is nothing
     /// going out" has an answer that is not a debugger.
-    journal: crate::journal::Journal,
+    journal: crate::air::journal::Journal,
     /// How many windows are drawing the preview. See [`Command::Watching`].
     /// Ticks left on the last face's "watching". A lease, never a count: a
     /// count lived in this engine's memory, and an engine restarted under a
@@ -467,8 +467,8 @@ pub struct Engine {
     recordings: Option<String>,
     /// Where lives are written down when they end; `None` keeps no record.
     history: Option<std::path::PathBuf>,
-    /// The live in progress, sampled off the muxer. See [`crate::history`].
-    live: Option<crate::history::Sampler>,
+    /// The live in progress, sampled off the muxer. See [`crate::air::history`].
+    live: Option<crate::air::history::Sampler>,
     /// Which motor is behind the ports, for the status.
     motor: String,
 }
@@ -496,7 +496,7 @@ impl Engine {
             library: Box::new(NoLibrary),
             playing: None,
             destination: None,
-            journal: crate::journal::Journal::default(),
+            journal: crate::air::journal::Journal::default(),
             watch_lease: 0,
             panel_lease: 0,
             recordings: None,
@@ -559,8 +559,11 @@ impl Engine {
         self
     }
 
-    /// The chat feed the daemon's wire fills. See [`crate::chat`].
-    pub fn with_chat(mut self, chat: std::sync::Arc<std::sync::Mutex<crate::chat::Feed>>) -> Self {
+    /// The chat feed the daemon's wire fills. See [`crate::app::chat`].
+    pub fn with_chat(
+        mut self,
+        chat: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
+    ) -> Self {
         self.chat = chat;
         self
     }
@@ -646,7 +649,7 @@ impl Engine {
         });
         let _ = self.sound();
         let mut scenes = if setup.scenes.is_empty() {
-            let mut defaults = crate::scenes::defaults();
+            let mut defaults = crate::picture::scenes::defaults();
             defaults[0].layers = setup.layers.clone();
             defaults[0].normalize_order();
             defaults
@@ -690,18 +693,18 @@ impl Engine {
         self.render_scene();
         for saved in &saved_layers {
             let reply = match saved.source.kind {
-                crate::layers::Kind::Screen => {
+                crate::picture::layers::Kind::Screen => {
                     self.display_now(&saved.source)
                         .map(|display| Command::LayerScreen {
                             id: saved.id.clone(),
                             display,
                         })
                 }
-                crate::layers::Kind::Camera => Some(Command::LayerCamera {
+                crate::picture::layers::Kind::Camera => Some(Command::LayerCamera {
                     id: saved.id.clone(),
                     device: saved.source.name.clone(),
                 }),
-                crate::layers::Kind::Window => Some(Command::LayerWindow {
+                crate::picture::layers::Kind::Window => Some(Command::LayerWindow {
                     id: saved.id.clone(),
                     query: saved.source.name.clone(),
                 }),
@@ -836,7 +839,7 @@ impl Engine {
     /// identity when the layer kept one, and `None` when that monitor is not
     /// connected, rather than whichever display took its number since. A layer
     /// saved before identities, or on a platform without them, keeps its number.
-    fn display_now(&self, source: &crate::layers::Source) -> Option<u32> {
+    fn display_now(&self, source: &crate::picture::layers::Source) -> Option<u32> {
         let Some(stable) = &source.stable else {
             return source.handle.parse().ok();
         };
@@ -859,10 +862,10 @@ impl Engine {
 
     /// The displays of these layers under their numbers of now, so what the
     /// status says a face can type again.
-    fn renumber(&self, layers: &mut [crate::layers::Layer]) {
+    fn renumber(&self, layers: &mut [crate::picture::layers::Layer]) {
         for layer in layers
             .iter_mut()
-            .filter(|l| l.source.kind == crate::layers::Kind::Screen)
+            .filter(|l| l.source.kind == crate::picture::layers::Kind::Screen)
         {
             if let Some(display) = self.display_now(&layer.source) {
                 layer.source.handle = display.to_string();
@@ -870,7 +873,7 @@ impl Engine {
         }
     }
 
-    fn current_scenes(&self) -> Vec<crate::scenes::Scene> {
+    fn current_scenes(&self) -> Vec<crate::picture::scenes::Scene> {
         let mut scenes = self.status.scenes.clone();
         if let Some(active) = scenes
             .iter_mut()
@@ -902,7 +905,7 @@ impl Engine {
         if let Err(message) = self.a_new_scene_name(&name) {
             return Reply::Error { message };
         }
-        self.status.scenes.push(crate::scenes::Scene {
+        self.status.scenes.push(crate::picture::scenes::Scene {
             name: name.clone(),
             layers: vec![],
             elements: vec![],
@@ -930,7 +933,7 @@ impl Engine {
             .and_then(|scene| scene.shader.clone());
         self.status.scenes = saved.scenes;
         self.status.layers = saved.layers;
-        self.status.scenes.push(crate::scenes::Scene {
+        self.status.scenes.push(crate::picture::scenes::Scene {
             name: name.clone(),
             layers: self.status.layers.clone(),
             elements: self
@@ -1013,13 +1016,13 @@ impl Engine {
                 .layers
                 .iter()
                 .find(|layer| &layer.id == id)
-                .map(crate::scenes::CaptureKey::of)
+                .map(crate::picture::scenes::CaptureKey::of)
         });
         let new_sound = sound_source.and_then(|key| {
             next.iter()
                 .find(|layer| {
-                    layer.source.kind == crate::layers::Kind::Screen
-                        && crate::scenes::CaptureKey::of(layer) == key
+                    layer.source.kind == crate::picture::layers::Kind::Screen
+                        && crate::picture::scenes::CaptureKey::of(layer) == key
                 })
                 .map(|layer| layer.id.clone())
         });
@@ -1125,7 +1128,7 @@ impl Engine {
             return;
         }
         let reply = self.advance();
-        if let Some(line) = crate::journal::said(&Command::NextTrack, &reply) {
+        if let Some(line) = crate::air::journal::said(&Command::NextTrack, &reply) {
             self.journal.note(now(), line);
         }
     }
@@ -1135,10 +1138,10 @@ impl Engine {
     /// The journal is written here rather than at each decision because there
     /// is exactly one funnel and a line written in forty places is a line
     /// missing from the forty-first. What is worth saying is
-    /// [`crate::journal::said`], which is pure.
+    /// [`crate::air::journal::said`], which is pure.
     pub fn handle(&mut self, command: Command) -> Reply {
         let reply = self.decide(command.clone());
-        if let Some(line) = crate::journal::said(&command, &reply) {
+        if let Some(line) = crate::air::journal::said(&command, &reply) {
             self.journal.note(now(), line);
         }
         reply
@@ -1165,9 +1168,9 @@ impl Engine {
             // the daemon acts on it beside the engine; here it is a fact
             Command::Rewire => Reply::Ok,
             Command::GoLive => self.go_live(),
-            Command::Plan => Reply::Plan(crate::plan::Plan::of(&self.reported())),
+            Command::Plan => Reply::Plan(crate::air::plan::Plan::of(&self.reported())),
             Command::Live { plan } => {
-                if crate::plan::Plan::of(&self.reported()).fingerprint != plan {
+                if crate::air::plan::Plan::of(&self.reported()).fingerprint != plan {
                     Reply::Error {
                         message: "the plan changed since it was printed; run `remux plan` again"
                             .into(),
@@ -1488,8 +1491,8 @@ mod fake;
 mod tests {
     use super::*;
     use crate::engine::fake::*;
-    use crate::layers::Kind;
-    use crate::scenes::Scene;
+    use crate::picture::layers::Kind;
+    use crate::picture::scenes::Scene;
 
     // Setting up is the part nobody wants to do twice.
     #[test]
@@ -1503,10 +1506,10 @@ mod tests {
         });
         engine.handle(Command::Mirror { on: true });
         engine.handle(Command::CameraShape {
-            shape: crate::scene::CameraShape::Rectangle,
+            shape: crate::picture::scene::CameraShape::Rectangle,
         });
         engine.handle(Command::CameraPosition {
-            at: Some(crate::scene::CameraPosition { x: 360, y: 180 }),
+            at: Some(crate::picture::scene::CameraPosition { x: 360, y: 180 }),
         });
         engine.handle(Command::Volume { level: 1.5 });
         engine.handle(Command::Genre { name: "edm".into() });
@@ -1538,7 +1541,7 @@ mod tests {
         assert!(now.mirrored);
         assert_eq!(
             now.layers[0].shape,
-            Some(crate::scene::CameraShape::Rectangle)
+            Some(crate::picture::scene::CameraShape::Rectangle)
         );
         assert_eq!(
             (now.layers[0].transform.x, now.layers[0].transform.y),
@@ -1583,17 +1586,17 @@ mod tests {
     #[test]
     fn a_saved_display_comes_back_as_the_same_monitor_whatever_its_number() {
         let (mut engine, _, _) = machine_with_music();
-        let desk = |id: &str, handle: &str, stable: &str| crate::layers::Layer {
+        let desk = |id: &str, handle: &str, stable: &str| crate::picture::layers::Layer {
             id: id.into(),
-            source: crate::layers::Source {
-                kind: crate::layers::Kind::Screen,
+            source: crate::picture::layers::Source {
+                kind: crate::picture::layers::Kind::Screen,
                 handle: handle.into(),
                 name: "a monitor".into(),
                 width: 1920,
                 height: 1080,
                 stable: Some(stable.into()),
             },
-            transform: crate::layers::Transform::native((1920, 1080)),
+            transform: crate::picture::layers::Transform::native((1920, 1080)),
             visible: true,
             crop: None,
             shape: None,
@@ -1629,20 +1632,20 @@ mod tests {
     fn a_device_that_is_gone_does_not_take_the_rest_of_the_setup_with_it() {
         let (mut engine, _, _) = machine_with_music();
         let setup = crate::remembered::Remembered {
-            layers: vec![crate::layers::Layer {
+            layers: vec![crate::picture::layers::Layer {
                 id: "gone".into(),
-                source: crate::layers::Source {
-                    kind: crate::layers::Kind::Camera,
+                source: crate::picture::layers::Source {
+                    kind: crate::picture::layers::Kind::Camera,
                     handle: "missing".into(),
                     name: "a camera nobody has".into(),
                     width: 1280,
                     height: 720,
                     stable: None,
                 },
-                transform: crate::layers::Transform::native((1280, 720)),
+                transform: crate::picture::layers::Transform::native((1280, 720)),
                 visible: true,
                 crop: None,
-                shape: Some(crate::scene::CameraShape::Rectangle),
+                shape: Some(crate::picture::scene::CameraShape::Rectangle),
                 mirrored: false,
                 shader: None,
             }],
@@ -1675,7 +1678,7 @@ mod tests {
         assert_eq!(next.status().layers[0].id, "notes");
         assert_eq!(
             next.status().layers[0].source.kind,
-            crate::layers::Kind::Window
+            crate::picture::layers::Kind::Window
         );
     }
 
@@ -2317,7 +2320,7 @@ mod tests {
         // Zero dBFS is the loudest sound there is, so a derived default is the
         // worst possible reading for "nothing is connected". A panel drew a
         // full red meter for a microphone that was not open.
-        let floor = crate::levels::Meter::FLOOR_DB;
+        let floor = crate::sound::mixer::levels::Meter::FLOOR_DB;
         assert_eq!(Hearing::default().level_db, floor);
         assert_eq!(Mixing::default().level_db, floor);
         assert_eq!(Mixing::default().music_db, floor);

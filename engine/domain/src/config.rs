@@ -111,7 +111,7 @@ pub fn read(path: &Path) -> Config {
 /// Written whole, 0600, renamed into place.
 pub fn write(path: &Path, config: &Config) -> Result<(), String> {
     let said = toml::to_string_pretty(config).map_err(|e| e.to_string())?;
-    crate::destinations::keep(path, &said)
+    crate::air::destinations::keep(path, &said)
 }
 
 /// Change one thing and keep the rest.

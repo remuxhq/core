@@ -76,7 +76,7 @@ impl Plan {
             camera: status
                 .layers
                 .iter()
-                .find(|l| l.visible && l.source.kind == crate::layers::Kind::Camera)
+                .find(|l| l.visible && l.source.kind == crate::picture::layers::Kind::Camera)
                 .map(|l| l.source.name.clone()),
             mirrored: status.mirrored,
             mic: status.mic.clone(),
@@ -134,7 +134,7 @@ fn picture(status: &Status) -> String {
     // in the list has caught up with them yet.
     let mut ordered = scene
         .cloned()
-        .unwrap_or_else(|| crate::scenes::defaults().remove(0));
+        .unwrap_or_else(|| crate::picture::scenes::defaults().remove(0));
     ordered.layers = status.layers.clone();
     let shown: Vec<String> = ordered
         .ordered_ids()
@@ -143,17 +143,19 @@ fn picture(status: &Status) -> String {
             if let Some(layer) = status.layers.iter().find(|l| l.id == id) {
                 return layer.visible.then(|| {
                     let kind = match layer.source.kind {
-                        crate::layers::Kind::Screen => "screen",
-                        crate::layers::Kind::Window => "window",
-                        crate::layers::Kind::Camera => "camera",
+                        crate::picture::layers::Kind::Screen => "screen",
+                        crate::picture::layers::Kind::Window => "window",
+                        crate::picture::layers::Kind::Camera => "camera",
                     };
                     format!("{id} ({kind} {})", layer.source.name)
                 });
             }
             let element = scene?.elements.iter().find(|e| e.id == id)?;
             element.visible.then(|| match &element.content {
-                crate::scenes::ElementContent::Text { text } => format!("{id} (text {text})"),
-                crate::scenes::ElementContent::Timer { seconds } => {
+                crate::picture::scenes::ElementContent::Text { text } => {
+                    format!("{id} (text {text})")
+                }
+                crate::picture::scenes::ElementContent::Timer { seconds } => {
                     format!("{id} (timer {seconds} s)")
                 }
             })
@@ -256,7 +258,7 @@ mod tests {
 
     #[test]
     fn the_picture_names_a_camera_and_the_elements_and_elements_alone_are_not_empty() {
-        let element = |id: &str, content| crate::scenes::Element {
+        let element = |id: &str, content| crate::picture::scenes::Element {
             id: id.into(),
             x: 0,
             y: 0,
@@ -266,22 +268,22 @@ mod tests {
             shader: None,
             content,
         };
-        let mut scene = crate::scenes::defaults().remove(0);
+        let mut scene = crate::picture::scenes::defaults().remove(0);
         scene.elements = vec![
             element(
                 "title",
-                crate::scenes::ElementContent::Text {
+                crate::picture::scenes::ElementContent::Text {
                     text: "Chegando".into(),
                 },
             ),
             element(
                 "clock",
-                crate::scenes::ElementContent::Timer { seconds: 60 },
+                crate::picture::scenes::ElementContent::Timer { seconds: 60 },
             ),
         ];
         let mut face = crate::health::tests::screen_layer("FaceTime");
         face.id = "face".into();
-        face.source.kind = crate::layers::Kind::Camera;
+        face.source.kind = crate::picture::layers::Kind::Camera;
         let mut status = Status {
             layers: vec![face],
             scenes: vec![scene],

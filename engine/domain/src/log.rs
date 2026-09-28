@@ -62,7 +62,7 @@ pub fn start() {
 pub fn note(line: &str) {
     let stamped = format!(
         "{} {line}",
-        crate::journal::clock_of(
+        crate::air::journal::clock_of(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs() as i64)
