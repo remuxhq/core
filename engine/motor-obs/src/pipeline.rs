@@ -346,6 +346,7 @@ unsafe impl Send for ObsPipeline {}
 impl ObsPipeline {
     pub fn new(known: Arc<Mutex<Known>>) -> Self {
         crate::effect::register();
+        crate::gate::register();
         Self {
             known,
             scene: std::ptr::null_mut(),
@@ -1010,20 +1011,16 @@ impl Sound for ObsPipeline {
     }
     fn gate(&mut self, params: GateParams) {
         self.gate_params = params;
-        // The domain's thresholds are amplitudes; the filter's are dBFS.
-        let db = |amplitude: f64| 20.0 * amplitude.max(1e-6).log10();
         let mut gate = self.gate;
         self.drop_filter(&mut gate);
-        // SAFETY: settings handed to `filter_on_mic`, which releases them.
-        let settings = unsafe {
-            let settings = sys::obs_data_create();
-            sys::obs_data_set_double(settings, c("open_threshold").as_ptr(), db(params.full));
-            sys::obs_data_set_double(settings, c("close_threshold").as_ptr(), db(params.floor));
-            sys::obs_data_set_int(settings, c("hold_time").as_ptr(), params.hold_ms as i64);
-            sys::obs_data_set_int(settings, c("attack_time").as_ptr(), params.attack_ms as i64);
-            settings
-        };
-        self.gate = self.filter_on_mic("noise_gate_filter", "gate", settings);
+        self.gate = self.filter_on_mic(crate::gate::GATE, "gate", crate::gate::settings(params));
+        if !self.mic.is_null() {
+            // The gate hands the voice back a block and its lookahead late;
+            // the microphone's offset takes that back, as the native motor
+            // stamps the voice from the moment it was heard.
+            // SAFETY: our microphone.
+            unsafe { sys::obs_source_set_sync_offset(self.mic, -crate::gate::latency_ns()) };
+        }
     }
     fn denoise(&mut self, on: bool) {
         self.denoise_on = on;
@@ -1057,7 +1054,8 @@ impl Sound for ObsPipeline {
             samples: self.heard.updates.load(Ordering::Relaxed) * 480,
             level_db: level_db.max(floor),
             peak_db: self.heard.db(&self.heard.peak_mdb).max(floor),
-            gate_open: level_db > -100.0,
+            gate_open: crate::gate::heard().0,
+            gate_levels: crate::gate::heard().1,
             ..heard
         }
     }

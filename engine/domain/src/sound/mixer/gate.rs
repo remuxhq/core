@@ -385,6 +385,41 @@ impl Gated {
     }
 }
 
+/// The block gate for a host that wants its buffer back in place, the same
+/// length it gave: libobs's audio filters. What comes out is what [`Gated`]
+/// made, one block late, since a block is only gated once it is whole.
+pub struct Steady {
+    gated: Gated,
+    ready: std::collections::VecDeque<f32>,
+}
+
+impl Steady {
+    pub fn new(gated: Gated) -> Self {
+        let ready = std::iter::repeat_n(0.0, BLOCK * gated.channels).collect();
+        Self { gated, ready }
+    }
+
+    /// Gate `samples`, interleaved, in place; the last block's decision and
+    /// levels, when a block completed.
+    pub fn process(&mut self, samples: &mut [f32]) -> Option<(GateFrame, GateLevels)> {
+        let mut last = None;
+        for block in self.gated.push(samples) {
+            last = Some((block.frame, block.levels));
+            self.ready.extend(block.samples);
+        }
+        for sample in samples.iter_mut() {
+            *sample = self.ready.pop_front().unwrap_or(0.0);
+        }
+        last
+    }
+
+    /// How late the sound comes out, in frames: the block it waits to fill,
+    /// and the lookahead.
+    pub fn latency_frames(&self) -> usize {
+        BLOCK + self.gated.lookahead_frames
+    }
+}
+
 /// Lookahead. The audio path is delayed and the detector is not, so the gate
 /// opens *before* the sound that opened it reaches the output, and word onsets
 /// survive the attack wait intact. One line per channel.
@@ -727,6 +762,45 @@ mod tests {
     /// in one run the caller slices as it likes.
     fn stereo(blocks: &[Vec<f32>]) -> Vec<f32> {
         blocks.iter().flatten().flat_map(|s| [*s, *s]).collect()
+    }
+
+    // libobs hands an audio filter a buffer and wants the same number of
+    // frames back, in place; the gate works in whole blocks. So the steady
+    // gate is the block gate, one block late: whatever the sizes it is given,
+    // what comes out is exactly what the block gate made, after one block of
+    // silence.
+    #[test]
+    fn the_steady_gate_is_the_block_gate_one_block_late_in_any_sizes() {
+        let lookahead = frames_for(LOOKAHEAD_MS, SR);
+        let input = stereo(&[silence(300), tone(200.0, 0.5, 400), silence(300)].concat());
+        let mut reference = Gated::new(GateDetector::new(SR, GateParams::default()), 2, lookahead);
+        let made: Vec<f32> = reference
+            .push(&input)
+            .into_iter()
+            .flat_map(|block| block.samples)
+            .collect();
+        let mut steady = Steady::new(Gated::new(
+            GateDetector::new(SR, GateParams::default()),
+            2,
+            lookahead,
+        ));
+        let mut out = input.clone();
+        let mut at = 0;
+        for size in [441, 97, 1024, 3].into_iter().cycle() {
+            if at == out.len() {
+                break;
+            }
+            let end = (at + size * 2).min(out.len());
+            steady.process(&mut out[at..end]);
+            at = end;
+        }
+        let late = BLOCK * 2;
+        assert!(
+            out[..late].iter().all(|s| *s == 0.0),
+            "one block of silence first"
+        );
+        assert_eq!(&out[late..], &made[..out.len() - late]);
+        assert_eq!(steady.latency_frames(), BLOCK + lookahead);
     }
 
     /// Frames from the first sample of `after` to the first block the gate
