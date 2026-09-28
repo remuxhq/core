@@ -31,7 +31,7 @@ SAYS = [
     ("destinations", "no destinations"),
     ("log", None),
     ("config", "config"),
-    ("bug", "remux 0.1.0"),
+    ("bug", "remux 0.1.1"),
     ("daemon path", "service "),
     ("daemon status", "answering"),
     ("gate", "opens at "),

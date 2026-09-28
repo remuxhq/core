@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "motor-obs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jpeg-encoder",
  "libc",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "remux"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "remux-wire",
  "remuxd-domain",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "remux-wire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "remuxd-domain",
  "reqwest",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "remuxd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "motor-obs",
  "remux-wire",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "remuxd-domain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "schemars",
