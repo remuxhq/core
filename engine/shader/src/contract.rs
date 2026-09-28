@@ -6,8 +6,8 @@ use naga::{
     ShaderStage, TypeInner, VectorSize,
 };
 
-/// What a filter has to be, said when it is not.
-pub const CONTRACT: &str = "a filter is one @fragment function taking @location(0) uv: vec2<f32> and returning @location(0) vec4<f32>, with a texture_2d<f32> at @group(0) @binding(0), its sampler at @binding(1), and optionally a var<uniform> of { time: f32, resolution: vec2<f32> } at @binding(2)";
+/// What a filter has to be, said when it is not: the domain's words.
+pub use remuxd_domain::picture::shader::CONTRACT;
 
 fn float(inner: &TypeInner, size: Option<VectorSize>) -> bool {
     match (inner, size) {

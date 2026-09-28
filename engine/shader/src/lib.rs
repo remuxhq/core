@@ -1,4 +1,6 @@
-//! Filters: a WGSL file, the contract both motors share, as an OBS effect.
+//! The domain's `ShaderCompiler` over naga: a WGSL file, checked against the
+//! contract the domain states, as an OBS effect. The daemon injects [`Naga`]
+//! into a motor; another compiler is another crate implementing the same port.
 //!
 //! A filter is one `@fragment` function that takes `@location(0) uv:
 //! vec2<f32>`, (0, 0) at the top left, and returns `@location(0) vec4<f32>`;
@@ -8,11 +10,22 @@
 //! (`contract`), and what it read is written out as an effect libobs builds
 //! (`writer`), whose `time` and `resolution` uniforms the motor sets.
 //!
-//! Everything about shaders is in this crate: the motor hands it a path and
-//! gets back effect text or the reason there is none.
+//! Everything about compiling a filter is in this crate: the motor hands the
+//! port a path and gets back effect text or the reason there is none.
 
 mod contract;
 mod writer;
+
+use remuxd_domain::picture::shader::ShaderCompiler;
+
+/// The compiler over naga, as the domain's port.
+pub struct Naga;
+
+impl ShaderCompiler for Naga {
+    fn compile(&self, path: &str) -> Result<String, String> {
+        load(path)
+    }
+}
 
 pub use contract::CONTRACT;
 

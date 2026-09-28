@@ -114,6 +114,19 @@ remuxd.seam: ## Prove the domain crate cannot see an Apple framework
 		exit 1; \
 	fi; \
 	echo "seam: remuxd sees no Apple crate"
+	@# The filters are adapters the daemon injects: the domain and every face
+	@# that rests on it compile none of them, nor what they bring (naga).
+	@for crate in remuxd-domain remux; do \
+		tree=$$(cd engine && cargo tree -p $$crate -e normal --prefix none 2>/dev/null); \
+		case "$$tree" in $$crate*) ;; *) echo "cargo tree did not describe $$crate"; exit 1 ;; esac; \
+		leak=$$(echo "$$tree" | grep -E '^(remux-shader|remux-mixer|naga) ' | sort -u || true); \
+		if [ -n "$$leak" ]; then \
+			echo "$$crate reaches a filter adapter:"; echo "$$leak"; \
+			echo "the domain owns the contract; the daemon injects the adapter (remuxd/src/main.rs)."; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "seam: the domain and the CLI reach no filter adapter"
 	@# The golden rule: shared code never names an OS. Two tables may: the
 	@# domain's (paths, the service) and the libobs motor's (the machine).
 	@# `cfg(unix)` around std's file modes (0600) is std's own shim, not an OS.

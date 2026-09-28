@@ -48,11 +48,15 @@ the documentation; a measurement behind a decision goes in the comment beside it
   socket, `wire.rs` (the one WebSocket to whoever serves the wire).
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
   the layers and elements on one scene, `effect.rs` the two sources it adds to libobs
-  (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/shader/`
-  is everything about filters: the WGSL contract and its OBS effect. `engine/mixer/` is
-  its audio twin: the `Filter` contract every motor hosts (interleaved samples in place,
-  a latency the host takes back) and remux's filters, the gate first; `gate.rs` in
-  motor-obs hosts it as `remux_gate`.
+  (an operator's WGSL filter as an OBS effect, an element's box of text), `gate.rs` the
+  gate as `remux_gate`. It depends on the domain alone and is given its filters.
+- Filters are ports and adapters. The domain owns the contracts (`picture::shader`:
+  `ShaderCompiler` and the WGSL contract; `sound::mixer`: `Filter`, `GateFilter`,
+  `MakeGate` and the gate's types). The adapters depend on the domain: `engine/shader/`
+  (`Naga`, WGSL to an OBS effect) and `engine/mixer/` (the gate). The daemon's
+  `main.rs` is the one place that knows a motor and the adapters, and injects them
+  (`motor_obs::Filters`). `make remuxd.seam` fails if the domain or the CLI reaches an
+  adapter or naga. Another compiler or filter is another adapter crate.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `engine/cli/`: `remux`. The words are `words.rs` (typed words to a `Command`, a `Reply`
   to prose, help and the guide); its prose is a contract.

@@ -145,13 +145,24 @@ impl Drop for Obs {
 /// What a boot gets: the motor to keep alive, and the two ports.
 pub type Started = (Motor, Box<dyn Sources>, Box<dyn Pipeline>);
 
+/// The filters a motor hosts, given to it: the motor knows the domain's
+/// contracts, and the daemon, which knows the adapters, injects them.
+pub struct Filters {
+    /// Compiles an operator's WGSL filter into an OBS effect.
+    pub shader: Box<dyn remuxd_domain::picture::shader::ShaderCompiler>,
+    /// Makes the gate on a microphone.
+    pub gate: remuxd_domain::sound::mixer::MakeGate,
+}
+
 /// The motor, started: what the daemon boots with under `REMUX_MOTOR=obs`.
 pub struct Motor {
     _obs: Obs,
 }
 
 impl Motor {
-    pub fn start() -> Result<Started, String> {
+    pub fn start(filters: Filters) -> Result<Started, String> {
+        effect::host(filters.shader);
+        gate::host(filters.gate);
         let obs = Obs::start("en-US")?;
         obs.set_up()?;
         (platform::TABLE.helper)()?;

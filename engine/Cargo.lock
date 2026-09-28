@@ -789,8 +789,6 @@ dependencies = [
  "libc",
  "libobs",
  "png",
- "remux-mixer",
- "remux-shader",
  "remuxd-domain",
  "serde_json",
 ]
@@ -1118,8 +1116,7 @@ dependencies = [
 name = "remux-mixer"
 version = "0.2.0"
 dependencies = [
- "schemars",
- "serde",
+ "remuxd-domain",
 ]
 
 [[package]]
@@ -1127,6 +1124,7 @@ name = "remux-shader"
 version = "0.2.0"
 dependencies = [
  "naga",
+ "remuxd-domain",
 ]
 
 [[package]]
@@ -1143,6 +1141,8 @@ name = "remuxd"
 version = "0.2.0"
 dependencies = [
  "motor-obs",
+ "remux-mixer",
+ "remux-shader",
  "remux-wire",
  "remuxd-domain",
  "reqwest",
@@ -1156,7 +1156,6 @@ name = "remuxd-domain"
 version = "0.2.0"
 dependencies = [
  "base64",
- "remux-mixer",
  "schemars",
  "serde",
  "serde_json",

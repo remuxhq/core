@@ -4,10 +4,9 @@ version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Audio filtering: the contract every motor hosts, and remux's filters (the gate). Everything about filtering sound, apart."
+description = "remux's sound filters (the gate), adapters of the domain's contract a daemon injects into a motor."
 
-# serde and schemars because a gate's settings and levels are on the status
-# every face reads, and `remux schema` prints them.
+# The domain, for the contract these filters keep and the gate's types; the
+# domain never depends on this crate.
 [dependencies]
-schemars = "1"
-serde = { workspace = true }
+remuxd-domain = { path = "../domain" }
