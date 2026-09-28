@@ -11,9 +11,8 @@ relay and a chat bridge of one's own live in `byo/`; anybody may serve the chat 
 
 These are absolute. Nothing else in this repository uses absolute language.
 
-1. **Never go live for real from a test.** A test live goes to a lab door (`make
-   smoke.lab.up`) or a platform's sandbox; the smokes refuse a real armed destination
-   otherwise (`lab_only`).
+1. **Never go live for real from a test.** A test live goes to a file
+   (`REMUXD_RTMP`) or a platform's sandbox (`remux sandbox <id> on`).
 2. **Never touch the machine under a live.** No gates, no restarts, no builds, no
    launching or signalling anything named `remux`. Read-only until the live ends.
 3. **Secrets never leave `~/.config/remux/`.** `destinations.json` (keys),
@@ -28,9 +27,8 @@ These are absolute. Nothing else in this repository uses absolute language.
 
 Act by default. Stop only for the rules above, a destructive action, or a decision
 the operator has kept. A failing test first, on production code; the smallest fix;
-the fast tests after every edit (`make remuxd.test F=name`, sub-second); the one smoke
-that proves the unit, by name, when the unit closes (`make remuxd.smoke S=name`); the
-whole suite and the gate never mid-loop. Hardware-only checks are the operator's when
+the fast tests after every edit (`make remuxd.test F=name`, sub-second); the whole
+suite and the gate never mid-loop. Hardware-only checks are the operator's when
 you have no machine: report them as pending and finish. Small commits, present tense,
 plain subjects, no authorship trailers, no session links. Code and commit messages are
 the documentation; a measurement behind a decision goes in the comment beside it.
@@ -43,8 +41,7 @@ the documentation; a measurement behind a decision goes in the comment beside it
   `login` (`remux login`), `wire` (what a server and the engine say to each other) and
   `chat` (the feed), `config`, `os`, `history`, `plan`, `scenes`, `music`, `gate`.
 - `engine/remuxd/`: the daemon: `boot` (the daemon as a function, given a motor), the
-  socket, `wire.rs` (the one WebSocket to whoever serves the wire); `smoke/` the parity
-  checks, `cli.py` and the lab.
+  socket, `wire.rs` (the one WebSocket to whoever serves the wire).
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
@@ -53,9 +50,7 @@ the documentation; a measurement behind a decision goes in the comment beside it
 ## Commands
 
 - `make remuxd.check`: the gate (seam, fmt, clippy, nextest, domain coverage ≥ 90%).
-  `make remuxd.test F=name` mid-loop. `make remuxd.cli` round-trips every verb (~12 s).
-  `make remuxd.smoke S=name` one parity check on the machine (`free` and `byo` against
-  `make smoke.lab.up`, Docker). `make security` the scanners.
+  `make remuxd.test F=name` mid-loop. `make security` the scanners.
 - macOS: `make obs.fetch` once (the OBS the engine links, pinned), `make remuxd.identity`
   once (the signing certificate). Linux: `apt-get install obs-studio`.
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,

@@ -1,7 +1,6 @@
 # The gate on every pull request and on main: the engine on the two operating
 # systems it ships for, and the scanners, each under a timeout. What needs a
-# display and a grant (the smokes) cannot run on a hosted runner and stays on
-# the machine (AGENTS.md, "Commands").
+# display and a grant cannot run on a hosted runner and stays on the machine.
 #
 # Every action is pinned by commit, with the release beside it.
 name: ci
@@ -49,8 +48,7 @@ jobs:
 
   # The same engine on the other OS it ships for: the seam, the domain and
   # the CLI tests, the libobs motor built against the distribution's OBS.
-  # The smokes stay on a machine (a display, a session); this is the compile
-  # and the decisions, where a macOS-only default shows.
+  # This is the compile and the decisions, where a macOS-only default shows.
   engine-linux:
     name: lint+tests / engine on linux (seam, clippy, nextest, obs motor)
     runs-on: ubuntu-24.04

@@ -8,4 +8,4 @@
 # plan; what stays is the check every file passes before the engine sees it.
 .PHONY: music.check
 music.check: ## Every file in music/ is one clean MPEG audio stream, decoded whole, plain tags
-	@python3 engine/remuxd/smoke/library.py music
+	@python3 scripts/music-check.py music

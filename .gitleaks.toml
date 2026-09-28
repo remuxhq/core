@@ -14,8 +14,3 @@ paths = [
   '''^music/''',
 ]
 
-[[allowlists]]
-description = "the lab's keys that open nothing (the smokes)"
-paths = [
-  '''^engine/remuxd/smoke/''',
-]

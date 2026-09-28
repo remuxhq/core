@@ -1,6 +1,6 @@
 //! `~/.config/remux/config.toml`: what the engine and the shell are told once
 //! and read every time. A verb writes it (`remux chat --url`), a person edits
-//! it, the environment overrides it (the smokes, a one-off run). 0600,
+//! it, the environment overrides it (a test, a one-off run). 0600,
 //! because a chat wire's URL may carry a token.
 //!
 //! ```toml
