@@ -11,17 +11,23 @@ use remuxd_domain::music::Track;
 use remuxd_domain::protocol::{Grant, Hearing, Mixing, Outgoing};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::c;
 use crate::sources::Known;
-use crate::{c, ffi};
+use libobs as sys;
+
+/// The one audio track the encoders take: bit 0.
+pub(crate) const MIXER_STREAM: u32 = 1;
+/// A track nothing encodes: the music the operator hears but the live does not.
+pub(crate) const MIXER_NOBODY: u32 = 1 << 5;
 
 pub struct ObsPipeline {
     pub(crate) known: Arc<Mutex<Known>>,
     /// The scene on output channel 0, what goes out.
-    pub(crate) scene: *mut c_void,
+    pub(crate) scene: *mut sys::obs_scene_t,
     /// The picture's layers and elements, shared with the tick.
     pub(crate) picture: Box<Mutex<crate::picture::Drawn>>,
     /// The scene's own filter, over everything composed.
-    pub(crate) scene_filter: Option<(String, *mut c_void)>,
+    pub(crate) scene_filter: Option<(String, *mut sys::obs_source_t)>,
     /// Filters asked for an element before its picture exists.
     pub(crate) element_filters: std::collections::BTreeMap<String, String>,
     pub(crate) ticking: bool,
@@ -31,29 +37,29 @@ pub struct ObsPipeline {
     pub(crate) mirror: bool,
     /// The microphone, on output channel 1, with its gate and its denoiser
     /// (libobs filters) and a meter on it.
-    mic: *mut c_void,
-    gate: *mut c_void,
-    denoiser: *mut c_void,
-    meter: *mut c_void,
+    mic: *mut sys::obs_source_t,
+    gate: *mut sys::obs_source_t,
+    denoiser: *mut sys::obs_source_t,
+    meter: *mut sys::obs_volmeter_t,
     heard: Box<Heard>,
     /// The mix that leaves, metered off the raw audio, and the music on its
     /// own meter.
     mixed: Box<Mixed>,
-    music_meter: *mut c_void,
+    music_meter: *mut sys::obs_volmeter_t,
     music_heard: Box<Heard>,
     /// The music, on output channel 2; whether the live gets it is its
     /// mixer mask, whether the speakers do is its monitoring.
-    music: *mut c_void,
+    music: *mut sys::obs_source_t,
     music_to_stream: bool,
     monitoring: bool,
     music_was_playing: bool,
     /// The screen's sound, on channel 3: one app's, or off. `sck_audio_capture`
     /// hears every app but this one; with none named, the whole screen.
-    screen_sound: *mut c_void,
+    screen_sound: *mut sys::obs_source_t,
     hearing_apps: Vec<String>,
     screen_sound_on: bool,
     /// A clip, on channel 4, played once over the mix.
-    clip: *mut c_void,
+    clip: *mut sys::obs_source_t,
     gate_params: GateParams,
     denoise_on: bool,
     /// The preview ring, made when a face first asks.
@@ -61,19 +67,19 @@ pub struct ObsPipeline {
     width: u32,
     height: u32,
     /// An application's sound on its own, on channel 5, and its fader.
-    app_audio: *mut c_void,
+    app_audio: *mut sys::obs_source_t,
     app_audio_volume: f64,
     /// The independent audio captures, each on its own channel from 8.
-    audio_layers: Vec<(String, *mut c_void, u32)>,
+    audio_layers: Vec<(String, *mut sys::obs_source_t, u32)>,
     /// H264 and AAC (the OS's encoders, from the table), made on first use and shared
     /// by the stream and the recording.
-    video_encoder: *mut c_void,
-    audio_encoder: *mut c_void,
+    video_encoder: *mut sys::obs_encoder_t,
+    audio_encoder: *mut sys::obs_encoder_t,
     recording: Option<Output>,
     /// One RTMP output per destination, all on the same encoders.
     publishing: Vec<(i64, Output)>,
     /// The duck: a compressor on the music keyed by the microphone.
-    duck: *mut c_void,
+    duck: *mut sys::obs_source_t,
     duck_db: f64,
 }
 
@@ -87,7 +93,7 @@ struct Heard {
 }
 
 impl Heard {
-    extern "C" fn on_level(
+    unsafe extern "C" fn on_level(
         param: *mut c_void,
         magnitude: *const f32,
         peak: *const f32,
@@ -119,7 +125,7 @@ struct Mixed {
 }
 
 impl Mixed {
-    extern "C" fn on_audio(param: *mut c_void, _mix: usize, data: *mut ffi::AudioData) {
+    unsafe extern "C" fn on_audio(param: *mut c_void, _mix: usize, data: *mut sys::audio_data) {
         // SAFETY: `param` is the boxed `Mixed`; `data` is libobs's for the
         // call, float planar, two channels.
         unsafe {
@@ -158,15 +164,15 @@ impl Mixed {
 
 /// One libobs output, running: the file's muxer or the RTMP push.
 struct Output {
-    output: *mut c_void,
-    service: *mut c_void,
+    output: *mut sys::obs_output_t,
+    service: *mut sys::obs_service_t,
     since: Instant,
 }
 
 impl Output {
     fn active(&self) -> bool {
         // SAFETY: a pure read on a live output.
-        unsafe { ffi::obs_output_active(self.output) }
+        unsafe { sys::obs_output_active(self.output) }
     }
 
     /// Whether this output still counts as on its way: active, reconnecting,
@@ -177,7 +183,7 @@ impl Output {
     /// longer than the tick). Ten seconds is the connect's own timeout.
     fn alive(&self) -> bool {
         // SAFETY: pure reads on a live output.
-        let reconnecting = unsafe { ffi::obs_output_reconnecting(self.output) };
+        let reconnecting = unsafe { sys::obs_output_reconnecting(self.output) };
         self.active()
             || reconnecting
             || (self.since.elapsed() < Duration::from_secs(10) && self.complaint().is_empty())
@@ -186,7 +192,7 @@ impl Output {
     fn complaint(&self) -> String {
         // SAFETY: libobs hands out a string it owns, or null.
         unsafe {
-            let said = ffi::obs_output_get_last_error(self.output);
+            let said = sys::obs_output_get_last_error(self.output);
             if said.is_null() {
                 String::new()
             } else {
@@ -199,8 +205,8 @@ impl Output {
         // SAFETY: pure reads.
         let (frames, bytes) = unsafe {
             (
-                ffi::obs_output_get_total_frames(self.output).max(0) as u64,
-                ffi::obs_output_get_total_bytes(self.output),
+                sys::obs_output_get_total_frames(self.output).max(0) as u64,
+                sys::obs_output_get_total_bytes(self.output),
             )
         };
         let secs = self.since.elapsed().as_secs_f64().max(0.5);
@@ -218,10 +224,10 @@ impl Drop for Output {
     fn drop(&mut self) {
         // SAFETY: ours; stopping waits for the muxer to close the file.
         unsafe {
-            ffi::obs_output_stop(self.output);
-            ffi::obs_output_release(self.output);
+            sys::obs_output_stop(self.output);
+            sys::obs_output_release(self.output);
             if !self.service.is_null() {
-                ffi::obs_service_release(self.service);
+                sys::obs_service_release(self.service);
             }
         }
     }
@@ -278,42 +284,42 @@ impl ObsPipeline {
 
     /// The encoders, made once: 6 Mbps constant, a keyframe every 2 s, AAC
     /// at 160 kbps.
-    fn encoders(&mut self) -> Result<(*mut c_void, *mut c_void), String> {
+    fn encoders(&mut self) -> Result<(*mut sys::obs_encoder_t, *mut sys::obs_encoder_t), String> {
         if self.video_encoder.is_null() {
             // SAFETY: settings created and released here; the encoders are
             // kept until the pipeline drops.
             unsafe {
-                let video = ffi::obs_data_create();
-                ffi::obs_data_set_int(video, c("bitrate").as_ptr(), 6000);
-                ffi::obs_data_set_string(video, c("rate_control").as_ptr(), c("CBR").as_ptr());
-                ffi::obs_data_set_int(video, c("keyint_sec").as_ptr(), 2);
+                let video = sys::obs_data_create();
+                sys::obs_data_set_int(video, c("bitrate").as_ptr(), 6000);
+                sys::obs_data_set_string(video, c("rate_control").as_ptr(), c("CBR").as_ptr());
+                sys::obs_data_set_int(video, c("keyint_sec").as_ptr(), 2);
                 let table = &crate::platform::TABLE;
-                let encoder = ffi::obs_video_encoder_create(
+                let encoder = sys::obs_video_encoder_create(
                     c(table.video_encoder).as_ptr(),
                     c("h264").as_ptr(),
                     video,
                     std::ptr::null_mut(),
                 );
-                ffi::obs_data_release(video);
+                sys::obs_data_release(video);
                 if encoder.is_null() {
                     return Err(format!("libobs has no {} encoder", table.video_encoder));
                 }
-                ffi::obs_encoder_set_video(encoder, ffi::obs_get_video());
-                let audio = ffi::obs_data_create();
-                ffi::obs_data_set_int(audio, c("bitrate").as_ptr(), 160);
-                let aac = ffi::obs_audio_encoder_create(
+                sys::obs_encoder_set_video(encoder, sys::obs_get_video());
+                let audio = sys::obs_data_create();
+                sys::obs_data_set_int(audio, c("bitrate").as_ptr(), 160);
+                let aac = sys::obs_audio_encoder_create(
                     c(table.audio_encoder).as_ptr(),
                     c("aac").as_ptr(),
                     audio,
                     0,
                     std::ptr::null_mut(),
                 );
-                ffi::obs_data_release(audio);
+                sys::obs_data_release(audio);
                 if aac.is_null() {
-                    ffi::obs_encoder_release(encoder);
+                    sys::obs_encoder_release(encoder);
                     return Err(format!("libobs has no {} encoder", table.audio_encoder));
                 }
-                ffi::obs_encoder_set_audio(aac, ffi::obs_get_audio());
+                sys::obs_encoder_set_audio(aac, sys::obs_get_audio());
                 self.video_encoder = encoder;
                 self.audio_encoder = aac;
             }
@@ -325,34 +331,34 @@ impl ObsPipeline {
     fn start_output(
         &mut self,
         kind: &str,
-        settings: *mut c_void,
-        service: *mut c_void,
+        settings: *mut sys::obs_data_t,
+        service: *mut sys::obs_service_t,
     ) -> Result<Output, String> {
         let (video, audio) = self.encoders()?;
         // SAFETY: the output takes its own references to the encoders and
         // the service; `settings` is released here after the create.
         unsafe {
-            let output = ffi::obs_output_create(
+            let output = sys::obs_output_create(
                 c(kind).as_ptr(),
                 c(kind).as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if output.is_null() {
                 return Err(format!("libobs has no {kind} output"));
             }
-            ffi::obs_output_set_video_encoder(output, video);
-            ffi::obs_output_set_audio_encoder(output, audio, 0);
+            sys::obs_output_set_video_encoder(output, video);
+            sys::obs_output_set_audio_encoder(output, audio, 0);
             if !service.is_null() {
-                ffi::obs_output_set_service(output, service);
+                sys::obs_output_set_service(output, service);
             }
             let made = Output {
                 output,
                 service,
                 since: Instant::now(),
             };
-            if !ffi::obs_output_start(output) {
+            if !sys::obs_output_start(output) {
                 let why = made.complaint();
                 return Err(if why.is_empty() {
                     format!("the {kind} output did not start")
@@ -365,36 +371,41 @@ impl ObsPipeline {
     }
 
     /// A filter of this kind on the microphone, with these settings.
-    fn filter_on_mic(&mut self, kind: &str, name: &str, settings: *mut c_void) -> *mut c_void {
+    fn filter_on_mic(
+        &mut self,
+        kind: &str,
+        name: &str,
+        settings: *mut sys::obs_data_t,
+    ) -> *mut sys::obs_source_t {
         if self.mic.is_null() {
             // SAFETY: settings created by the caller, released here.
-            unsafe { ffi::obs_data_release(settings) };
+            unsafe { sys::obs_data_release(settings) };
             return std::ptr::null_mut();
         }
         // SAFETY: the filter is ours; adding it takes libobs's own reference.
         unsafe {
-            let filter = ffi::obs_source_create(
+            let filter = sys::obs_source_create(
                 c(kind).as_ptr(),
                 c(name).as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if !filter.is_null() {
-                ffi::obs_source_filter_add(self.mic, filter);
+                sys::obs_source_filter_add(self.mic, filter);
             }
             filter
         }
     }
 
-    fn drop_filter(&mut self, filter: &mut *mut c_void) {
+    fn drop_filter(&mut self, filter: &mut *mut sys::obs_source_t) {
         if !filter.is_null() {
             // SAFETY: ours, on the mic.
             unsafe {
                 if !self.mic.is_null() {
-                    ffi::obs_source_filter_remove(self.mic, *filter);
+                    sys::obs_source_filter_remove(self.mic, *filter);
                 }
-                ffi::obs_source_release(*filter);
+                sys::obs_source_release(*filter);
             }
             *filter = std::ptr::null_mut();
         }
@@ -405,8 +416,8 @@ impl ObsPipeline {
         // SAFETY: the old one comes off channel 3 before release.
         unsafe {
             if !self.screen_sound.is_null() {
-                ffi::obs_set_output_source(3, std::ptr::null_mut());
-                ffi::obs_source_release(self.screen_sound);
+                sys::obs_set_output_source(3, std::ptr::null_mut());
+                sys::obs_source_release(self.screen_sound);
                 self.screen_sound = std::ptr::null_mut();
             }
             if !self.screen_sound_on {
@@ -414,7 +425,7 @@ impl ObsPipeline {
             }
             // `sck_audio_capture`: type 0 is the whole desktop, 1 one app by
             // its bundle id (mac-sck-common.h); anything else is a crash.
-            let settings = ffi::obs_data_create();
+            let settings = sys::obs_data_create();
             let table = &crate::platform::TABLE;
             match self
                 .hearing_apps
@@ -428,29 +439,29 @@ impl ObsPipeline {
                         .ok()
                         .and_then(|k| k.apps.get(app).cloned())
                         .ok_or_else(|| format!("no running application called {app}"))?;
-                    ffi::obs_data_set_int(settings, c("type").as_ptr(), 1);
-                    ffi::obs_data_set_string(
+                    sys::obs_data_set_int(settings, c("type").as_ptr(), 1);
+                    sys::obs_data_set_string(
                         settings,
                         c("application").as_ptr(),
                         c(&bundle).as_ptr(),
                     );
                 }
                 None if table.screen_sound.per_app => {
-                    ffi::obs_data_set_int(settings, c("type").as_ptr(), 0)
+                    sys::obs_data_set_int(settings, c("type").as_ptr(), 0)
                 }
                 None => {}
             }
-            let source = ffi::obs_source_create(
+            let source = sys::obs_source_create(
                 c(table.screen_sound.source).as_ptr(),
                 c("screen sound").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if source.is_null() {
                 return Err("libobs could not hear the screen".into());
             }
-            ffi::obs_set_output_source(3, source);
+            sys::obs_set_output_source(3, source);
             self.screen_sound = source;
         }
         Ok(())
@@ -466,30 +477,30 @@ impl ObsPipeline {
         // SAFETY: the old filter is ours; settings released after create.
         unsafe {
             if !self.duck.is_null() {
-                ffi::obs_source_filter_remove(self.music, self.duck);
-                ffi::obs_source_release(self.duck);
+                sys::obs_source_filter_remove(self.music, self.duck);
+                sys::obs_source_release(self.duck);
                 self.duck = std::ptr::null_mut();
             }
             if self.mic.is_null() || self.duck_db >= 0.0 {
                 return;
             }
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_double(settings, c("ratio").as_ptr(), 32.0);
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_double(settings, c("ratio").as_ptr(), 32.0);
             // A voice at about -20 dBFS compressed 32:1 above this threshold
             // steps the music down by about the duck.
-            ffi::obs_data_set_double(settings, c("threshold").as_ptr(), -20.0 + self.duck_db);
-            ffi::obs_data_set_int(settings, c("attack_time").as_ptr(), 10);
-            ffi::obs_data_set_int(settings, c("release_time").as_ptr(), 400);
-            ffi::obs_data_set_string(settings, c("sidechain_source").as_ptr(), c("mic").as_ptr());
-            let filter = ffi::obs_source_create(
+            sys::obs_data_set_double(settings, c("threshold").as_ptr(), -20.0 + self.duck_db);
+            sys::obs_data_set_int(settings, c("attack_time").as_ptr(), 10);
+            sys::obs_data_set_int(settings, c("release_time").as_ptr(), 400);
+            sys::obs_data_set_string(settings, c("sidechain_source").as_ptr(), c("mic").as_ptr());
+            let filter = sys::obs_source_create(
                 c("compressor_filter").as_ptr(),
                 c("duck").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if !filter.is_null() {
-                ffi::obs_source_filter_add(self.music, filter);
+                sys::obs_source_filter_add(self.music, filter);
             }
             self.duck = filter;
         }
@@ -501,20 +512,20 @@ impl ObsPipeline {
         }
         // SAFETY: ours and live.
         unsafe {
-            ffi::obs_source_set_audio_mixers(
+            sys::obs_source_set_audio_mixers(
                 self.music,
                 if self.music_to_stream {
-                    ffi::MIXER_STREAM
+                    MIXER_STREAM
                 } else {
-                    ffi::MIXER_NOBODY
+                    MIXER_NOBODY
                 },
             );
-            ffi::obs_source_set_monitoring_type(
+            sys::obs_source_set_monitoring_type(
                 self.music,
                 if self.monitoring {
-                    ffi::OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT
+                    sys::obs_monitoring_type_OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT
                 } else {
-                    ffi::OBS_MONITORING_TYPE_NONE
+                    sys::obs_monitoring_type_OBS_MONITORING_TYPE_NONE
                 },
             );
         }
@@ -525,17 +536,19 @@ impl ObsPipeline {
         if self.mixed.on {
             return;
         }
-        let convert = ffi::AudioConvertInfo {
+        let convert = sys::audio_convert_info {
             samples_per_sec: 48_000,
-            format: ffi::AUDIO_FORMAT_FLOAT_PLANAR,
-            speakers: ffi::SPEAKERS_STEREO,
+            format: sys::audio_format_AUDIO_FORMAT_FLOAT_PLANAR,
+            speakers: sys::speaker_layout_SPEAKERS_STEREO,
+            // Measured as it leaves: a peak over 0 dBFS is read, never clipped away.
+            allow_clipping: true,
         };
         // SAFETY: the box outlives the registration, removed in drop.
         unsafe {
-            ffi::obs_add_raw_audio_callback(
+            sys::obs_add_raw_audio_callback(
                 0,
                 &convert,
-                Mixed::on_audio,
+                Some(Mixed::on_audio),
                 &*self.mixed as *const Mixed as *mut c_void,
             );
         }
@@ -559,17 +572,17 @@ impl ObsPipeline {
         // SAFETY: a new reference to the settings, released here; the string
         // is copied out before that.
         let token = unsafe {
-            let settings = ffi::obs_source_get_settings(screen);
+            let settings = sys::obs_source_get_settings(screen);
             if settings.is_null() {
                 return;
             }
-            let said = ffi::obs_data_get_string(settings, c(key).as_ptr());
+            let said = sys::obs_data_get_string(settings, c(key).as_ptr());
             let token = if said.is_null() {
                 String::new()
             } else {
                 CStr::from_ptr(said).to_string_lossy().into_owned()
             };
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             token
         };
         if !token.is_empty() && token != kept.trim() {
@@ -587,23 +600,23 @@ impl ObsPipeline {
             .ok_or("a destination is rtmp://host/app/key")?;
         // SAFETY: settings created and released around the create.
         let service = unsafe {
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_string(settings, c("server").as_ptr(), c(server).as_ptr());
-            ffi::obs_data_set_string(settings, c("key").as_ptr(), c(key).as_ptr());
-            let service = ffi::obs_service_create(
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_string(settings, c("server").as_ptr(), c(server).as_ptr());
+            sys::obs_data_set_string(settings, c("key").as_ptr(), c(key).as_ptr());
+            let service = sys::obs_service_create(
                 c("rtmp_custom").as_ptr(),
                 c("destination").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             service
         };
         if service.is_null() {
             return Err("libobs has no rtmp_custom service".into());
         }
         // SAFETY: an empty settings object, released by `start_output`.
-        let settings = unsafe { ffi::obs_data_create() };
+        let settings = unsafe { sys::obs_data_create() };
         let output = self.start_output("rtmp_output", settings, service)?;
         self.publishing.push((id, output));
         Ok(())
@@ -619,15 +632,15 @@ impl ObsPipeline {
 
     /// The scene, made on first use and put on output channel 0, with the
     /// picture's tick on from its birth.
-    pub(crate) fn scene(&mut self) -> *mut c_void {
+    pub(crate) fn scene(&mut self) -> *mut sys::obs_scene_t {
         if self.scene.is_null() {
             // SAFETY: the scene is ours until drop; its source is what the
             // output shows. The tick's pointer is the boxed picture, which
             // outlives the registration (removed in drop).
             unsafe {
-                self.scene = ffi::obs_scene_create(c("remux").as_ptr());
-                ffi::obs_set_output_source(0, ffi::obs_scene_get_source(self.scene));
-                ffi::obs_add_tick_callback(crate::picture::tick, self.tick_param());
+                self.scene = sys::obs_scene_create(c("remux").as_ptr());
+                sys::obs_set_output_source(0, sys::obs_scene_get_source(self.scene));
+                sys::obs_add_tick_callback(Some(crate::picture::tick), self.tick_param());
                 self.ticking = true;
             }
         }
@@ -665,12 +678,12 @@ impl ObsPipeline {
         &self,
         kind: remuxd_domain::audio_layers::Kind,
         said: &str,
-    ) -> Result<*mut c_void, String> {
+    ) -> Result<*mut sys::obs_source_t, String> {
         use remuxd_domain::audio_layers::Kind;
         let table = &crate::platform::TABLE;
         // SAFETY: settings released after the create.
         unsafe {
-            let settings = ffi::obs_data_create();
+            let settings = sys::obs_data_create();
             let id = match kind {
                 Kind::Mic => {
                     // An id as the device list gives it, or a name as it reads.
@@ -678,7 +691,7 @@ impl ObsPipeline {
                         .into_iter()
                         .find(|(name, id)| id == said || name.eq_ignore_ascii_case(said))
                         .map_or_else(|| said.to_string(), |(_, id)| id);
-                    ffi::obs_data_set_string(
+                    sys::obs_data_set_string(
                         settings,
                         c(table.mic.device_key).as_ptr(),
                         c(&device).as_ptr(),
@@ -687,7 +700,7 @@ impl ObsPipeline {
                 }
                 Kind::App => {
                     if !table.screen_sound.per_app {
-                        ffi::obs_data_release(settings);
+                        sys::obs_data_release(settings);
                         return Err(
                             "this platform hears the screen whole, never one application".into(),
                         );
@@ -706,13 +719,13 @@ impl ObsPipeline {
                     let bundle = match bundle {
                         Ok(bundle) => bundle,
                         Err(why) => {
-                            ffi::obs_data_release(settings);
+                            sys::obs_data_release(settings);
                             return Err(why);
                         }
                     };
                     // `sck_audio_capture`: type 1 is one app by its bundle id.
-                    ffi::obs_data_set_int(settings, c("type").as_ptr(), 1);
-                    ffi::obs_data_set_string(
+                    sys::obs_data_set_int(settings, c("type").as_ptr(), 1);
+                    sys::obs_data_set_string(
                         settings,
                         c("application").as_ptr(),
                         c(&bundle).as_ptr(),
@@ -721,18 +734,18 @@ impl ObsPipeline {
                 }
                 Kind::Screen => {
                     if table.screen_sound.per_app {
-                        ffi::obs_data_set_int(settings, c("type").as_ptr(), 0);
+                        sys::obs_data_set_int(settings, c("type").as_ptr(), 0);
                     }
                     table.screen_sound.source
                 }
             };
-            let source = ffi::obs_source_create(
+            let source = sys::obs_source_create(
                 c(id).as_ptr(),
                 c(said).as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if source.is_null() {
                 return Err(format!("libobs could not hear {said}"));
             }
@@ -745,7 +758,7 @@ impl Drop for ObsPipeline {
     fn drop(&mut self) {
         if self.ticking {
             // SAFETY: registered in `scene` with this pointer.
-            unsafe { ffi::obs_remove_tick_callback(crate::picture::tick, self.tick_param()) };
+            unsafe { sys::obs_remove_tick_callback(Some(crate::picture::tick), self.tick_param()) };
         }
         self.recording = None;
         self.publishing.clear();
@@ -759,21 +772,21 @@ impl Drop for ObsPipeline {
         // SAFETY: registered with these pointers; the meter is ours.
         unsafe {
             if self.mixed.on {
-                ffi::obs_remove_raw_audio_callback(
+                sys::obs_remove_raw_audio_callback(
                     0,
-                    Mixed::on_audio,
+                    Some(Mixed::on_audio),
                     &*self.mixed as *const Mixed as *mut c_void,
                 );
             }
             if !self.music_meter.is_null() {
-                ffi::obs_volmeter_destroy(self.music_meter);
+                sys::obs_volmeter_destroy(self.music_meter);
             }
         }
         // SAFETY: ours; off the channel first.
         unsafe {
             if !self.clip.is_null() {
-                ffi::obs_set_output_source(4, std::ptr::null_mut());
-                ffi::obs_source_release(self.clip);
+                sys::obs_set_output_source(4, std::ptr::null_mut());
+                sys::obs_source_release(self.clip);
             }
         }
         self.screen_sound_on = false;
@@ -781,21 +794,21 @@ impl Drop for ObsPipeline {
         // SAFETY: ours; the channels are emptied before the release.
         unsafe {
             if !self.mic.is_null() {
-                ffi::obs_set_output_source(1, std::ptr::null_mut());
-                ffi::obs_source_release(self.mic);
+                sys::obs_set_output_source(1, std::ptr::null_mut());
+                sys::obs_source_release(self.mic);
             }
             if !self.scene.is_null() {
-                ffi::obs_set_output_source(0, std::ptr::null_mut());
-                ffi::obs_scene_release(self.scene);
+                sys::obs_set_output_source(0, std::ptr::null_mut());
+                sys::obs_scene_release(self.scene);
             }
         }
         // SAFETY: the outputs that held them are gone.
         unsafe {
             if !self.audio_encoder.is_null() {
-                ffi::obs_encoder_release(self.audio_encoder);
+                sys::obs_encoder_release(self.audio_encoder);
             }
             if !self.video_encoder.is_null() {
-                ffi::obs_encoder_release(self.video_encoder);
+                sys::obs_encoder_release(self.video_encoder);
             }
         }
     }
@@ -813,35 +826,35 @@ impl Sound for ObsPipeline {
                 self.gate = gate;
                 self.denoiser = denoiser;
                 if !self.meter.is_null() {
-                    ffi::obs_volmeter_destroy(self.meter);
+                    sys::obs_volmeter_destroy(self.meter);
                     self.meter = std::ptr::null_mut();
                 }
-                ffi::obs_set_output_source(1, std::ptr::null_mut());
-                ffi::obs_source_release(self.mic);
+                sys::obs_set_output_source(1, std::ptr::null_mut());
+                sys::obs_source_release(self.mic);
                 self.mic = std::ptr::null_mut();
             }
             let Some(id) = device else { return Ok(()) };
             let table = &crate::platform::TABLE.mic;
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_string(settings, c(table.device_key).as_ptr(), c(id).as_ptr());
-            let source = ffi::obs_source_create(
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_string(settings, c(table.device_key).as_ptr(), c(id).as_ptr());
+            let source = sys::obs_source_create(
                 c(table.source).as_ptr(),
                 c("mic").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if source.is_null() {
                 return Err("libobs could not open the microphone".into());
             }
-            ffi::obs_set_output_source(1, source);
+            sys::obs_set_output_source(1, source);
             self.mic = source;
             self.meter_the_mix();
-            let meter = ffi::obs_volmeter_create(ffi::OBS_FADER_LOG);
-            ffi::obs_volmeter_attach_source(meter, source);
-            ffi::obs_volmeter_add_callback(
+            let meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
+            sys::obs_volmeter_attach_source(meter, source);
+            sys::obs_volmeter_add_callback(
                 meter,
-                Heard::on_level,
+                Some(Heard::on_level),
                 &*self.heard as *const Heard as *mut c_void,
             );
             self.meter = meter;
@@ -861,11 +874,11 @@ impl Sound for ObsPipeline {
         self.drop_filter(&mut gate);
         // SAFETY: settings handed to `filter_on_mic`, which releases them.
         let settings = unsafe {
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_double(settings, c("open_threshold").as_ptr(), db(params.full));
-            ffi::obs_data_set_double(settings, c("close_threshold").as_ptr(), db(params.floor));
-            ffi::obs_data_set_int(settings, c("hold_time").as_ptr(), params.hold_ms as i64);
-            ffi::obs_data_set_int(settings, c("attack_time").as_ptr(), params.attack_ms as i64);
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_double(settings, c("open_threshold").as_ptr(), db(params.full));
+            sys::obs_data_set_double(settings, c("close_threshold").as_ptr(), db(params.floor));
+            sys::obs_data_set_int(settings, c("hold_time").as_ptr(), params.hold_ms as i64);
+            sys::obs_data_set_int(settings, c("attack_time").as_ptr(), params.attack_ms as i64);
             settings
         };
         self.gate = self.filter_on_mic("noise_gate_filter", "gate", settings);
@@ -878,8 +891,8 @@ impl Sound for ObsPipeline {
         if on {
             // SAFETY: as in `gate`.
             let settings = unsafe {
-                let settings = ffi::obs_data_create();
-                ffi::obs_data_set_string(settings, c("method").as_ptr(), c("rnnoise").as_ptr());
+                let settings = sys::obs_data_create();
+                sys::obs_data_set_string(settings, c("method").as_ptr(), c("rnnoise").as_ptr());
                 settings
             };
             self.denoiser = self.filter_on_mic("noise_suppress_filter", "denoise", settings);
@@ -905,42 +918,42 @@ impl Sound for ObsPipeline {
         // one is ours until then.
         unsafe {
             if !self.music.is_null() {
-                ffi::obs_set_output_source(2, std::ptr::null_mut());
-                ffi::obs_source_release(self.music);
+                sys::obs_set_output_source(2, std::ptr::null_mut());
+                sys::obs_source_release(self.music);
                 self.music = std::ptr::null_mut();
             }
             let Some(track) = track else {
                 self.music_was_playing = false;
                 return Ok(());
             };
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_bool(settings, c("is_local_file").as_ptr(), true);
-            ffi::obs_data_set_string(settings, c("local_file").as_ptr(), c(&track.url).as_ptr());
-            ffi::obs_data_set_bool(settings, c("looping").as_ptr(), false);
-            ffi::obs_data_set_bool(settings, c("clear_on_media_end").as_ptr(), true);
-            let source = ffi::obs_source_create(
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_bool(settings, c("is_local_file").as_ptr(), true);
+            sys::obs_data_set_string(settings, c("local_file").as_ptr(), c(&track.url).as_ptr());
+            sys::obs_data_set_bool(settings, c("looping").as_ptr(), false);
+            sys::obs_data_set_bool(settings, c("clear_on_media_end").as_ptr(), true);
+            let source = sys::obs_source_create(
                 c("ffmpeg_source").as_ptr(),
                 c("music").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if source.is_null() {
                 return Err("libobs could not open the track".into());
             }
-            ffi::obs_set_output_source(2, source);
+            sys::obs_set_output_source(2, source);
             self.music = source;
             self.duck = std::ptr::null_mut();
             if self.music_meter.is_null() {
-                let meter = ffi::obs_volmeter_create(ffi::OBS_FADER_LOG);
-                ffi::obs_volmeter_add_callback(
+                let meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
+                sys::obs_volmeter_add_callback(
                     meter,
-                    Heard::on_level,
+                    Some(Heard::on_level),
                     &*self.music_heard as *const Heard as *mut c_void,
                 );
                 self.music_meter = meter;
             }
-            ffi::obs_volmeter_attach_source(self.music_meter, source);
+            sys::obs_volmeter_attach_source(self.music_meter, source);
         }
         self.meter_the_mix();
         self.music_was_playing = true;
@@ -953,8 +966,8 @@ impl Sound for ObsPipeline {
             return false;
         }
         // SAFETY: ours and live.
-        let ended =
-            unsafe { ffi::obs_source_media_get_state(self.music) } == ffi::OBS_MEDIA_STATE_ENDED;
+        let ended = unsafe { sys::obs_source_media_get_state(self.music) }
+            == sys::obs_media_state_OBS_MEDIA_STATE_ENDED;
         if ended {
             self.music_was_playing = false;
         }
@@ -964,30 +977,30 @@ impl Sound for ObsPipeline {
         // SAFETY: the last clip comes off channel 4 before release.
         unsafe {
             if !self.clip.is_null() {
-                ffi::obs_set_output_source(4, std::ptr::null_mut());
-                ffi::obs_source_release(self.clip);
+                sys::obs_set_output_source(4, std::ptr::null_mut());
+                sys::obs_source_release(self.clip);
                 self.clip = std::ptr::null_mut();
             }
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_bool(settings, c("is_local_file").as_ptr(), true);
-            ffi::obs_data_set_string(
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_bool(settings, c("is_local_file").as_ptr(), true);
+            sys::obs_data_set_string(
                 settings,
                 c("local_file").as_ptr(),
                 c(&path.display().to_string()).as_ptr(),
             );
-            ffi::obs_data_set_bool(settings, c("looping").as_ptr(), false);
-            ffi::obs_data_set_bool(settings, c("clear_on_media_end").as_ptr(), true);
-            let source = ffi::obs_source_create(
+            sys::obs_data_set_bool(settings, c("looping").as_ptr(), false);
+            sys::obs_data_set_bool(settings, c("clear_on_media_end").as_ptr(), true);
+            let source = sys::obs_source_create(
                 c("ffmpeg_source").as_ptr(),
                 c("clip").as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if source.is_null() {
                 return Err("libobs could not open the clip".into());
             }
-            ffi::obs_set_output_source(4, source);
+            sys::obs_set_output_source(4, source);
             self.clip = source;
         }
         Ok(())
@@ -1003,7 +1016,7 @@ impl Sound for ObsPipeline {
         self.monitoring = on;
         // SAFETY: static strings; libobs copies them.
         unsafe {
-            ffi::obs_set_audio_monitoring_device(c("Default").as_ptr(), c("default").as_ptr());
+            sys::obs_set_audio_monitoring_device(c("Default").as_ptr(), c("default").as_ptr());
         }
         self.apply_music_routing();
         Ok(())
@@ -1012,8 +1025,8 @@ impl Sound for ObsPipeline {
         if !self.mic.is_null() {
             // SAFETY: ours and live.
             unsafe {
-                ffi::obs_source_set_volume(self.mic, levels.mic as f32);
-                ffi::obs_source_set_muted(self.mic, levels.muted);
+                sys::obs_source_set_volume(self.mic, levels.mic as f32);
+                sys::obs_source_set_muted(self.mic, levels.muted);
             }
         }
         self.music_to_stream = levels.music_to_stream;
@@ -1024,12 +1037,12 @@ impl Sound for ObsPipeline {
         self.set_screen_sound(levels.screen_sound)?;
         if !self.music.is_null() {
             // SAFETY: ours and live.
-            unsafe { ffi::obs_source_set_volume(self.music, levels.music as f32) };
+            unsafe { sys::obs_source_set_volume(self.music, levels.music as f32) };
         }
         self.app_audio_volume = levels.app_audio_volume;
         if !self.app_audio.is_null() {
             // SAFETY: ours and live.
-            unsafe { ffi::obs_source_set_volume(self.app_audio, levels.app_audio_volume as f32) };
+            unsafe { sys::obs_source_set_volume(self.app_audio, levels.app_audio_volume as f32) };
         }
         self.apply_music_routing();
         Ok(())
@@ -1046,13 +1059,13 @@ impl Sound for ObsPipeline {
         // one is ours until the next.
         unsafe {
             if !self.app_audio.is_null() {
-                ffi::obs_set_output_source(5, std::ptr::null_mut());
-                ffi::obs_source_release(self.app_audio);
+                sys::obs_set_output_source(5, std::ptr::null_mut());
+                sys::obs_source_release(self.app_audio);
                 self.app_audio = std::ptr::null_mut();
             }
             if let Some(source) = made {
-                ffi::obs_source_set_volume(source, self.app_audio_volume as f32);
-                ffi::obs_set_output_source(5, source);
+                sys::obs_source_set_volume(source, self.app_audio_volume as f32);
+                sys::obs_set_output_source(5, source);
                 self.app_audio = source;
                 self.meter_the_mix();
             }
@@ -1078,9 +1091,9 @@ impl Sound for ObsPipeline {
         let source = self.audio_source(layer.source.kind, &said)?;
         // SAFETY: ours until removed; on its own channel.
         unsafe {
-            ffi::obs_source_set_volume(source, layer.volume as f32);
-            ffi::obs_source_set_muted(source, layer.muted);
-            ffi::obs_set_output_source(channel, source);
+            sys::obs_source_set_volume(source, layer.volume as f32);
+            sys::obs_source_set_muted(source, layer.muted);
+            sys::obs_set_output_source(channel, source);
         }
         self.meter_the_mix();
         self.audio_layers.push((layer.id.clone(), source, channel));
@@ -1095,8 +1108,8 @@ impl Sound for ObsPipeline {
             let (_, source, channel) = self.audio_layers.remove(at);
             // SAFETY: off its channel before release.
             unsafe {
-                ffi::obs_set_output_source(channel, std::ptr::null_mut());
-                ffi::obs_source_release(source);
+                sys::obs_set_output_source(channel, std::ptr::null_mut());
+                sys::obs_source_release(source);
             }
         }
     }
@@ -1104,8 +1117,8 @@ impl Sound for ObsPipeline {
         if let Some((_, source, _)) = self.audio_layers.iter().find(|(there, _, _)| there == id) {
             // SAFETY: ours and live.
             unsafe {
-                ffi::obs_source_set_volume(*source, volume as f32);
-                ffi::obs_source_set_muted(*source, muted);
+                sys::obs_source_set_volume(*source, volume as f32);
+                sys::obs_source_set_muted(*source, muted);
             }
         }
     }
@@ -1197,8 +1210,8 @@ impl Air for ObsPipeline {
         let path = format!("{into}/{}", remuxd_domain::recording::name(now));
         // SAFETY: released by `start_output`.
         let settings = unsafe {
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_string(settings, c("path").as_ptr(), c(&path).as_ptr());
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_string(settings, c("path").as_ptr(), c(&path).as_ptr());
             settings
         };
         self.recording = Some(self.start_output("ffmpeg_muxer", settings, std::ptr::null_mut())?);

@@ -17,7 +17,8 @@ use remuxd_domain::scenes::{Element, ElementContent};
 
 use crate::pipeline::ObsPipeline;
 use crate::place::{placement, Region};
-use crate::{c, effect, ffi};
+use crate::{c, effect};
+use libobs as sys;
 
 /// How long a capture has to say its size before it counts as not there.
 /// A camera's first frame on a cold start was measured at under a second.
@@ -38,21 +39,21 @@ unsafe impl Send for Drawn {}
 /// One layer on the picture.
 pub struct Drawing {
     pub layer: Layer,
-    pub source: *mut c_void,
-    pub item: *mut c_void,
+    pub source: *mut sys::obs_source_t,
+    pub item: *mut sys::obs_sceneitem_t,
     /// The source's size the item was last placed for.
     pub size: (u32, u32),
-    pub filter: Option<(String, *mut c_void)>,
-    pub mask: *mut c_void,
+    pub filter: Option<(String, *mut sys::obs_source_t)>,
+    pub mask: *mut sys::obs_source_t,
     pub masked: Option<((u32, u32), Region)>,
 }
 
 /// One element on the picture.
 pub struct Written {
     pub element: Element,
-    pub source: *mut c_void,
-    pub item: *mut c_void,
-    pub filter: Option<(String, *mut c_void)>,
+    pub source: *mut sys::obs_source_t,
+    pub item: *mut sys::obs_sceneitem_t,
+    pub filter: Option<(String, *mut sys::obs_source_t)>,
     /// When a running timer reaches zero.
     pub deadline: Option<Instant>,
     pub words: String,
@@ -60,16 +61,18 @@ pub struct Written {
 
 /// What a capture is, as a physical thing: two layers of the same display
 /// are one capture as far as a scene switch is concerned.
+/// What a capture is, as a physical thing: two layers of the same display
+/// are one capture as far as a scene switch is concerned.
 fn same_capture(a: &Source, b: &Source) -> bool {
     a.kind == b.kind && a.handle == b.handle
 }
 
-fn size_of(source: *mut c_void) -> (u32, u32) {
+fn size_of(source: *mut sys::obs_source_t) -> (u32, u32) {
     // SAFETY: pure reads on a live source.
     unsafe {
         (
-            ffi::obs_source_get_width(source),
-            ffi::obs_source_get_height(source),
+            sys::obs_source_get_width(source),
+            sys::obs_source_get_height(source),
         )
     }
 }
@@ -97,42 +100,33 @@ impl Drawing {
         let placed = placement(&self.layer, self.size);
         // SAFETY: the item, the source and the mask are this drawing's own.
         unsafe {
-            ffi::obs_sceneitem_set_alignment(self.item, ffi::OBS_ALIGN_CENTER);
-            ffi::obs_sceneitem_set_bounds_alignment(self.item, ffi::OBS_ALIGN_CENTER);
-            ffi::obs_sceneitem_set_bounds_type(self.item, ffi::OBS_BOUNDS_SCALE_INNER);
-            ffi::obs_sceneitem_set_bounds(
+            sys::obs_sceneitem_set_alignment(self.item, sys::OBS_ALIGN_CENTER);
+            sys::obs_sceneitem_set_bounds_alignment(self.item, sys::OBS_ALIGN_CENTER);
+            sys::obs_sceneitem_set_bounds_type(
                 self.item,
-                &ffi::Vec2 {
-                    x: placed.bounds.0,
-                    y: placed.bounds.1,
-                },
+                sys::obs_bounds_type_OBS_BOUNDS_SCALE_INNER,
+            );
+            sys::obs_sceneitem_set_bounds(
+                self.item,
+                &crate::vec2(placed.bounds.0, placed.bounds.1),
             );
             // Mirroring is a negative scale; the bounds decide the size.
-            ffi::obs_sceneitem_set_scale(
+            sys::obs_sceneitem_set_scale(
                 self.item,
-                &ffi::Vec2 {
-                    x: if placed.mirrored { -1.0 } else { 1.0 },
-                    y: 1.0,
-                },
+                &crate::vec2(if placed.mirrored { -1.0 } else { 1.0 }, 1.0),
             );
-            ffi::obs_sceneitem_set_pos(
+            sys::obs_sceneitem_set_pos(self.item, &crate::vec2(placed.centre.0, placed.centre.1));
+            sys::obs_sceneitem_set_rot(self.item, placed.degrees);
+            sys::obs_sceneitem_set_crop(
                 self.item,
-                &ffi::Vec2 {
-                    x: placed.centre.0,
-                    y: placed.centre.1,
-                },
-            );
-            ffi::obs_sceneitem_set_rot(self.item, placed.degrees);
-            ffi::obs_sceneitem_set_crop(
-                self.item,
-                &ffi::Crop {
+                &sys::obs_sceneitem_crop {
                     left: placed.crop.0,
                     top: placed.crop.1,
                     right: placed.crop.2,
                     bottom: placed.crop.3,
                 },
             );
-            ffi::obs_sceneitem_set_visible(self.item, placed.visible);
+            sys::obs_sceneitem_set_visible(self.item, placed.visible);
         }
         let wanted = placed.circle.map(|region| (self.size, region));
         if wanted != self.masked {
@@ -144,8 +138,8 @@ impl Drawing {
         // SAFETY: the mask is this drawing's own, on its source.
         unsafe {
             if !self.mask.is_null() {
-                ffi::obs_source_filter_remove(self.source, self.mask);
-                ffi::obs_source_release(self.mask);
+                sys::obs_source_filter_remove(self.source, self.mask);
+                sys::obs_source_release(self.mask);
                 self.mask = std::ptr::null_mut();
             }
         }
@@ -162,27 +156,27 @@ impl Drawing {
         };
         // SAFETY: settings released after the create; the filter is ours.
         unsafe {
-            let settings = ffi::obs_data_create();
-            ffi::obs_data_set_string(
+            let settings = sys::obs_data_create();
+            sys::obs_data_set_string(
                 settings,
                 c"type".as_ptr(),
                 c"mask_alpha_filter.effect".as_ptr(),
             );
-            ffi::obs_data_set_string(
+            sys::obs_data_set_string(
                 settings,
                 c"image_path".as_ptr(),
                 c(&file.display().to_string()).as_ptr(),
             );
-            ffi::obs_data_set_bool(settings, c"stretch".as_ptr(), true);
-            let mask = ffi::obs_source_create(
+            sys::obs_data_set_bool(settings, c"stretch".as_ptr(), true);
+            let mask = sys::obs_source_create(
                 c"mask_filter_v2".as_ptr(),
                 c"shape".as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if !mask.is_null() {
-                ffi::obs_source_filter_add(self.source, mask);
+                sys::obs_source_filter_add(self.source, mask);
                 self.mask = mask;
                 self.masked = wanted;
             }
@@ -207,28 +201,28 @@ impl Drawing {
         set_filter(self.source, &mut self.filter, None, None);
         // SAFETY: the item goes before its source.
         unsafe {
-            ffi::obs_sceneitem_remove(self.item);
-            ffi::obs_source_release(self.source);
+            sys::obs_sceneitem_remove(self.item);
+            sys::obs_source_release(self.source);
         }
     }
 }
 
 /// Swap the filter in `slot` on `source` for `made` (built from `path`).
 fn set_filter(
-    source: *mut c_void,
-    slot: &mut Option<(String, *mut c_void)>,
+    source: *mut sys::obs_source_t,
+    slot: &mut Option<(String, *mut sys::obs_source_t)>,
     path: Option<&str>,
-    made: Option<*mut c_void>,
+    made: Option<*mut sys::obs_source_t>,
 ) {
     // SAFETY: the old filter is ours, on this source; the new one is handed
     // over to the slot.
     unsafe {
         if let Some((_, old)) = slot.take() {
-            ffi::obs_source_filter_remove(source, old);
-            ffi::obs_source_release(old);
+            sys::obs_source_filter_remove(source, old);
+            sys::obs_source_release(old);
         }
         if let (Some(path), Some(made)) = (path, made) {
-            ffi::obs_source_filter_add(source, made);
+            sys::obs_source_filter_add(source, made);
             *slot = Some((path.to_string(), made));
         }
     }
@@ -239,8 +233,8 @@ impl Written {
         set_filter(self.source, &mut self.filter, None, None);
         // SAFETY: the item goes before its source.
         unsafe {
-            ffi::obs_sceneitem_remove(self.item);
-            ffi::obs_source_release(self.source);
+            sys::obs_sceneitem_remove(self.item);
+            sys::obs_source_release(self.source);
         }
     }
 }
@@ -262,7 +256,9 @@ impl Drawn {
                 });
             if let Some(item) = item {
                 // SAFETY: an item of this scene.
-                unsafe { ffi::obs_sceneitem_set_order(item, ffi::ORDER_MOVE_TOP) };
+                unsafe {
+                    sys::obs_sceneitem_set_order(item, sys::obs_order_movement_OBS_ORDER_MOVE_TOP)
+                };
             }
         }
     }
@@ -293,7 +289,7 @@ impl Drawn {
         }
     }
 
-    fn first(&self, kinds: &[Kind]) -> *mut c_void {
+    fn first(&self, kinds: &[Kind]) -> *mut sys::obs_source_t {
         self.layers
             .iter()
             .find(|d| kinds.contains(&d.layer.source.kind))
@@ -301,7 +297,7 @@ impl Drawn {
     }
 }
 
-pub extern "C" fn tick(param: *mut c_void, _seconds: f32) {
+pub unsafe extern "C" fn tick(param: *mut c_void, _seconds: f32) {
     // SAFETY: `param` is the pipeline's boxed `Mutex<Drawn>`, registered
     // with the scene and removed before the box goes.
     let drawn = unsafe { &*(param as *const Mutex<Drawn>) };
@@ -312,7 +308,7 @@ pub extern "C" fn tick(param: *mut c_void, _seconds: f32) {
 
 impl ObsPipeline {
     /// A capture of this source, opened: a display, a window or a camera.
-    fn open(&self, source: &Source) -> Result<*mut c_void, String> {
+    fn open(&self, source: &Source) -> Result<*mut sys::obs_source_t, String> {
         // SAFETY: settings created and released around the create; the
         // source is the caller's.
         unsafe {
@@ -331,9 +327,9 @@ impl ObsPipeline {
                         .cloned()
                         .ok_or_else(|| format!("no display {number}: remux devices lists them"))?;
                     let table = crate::platform::screen();
-                    let settings = ffi::obs_data_create();
+                    let settings = sys::obs_data_create();
                     if let Some(kind) = table.kind_key {
-                        ffi::obs_data_set_int(settings, c(kind).as_ptr(), 0);
+                        sys::obs_data_set_int(settings, c(kind).as_ptr(), 0);
                     }
                     if table.portal {
                         // The portal picks; a token from last time skips its dialog.
@@ -342,7 +338,7 @@ impl ObsPipeline {
                             std::fs::read_to_string(crate::platform::portal_token_path()),
                         ) {
                             if !token.trim().is_empty() {
-                                ffi::obs_data_set_string(
+                                sys::obs_data_set_string(
                                     settings,
                                     c(key).as_ptr(),
                                     c(token.trim()).as_ptr(),
@@ -353,9 +349,9 @@ impl ObsPipeline {
                         // One OS names a display by uuid, another by number.
                         match uuid.parse::<i64>() {
                             Ok(n) if table.kind_key.is_none() => {
-                                ffi::obs_data_set_int(settings, c(table.display_key).as_ptr(), n)
+                                sys::obs_data_set_int(settings, c(table.display_key).as_ptr(), n)
                             }
-                            _ => ffi::obs_data_set_string(
+                            _ => sys::obs_data_set_string(
                                 settings,
                                 c(table.display_key).as_ptr(),
                                 c(&uuid).as_ptr(),
@@ -373,10 +369,10 @@ impl ObsPipeline {
                         .handle
                         .parse()
                         .map_err(|_| format!("window {:?} is not a number", source.handle))?;
-                    let settings = ffi::obs_data_create();
+                    let settings = sys::obs_data_create();
                     if let Some(kind) = table.kind_key {
-                        ffi::obs_data_set_int(settings, c(kind).as_ptr(), 1);
-                        ffi::obs_data_set_int(
+                        sys::obs_data_set_int(settings, c(kind).as_ptr(), 1);
+                        sys::obs_data_set_int(
                             settings,
                             c(table.window_key).as_ptr(),
                             i64::from(id),
@@ -384,7 +380,7 @@ impl ObsPipeline {
                     } else {
                         // xcomposite names a window "id\r\nname\r\nclass": the
                         // id alone matches the window.
-                        ffi::obs_data_set_string(
+                        sys::obs_data_set_string(
                             settings,
                             c(table.window_key).as_ptr(),
                             c(&format!("{id}\r\n\r\n")).as_ptr(),
@@ -394,20 +390,20 @@ impl ObsPipeline {
                 }
                 Kind::Camera => {
                     let table = &crate::platform::TABLE.camera;
-                    let settings = ffi::obs_data_create();
-                    ffi::obs_data_set_string(
+                    let settings = sys::obs_data_create();
+                    sys::obs_data_set_string(
                         settings,
                         c(table.device_key).as_ptr(),
                         c(&source.handle).as_ptr(),
                     );
                     if let Some((key, preset)) = table.preset {
-                        ffi::obs_data_set_string(settings, c(key).as_ptr(), c(preset).as_ptr());
+                        sys::obs_data_set_string(settings, c(key).as_ptr(), c(preset).as_ptr());
                     }
                     // Held at the picture's 30.
-                    ffi::obs_data_set_frames_per_second(
+                    sys::obs_data_set_frames_per_second(
                         settings,
                         c"frame_rate".as_ptr(),
-                        ffi::FramesPerSecond {
+                        sys::media_frames_per_second {
                             numerator: 30,
                             denominator: 1,
                         },
@@ -416,13 +412,13 @@ impl ObsPipeline {
                     (table.source, settings)
                 }
             };
-            let made = ffi::obs_source_create(
+            let made = sys::obs_source_create(
                 c(kind).as_ptr(),
                 c(&source.name).as_ptr(),
                 settings,
                 std::ptr::null_mut(),
             );
-            ffi::obs_data_release(settings);
+            sys::obs_data_release(settings);
             if made.is_null() {
                 return Err(format!("libobs could not open {}", source.name));
             }
@@ -431,7 +427,7 @@ impl ObsPipeline {
     }
 
     /// The source's size once it has one; `(0, 0)` if it never says.
-    fn first_size(source: *mut c_void) -> (u32, u32) {
+    fn first_size(source: *mut sys::obs_source_t) -> (u32, u32) {
         let until = Instant::now() + FIRST_FRAME;
         loop {
             let size = size_of(source);
@@ -443,12 +439,12 @@ impl ObsPipeline {
     }
 
     /// An item for a source, hidden until it is placed.
-    fn item(&mut self, source: *mut c_void) -> *mut c_void {
+    fn item(&mut self, source: *mut sys::obs_source_t) -> *mut sys::obs_sceneitem_t {
         let scene = self.scene();
         // SAFETY: the scene takes its own reference to the source.
         unsafe {
-            let item = ffi::obs_scene_add(scene, source);
-            ffi::obs_sceneitem_set_visible(item, false);
+            let item = sys::obs_scene_add(scene, source);
+            sys::obs_sceneitem_set_visible(item, false);
             item
         }
     }
@@ -475,7 +471,7 @@ impl ObsPipeline {
     }
 
     /// The first display layer's source, for what reads a display's settings.
-    pub(crate) fn first_screen(&self) -> *mut c_void {
+    pub(crate) fn first_screen(&self) -> *mut sys::obs_source_t {
         self.drawn().first(&[Kind::Screen])
     }
 
@@ -499,10 +495,10 @@ impl ObsPipeline {
     /// One capture's counters. libobs does not count a source's own frames,
     /// so a source with a picture counts the scene's while it has one: a rate
     /// read off two of these is the picture's, and zero is no picture.
-    fn flowing_of(source: *mut c_void) -> Flowing {
+    fn flowing_of(source: *mut sys::obs_source_t) -> Flowing {
         let (width, height) = size_of(source);
         // SAFETY: a pure read.
-        let frames = unsafe { ffi::obs_get_total_frames() } as u64;
+        let frames = unsafe { sys::obs_get_total_frames() } as u64;
         Flowing {
             captured: if width > 0 { frames } else { 0 },
             frames,
@@ -521,7 +517,7 @@ impl ObsPipeline {
     }
 
     /// One source rendered alone, for a shot of one layer or one element.
-    fn snap(&mut self, source: *mut c_void) -> Option<(Vec<u8>, u32, u32)> {
+    fn snap(&mut self, source: *mut sys::obs_source_t) -> Option<(Vec<u8>, u32, u32)> {
         self.ring()?.snap(source)
     }
 }
@@ -562,7 +558,9 @@ impl Picture for ObsPipeline {
                 let source = effect::element(element.width, element.height, &words)?;
                 let item = self.item(source);
                 // SAFETY: the item is new and this scene's.
-                unsafe { ffi::obs_sceneitem_set_alignment(item, ffi::OBS_ALIGN_TOP_LEFT) };
+                unsafe {
+                    sys::obs_sceneitem_set_alignment(item, sys::OBS_ALIGN_LEFT | sys::OBS_ALIGN_TOP)
+                };
                 self.drawn().elements.push(Written {
                     element: element.clone(),
                     source,
@@ -589,14 +587,11 @@ impl Picture for ObsPipeline {
             written.element = element.clone();
             // SAFETY: the item is this element's.
             unsafe {
-                ffi::obs_sceneitem_set_pos(
+                sys::obs_sceneitem_set_pos(
                     written.item,
-                    &ffi::Vec2 {
-                        x: element.x as f32,
-                        y: element.y as f32,
-                    },
+                    &crate::vec2(element.x as f32, element.y as f32),
                 );
-                ffi::obs_sceneitem_set_visible(written.item, element.visible);
+                sys::obs_sceneitem_set_visible(written.item, element.visible);
             }
             if written.filter.as_ref().map(|(p, _)| p) != wanted.as_ref() {
                 let made = wanted.as_deref().map(effect::filter).transpose();
@@ -674,7 +669,7 @@ impl Picture for ObsPipeline {
         let shot = self.snap(source);
         set_filter(source, &mut filter, None, None);
         // SAFETY: ours, made above.
-        unsafe { ffi::obs_source_release(source) };
+        unsafe { sys::obs_source_release(source) };
         shot
     }
 
@@ -689,7 +684,7 @@ impl Picture for ObsPipeline {
         let size = Self::first_size(source);
         if size.0 == 0 || size.1 == 0 {
             // SAFETY: ours, never put anywhere.
-            unsafe { ffi::obs_source_release(source) };
+            unsafe { sys::obs_source_release(source) };
             let named = if layer.source.name.trim().is_empty() {
                 format!("{:?} {}", layer.source.kind, layer.source.handle).to_lowercase()
             } else {
@@ -790,7 +785,7 @@ impl Picture for ObsPipeline {
             });
             kept.push(reuse);
         }
-        let mut opened: Vec<*mut c_void> = Vec::new();
+        let mut opened: Vec<*mut sys::obs_source_t> = Vec::new();
         for (layer, reuse) in to.iter().zip(&kept) {
             if reuse.is_some() {
                 continue;
@@ -799,7 +794,7 @@ impl Picture for ObsPipeline {
                 Ok(source) => opened.push(source),
                 Err(why) => {
                     // SAFETY: opened here and never put anywhere.
-                    unsafe { opened.into_iter().for_each(|s| ffi::obs_source_release(s)) };
+                    unsafe { opened.into_iter().for_each(|s| sys::obs_source_release(s)) };
                     self.drawn().layers = pool.into_iter().flatten().collect();
                     return Err(why);
                 }
@@ -873,7 +868,7 @@ impl Picture for ObsPipeline {
         let made = path.map(effect::filter).transpose()?;
         let scene = self.scene();
         // SAFETY: the scene's own source; the old filter is ours on it.
-        let source = unsafe { ffi::obs_scene_get_source(scene) };
+        let source = unsafe { sys::obs_scene_get_source(scene) };
         let mut slot = self.scene_filter.take();
         set_filter(source, &mut slot, path, made);
         self.scene_filter = slot;
@@ -931,7 +926,7 @@ impl Picture for ObsPipeline {
         // would go live with black.
         // SAFETY: a pure read of libobs's counter.
         let frames = if something {
-            unsafe { ffi::obs_get_total_frames() as u64 }
+            unsafe { sys::obs_get_total_frames() as u64 }
         } else {
             0
         };

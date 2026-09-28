@@ -13,6 +13,9 @@ description = "The libobs motor. Not in the workspace: it needs OBS installed."
 [dependencies]
 remuxd-domain = { path = "../domain" }
 remux-wire = { path = "../wire" }
+# libobs's own C API, generated from the headers of the OBS it names (32.1):
+# no struct, constant or signature is written by hand here.
+libobs = { git = "https://github.com/libobs-rs/libobs-rs", rev = "f5d2ce610fbf2066b19b8f7dfbd94f85784d892f" }
 libc = "0.2"
 serde_json = "1"
 jpeg-encoder = "0.7"

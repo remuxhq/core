@@ -11,7 +11,8 @@ use remuxd_domain::engine::{Available, Sources};
 use remuxd_domain::protocol::Named;
 use remuxd_domain::sources::{DisplayId, Screen, Window, WindowId};
 
-use crate::{c, ffi};
+use crate::c;
+use libobs as sys;
 
 /// The displays by the number a face uses, with the uuid libobs wants.
 #[derive(Default)]
@@ -38,7 +39,7 @@ pub(crate) fn list(source: &str, property: &str) -> Vec<(String, String)> {
     // SAFETY: a source is created and released here; the properties are read
     // and destroyed before it goes; every string is copied out.
     unsafe {
-        let made = ffi::obs_source_create(
+        let made = sys::obs_source_create(
             c(source).as_ptr(),
             c("probe").as_ptr(),
             std::ptr::null_mut(),
@@ -47,18 +48,18 @@ pub(crate) fn list(source: &str, property: &str) -> Vec<(String, String)> {
         if made.is_null() {
             return out;
         }
-        let props = ffi::obs_source_properties(made);
+        let props = sys::obs_source_properties(made);
         if !props.is_null() {
-            let p = ffi::obs_properties_get(props, c(property).as_ptr());
+            let p = sys::obs_properties_get(props, c(property).as_ptr());
             if !p.is_null() {
-                for i in 0..ffi::obs_property_list_item_count(p) {
-                    let name = CStr::from_ptr(ffi::obs_property_list_item_name(p, i))
+                for i in 0..sys::obs_property_list_item_count(p) {
+                    let name = CStr::from_ptr(sys::obs_property_list_item_name(p, i))
                         .to_string_lossy()
                         .into_owned();
-                    let value = ffi::obs_property_list_item_string(p, i);
+                    let value = sys::obs_property_list_item_string(p, i);
                     // A list of numbers (the windows) has no string: the number is the value.
                     let value = if value.is_null() {
-                        ffi::obs_property_list_item_int(p, i).to_string()
+                        sys::obs_property_list_item_int(p, i).to_string()
                     } else {
                         CStr::from_ptr(value).to_string_lossy().into_owned()
                     };
@@ -67,9 +68,9 @@ pub(crate) fn list(source: &str, property: &str) -> Vec<(String, String)> {
                     }
                 }
             }
-            ffi::obs_properties_destroy(props);
+            sys::obs_properties_destroy(props);
         }
-        ffi::obs_source_release(made);
+        sys::obs_source_release(made);
     }
     out
 }

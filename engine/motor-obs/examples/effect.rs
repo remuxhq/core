@@ -5,11 +5,12 @@
 use std::ffi::c_void;
 use std::sync::Mutex;
 
-use motor_obs::{effect, ffi};
+use libobs as sys;
+use motor_obs::effect;
 
 static FRAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-extern "C" fn on_frame(_: *mut c_void, frame: *mut ffi::VideoData) {
+unsafe extern "C" fn on_frame(_: *mut c_void, frame: *mut sys::video_data) {
     // SAFETY: libobs's frame for the call, BGRA 1920x1080.
     unsafe {
         let frame = &*frame;
@@ -44,35 +45,35 @@ fn main() {
     effect::check(&invert).expect("the example builds");
     // SAFETY: an example driving libobs by hand.
     unsafe {
-        let scene = ffi::obs_scene_create(c"example".as_ptr());
-        ffi::obs_set_output_source(0, ffi::obs_scene_get_source(scene));
-        let settings = ffi::obs_data_create();
-        ffi::obs_data_set_int(settings, c"color".as_ptr(), 0xFF0000FF); // ABGR: red
-        ffi::obs_data_set_int(settings, c"width".as_ptr(), 400);
-        ffi::obs_data_set_int(settings, c"height".as_ptr(), 400);
-        let red = ffi::obs_source_create(
+        let scene = sys::obs_scene_create(c"example".as_ptr());
+        sys::obs_set_output_source(0, sys::obs_scene_get_source(scene));
+        let settings = sys::obs_data_create();
+        sys::obs_data_set_int(settings, c"color".as_ptr(), 0xFF0000FF); // ABGR: red
+        sys::obs_data_set_int(settings, c"width".as_ptr(), 400);
+        sys::obs_data_set_int(settings, c"height".as_ptr(), 400);
+        let red = sys::obs_source_create(
             c"color_source_v3".as_ptr(),
             c"red".as_ptr(),
             settings,
             std::ptr::null_mut(),
         );
-        ffi::obs_data_release(settings);
-        let red_item = ffi::obs_scene_add(scene, red);
+        sys::obs_data_release(settings);
+        let red_item = sys::obs_scene_add(scene, red);
         let filter = effect::filter(&invert).expect("the filter");
-        ffi::obs_source_filter_add(red, filter);
+        sys::obs_source_filter_add(red, filter);
         // A camera's circle: the mask the motor draws, stretched over a
         // 1280x720 source, cut from its middle square.
-        let settings = ffi::obs_data_create();
-        ffi::obs_data_set_int(settings, c"color".as_ptr(), 0xFF00FF00); // ABGR: green
-        ffi::obs_data_set_int(settings, c"width".as_ptr(), 1280);
-        ffi::obs_data_set_int(settings, c"height".as_ptr(), 720);
-        let green = ffi::obs_source_create(
+        let settings = sys::obs_data_create();
+        sys::obs_data_set_int(settings, c"color".as_ptr(), 0xFF00FF00); // ABGR: green
+        sys::obs_data_set_int(settings, c"width".as_ptr(), 1280);
+        sys::obs_data_set_int(settings, c"height".as_ptr(), 720);
+        let green = sys::obs_source_create(
             c"color_source_v3".as_ptr(),
             c"green".as_ptr(),
             settings,
             std::ptr::null_mut(),
         );
-        ffi::obs_data_release(settings);
+        sys::obs_data_release(settings);
         let region = motor_obs::place::Region {
             x: 280,
             y: 0,
@@ -81,31 +82,31 @@ fn main() {
         };
         let file = std::env::temp_dir().join("remux-circle.png");
         motor_obs::text::circle_mask(&file, (1280, 720), region).unwrap();
-        let settings = ffi::obs_data_create();
-        ffi::obs_data_set_string(
+        let settings = sys::obs_data_create();
+        sys::obs_data_set_string(
             settings,
             c"type".as_ptr(),
             c"mask_alpha_filter.effect".as_ptr(),
         );
-        ffi::obs_data_set_string(
+        sys::obs_data_set_string(
             settings,
             c"image_path".as_ptr(),
             motor_obs::c(&file.display().to_string()).as_ptr(),
         );
-        ffi::obs_data_set_bool(settings, c"stretch".as_ptr(), true);
-        let mask = ffi::obs_source_create(
+        sys::obs_data_set_bool(settings, c"stretch".as_ptr(), true);
+        let mask = sys::obs_source_create(
             c"mask_filter_v2".as_ptr(),
             c"shape".as_ptr(),
             settings,
             std::ptr::null_mut(),
         );
-        ffi::obs_data_release(settings);
-        ffi::obs_source_filter_add(green, mask);
-        let green_item = ffi::obs_scene_add(scene, green);
-        ffi::obs_sceneitem_set_pos(green_item, &ffi::Vec2 { x: 500.0, y: 0.0 });
-        ffi::obs_sceneitem_set_crop(
+        sys::obs_data_release(settings);
+        sys::obs_source_filter_add(green, mask);
+        let green_item = sys::obs_scene_add(scene, green);
+        sys::obs_sceneitem_set_pos(green_item, &motor_obs::vec2(500.0, 0.0));
+        sys::obs_sceneitem_set_crop(
             green_item,
-            &ffi::Crop {
+            &sys::obs_sceneitem_crop {
                 left: 280,
                 top: 0,
                 right: 280,
@@ -113,27 +114,21 @@ fn main() {
             },
         );
         let words = effect::element(600, 200, "Hello").expect("the element");
-        let item = ffi::obs_scene_add(scene, words);
-        ffi::obs_sceneitem_set_pos(
-            item,
-            &ffi::Vec2 {
-                x: 1000.0,
-                y: 500.0,
-            },
-        );
-        let scale = ffi::VideoScaleInfo {
-            format: ffi::VIDEO_FORMAT_BGRA,
+        let item = sys::obs_scene_add(scene, words);
+        sys::obs_sceneitem_set_pos(item, &motor_obs::vec2(1000.0, 500.0));
+        let scale = sys::video_scale_info {
+            format: sys::video_format_VIDEO_FORMAT_BGRA,
             width: 1920,
             height: 1080,
-            range: ffi::VIDEO_RANGE_PARTIAL,
-            colorspace: ffi::VIDEO_CS_709,
+            range: sys::video_range_type_VIDEO_RANGE_PARTIAL,
+            colorspace: sys::video_colorspace_VIDEO_CS_709,
         };
-        ffi::obs_add_raw_video_callback(&scale, on_frame, std::ptr::null_mut());
+        sys::obs_add_raw_video_callback(&scale, Some(on_frame), std::ptr::null_mut());
         std::thread::sleep(std::time::Duration::from_millis(1500));
         println!(
             "element {}x{}",
-            ffi::obs_source_get_width(words),
-            ffi::obs_source_get_height(words)
+            sys::obs_source_get_width(words),
+            sys::obs_source_get_height(words)
         );
         let inside = pixel(200, 200);
         println!("inverted red, BGRA: {inside:?}");
@@ -152,19 +147,19 @@ fn main() {
         let corner = pixel(505, 5);
         let rim = pixel(860, 3);
         println!("circle: middle {middle:?}, corner {corner:?}, top of the rim {rim:?}");
-        ffi::obs_remove_raw_video_callback(on_frame, std::ptr::null_mut());
-        ffi::obs_set_output_source(0, std::ptr::null_mut());
-        ffi::obs_source_filter_remove(red, filter);
-        ffi::obs_source_release(filter);
-        ffi::obs_sceneitem_remove(red_item);
-        ffi::obs_sceneitem_remove(green_item);
-        ffi::obs_source_filter_remove(green, mask);
-        ffi::obs_source_release(mask);
-        ffi::obs_source_release(green);
-        ffi::obs_sceneitem_remove(item);
-        ffi::obs_source_release(red);
-        ffi::obs_source_release(words);
-        ffi::obs_scene_release(scene);
+        sys::obs_remove_raw_video_callback(Some(on_frame), std::ptr::null_mut());
+        sys::obs_set_output_source(0, std::ptr::null_mut());
+        sys::obs_source_filter_remove(red, filter);
+        sys::obs_source_release(filter);
+        sys::obs_sceneitem_remove(red_item);
+        sys::obs_sceneitem_remove(green_item);
+        sys::obs_source_filter_remove(green, mask);
+        sys::obs_source_release(mask);
+        sys::obs_source_release(green);
+        sys::obs_sceneitem_remove(item);
+        sys::obs_source_release(red);
+        sys::obs_source_release(words);
+        sys::obs_scene_release(scene);
         // libobs destroys on a thread of its own; the text inside the element
         // has to be gone before the plugin that drew it is.
         std::thread::sleep(std::time::Duration::from_millis(500));

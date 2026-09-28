@@ -11,7 +11,7 @@ use remuxd_domain::preview::{
     fills, Preview, CAMERA_SEQUENCE_AT, MAGIC, SCREEN_SEQUENCE_AT, SEQUENCE_AT, SLOTS,
 };
 
-use crate::ffi;
+use libobs as sys;
 
 pub const WIDE: u32 = 960;
 pub const TALL: u32 = 540;
@@ -35,7 +35,7 @@ pub struct Ring {
 /// A source rendered alone once, fitted into 960x540, for a shot of one
 /// layer or one element.
 struct Snap {
-    source: *mut c_void,
+    source: *mut sys::obs_source_t,
     width: u32,
     height: u32,
     taken: Option<Vec<u8>>,
@@ -47,9 +47,9 @@ unsafe impl Send for Snap {}
 /// One source rendered alone, 960x540, for its ring.
 #[derive(Default)]
 pub struct Alone {
-    pub source: *mut c_void,
-    texrender: *mut c_void,
-    stage: *mut c_void,
+    pub source: *mut sys::obs_source_t,
+    texrender: *mut sys::gs_texrender_t,
+    stage: *mut sys::gs_stagesurf_t,
     sequence: u64,
     last: Vec<u8>,
 }
@@ -126,28 +126,28 @@ impl Ring {
         if on == self.callback_on {
             return;
         }
-        let scale = ffi::VideoScaleInfo {
-            format: ffi::VIDEO_FORMAT_BGRA,
+        let scale = sys::video_scale_info {
+            format: sys::video_format_VIDEO_FORMAT_BGRA,
             width: WIDE,
             height: TALL,
-            range: ffi::VIDEO_RANGE_PARTIAL,
-            colorspace: ffi::VIDEO_CS_709,
+            range: sys::video_range_type_VIDEO_RANGE_PARTIAL,
+            colorspace: sys::video_colorspace_VIDEO_CS_709,
         };
         let me = self as *mut Self as *mut c_void;
         // SAFETY: `self` is boxed and outlives the callback, which is removed
         // in `watch(false)` and in drop before the box goes.
         unsafe {
             if on {
-                ffi::obs_add_raw_video_callback(&scale, Self::on_frame, me);
+                sys::obs_add_raw_video_callback(&scale, Some(Self::on_frame), me);
             } else {
-                ffi::obs_remove_raw_video_callback(Self::on_frame, me);
+                sys::obs_remove_raw_video_callback(Some(Self::on_frame), me);
             }
         }
         self.callback_on = on;
     }
 
     /// Which source the camera's and the screen's rings show; null for none.
-    pub fn alone(&self, camera: *mut c_void, screen: *mut c_void) {
+    pub fn alone(&self, camera: *mut sys::obs_source_t, screen: *mut sys::obs_source_t) {
         if let Ok(mut it) = self.camera.lock() {
             it.source = camera;
         }
@@ -165,9 +165,9 @@ impl Ring {
         // SAFETY: as `watch`.
         unsafe {
             if on {
-                ffi::obs_add_main_render_callback(Self::on_render, me);
+                sys::obs_add_main_render_callback(Some(Self::on_render), me);
             } else {
-                ffi::obs_remove_main_render_callback(Self::on_render, me);
+                sys::obs_remove_main_render_callback(Some(Self::on_render), me);
             }
         }
         self.render_on = on;
@@ -175,11 +175,11 @@ impl Ring {
 
     /// One source alone, once: rendered on the next frame, at most a second
     /// away, and handed back as a JPEG of its own shape.
-    pub fn snap(&mut self, source: *mut c_void) -> Option<(Vec<u8>, u32, u32)> {
+    pub fn snap(&mut self, source: *mut sys::obs_source_t) -> Option<(Vec<u8>, u32, u32)> {
         let (w, h) = unsafe {
             (
-                ffi::obs_source_get_width(source),
-                ffi::obs_source_get_height(source),
+                sys::obs_source_get_width(source),
+                sys::obs_source_get_height(source),
             )
         };
         if w == 0 || h == 0 {
@@ -242,29 +242,28 @@ impl Ring {
             return;
         };
         let (w, h) = (
-            ffi::obs_source_get_width(snap.source),
-            ffi::obs_source_get_height(snap.source),
+            sys::obs_source_get_width(snap.source),
+            sys::obs_source_get_height(snap.source),
         );
         if w == 0 || h == 0 {
             return;
         }
-        let texrender = ffi::gs_texrender_create(ffi::GS_BGRA, ffi::GS_ZS_NONE);
-        let stage = ffi::gs_stagesurface_create(snap.width, snap.height, ffi::GS_BGRA);
-        if ffi::gs_texrender_begin(texrender, snap.width, snap.height) {
-            let clear = ffi::Vec4 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 1.0,
-            };
-            ffi::gs_clear(ffi::GS_CLEAR_COLOR, &clear, 0.0, 0);
-            ffi::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
-            ffi::obs_source_video_render(snap.source);
-            ffi::gs_texrender_end(texrender);
-            ffi::gs_stage_texture(stage, ffi::gs_texrender_get_texture(texrender));
+        let texrender = sys::gs_texrender_create(
+            sys::gs_color_format_GS_BGRA,
+            sys::gs_zstencil_format_GS_ZS_NONE,
+        );
+        let stage =
+            sys::gs_stagesurface_create(snap.width, snap.height, sys::gs_color_format_GS_BGRA);
+        if sys::gs_texrender_begin(texrender, snap.width, snap.height) {
+            let clear = crate::vec4(0.0, 0.0, 0.0, 1.0);
+            sys::gs_clear(sys::GS_CLEAR_COLOR, &clear, 0.0, 0);
+            sys::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
+            sys::obs_source_video_render(snap.source);
+            sys::gs_texrender_end(texrender);
+            sys::gs_stage_texture(stage, sys::gs_texrender_get_texture(texrender));
             let mut data: *mut u8 = std::ptr::null_mut();
             let mut linesize: u32 = 0;
-            if ffi::gs_stagesurface_map(stage, &mut data, &mut linesize) && !data.is_null() {
+            if sys::gs_stagesurface_map(stage, &mut data, &mut linesize) && !data.is_null() {
                 let row = (snap.width * 4) as usize;
                 let mut whole = Vec::with_capacity(row * snap.height as usize);
                 for y in 0..snap.height as usize {
@@ -273,15 +272,15 @@ impl Ring {
                         row,
                     ));
                 }
-                ffi::gs_stagesurface_unmap(stage);
+                sys::gs_stagesurface_unmap(stage);
                 snap.taken = Some(whole);
             }
         }
-        ffi::gs_stagesurface_destroy(stage);
-        ffi::gs_texrender_destroy(texrender);
+        sys::gs_stagesurface_destroy(stage);
+        sys::gs_texrender_destroy(texrender);
     }
 
-    extern "C" fn on_render(param: *mut c_void, _cx: u32, _cy: u32) {
+    unsafe extern "C" fn on_render(param: *mut c_void, _cx: u32, _cy: u32) {
         // SAFETY: `param` is the ring; this runs inside libobs's graphics
         // context, where the gs_* calls are allowed.
         let ring = unsafe { &*(param as *const Self) };
@@ -307,35 +306,34 @@ impl Ring {
             }
             unsafe {
                 if it.texrender.is_null() {
-                    it.texrender = ffi::gs_texrender_create(ffi::GS_BGRA, ffi::GS_ZS_NONE);
-                    it.stage = ffi::gs_stagesurface_create(WIDE, TALL, ffi::GS_BGRA);
+                    it.texrender = sys::gs_texrender_create(
+                        sys::gs_color_format_GS_BGRA,
+                        sys::gs_zstencil_format_GS_ZS_NONE,
+                    );
+                    it.stage =
+                        sys::gs_stagesurface_create(WIDE, TALL, sys::gs_color_format_GS_BGRA);
                 }
                 let (w, h) = (
-                    ffi::obs_source_get_width(it.source),
-                    ffi::obs_source_get_height(it.source),
+                    sys::obs_source_get_width(it.source),
+                    sys::obs_source_get_height(it.source),
                 );
                 if w == 0 || h == 0 {
                     continue;
                 }
-                ffi::gs_texrender_reset(it.texrender);
-                if !ffi::gs_texrender_begin(it.texrender, WIDE, TALL) {
+                sys::gs_texrender_reset(it.texrender);
+                if !sys::gs_texrender_begin(it.texrender, WIDE, TALL) {
                     continue;
                 }
-                let clear = ffi::Vec4 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                    w: 1.0,
-                };
-                ffi::gs_clear(ffi::GS_CLEAR_COLOR, &clear, 0.0, 0);
+                let clear = crate::vec4(0.0, 0.0, 0.0, 1.0);
+                sys::gs_clear(sys::GS_CLEAR_COLOR, &clear, 0.0, 0);
                 // The source's own pixels mapped onto the whole 960x540.
-                ffi::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
-                ffi::obs_source_video_render(it.source);
-                ffi::gs_texrender_end(it.texrender);
-                ffi::gs_stage_texture(it.stage, ffi::gs_texrender_get_texture(it.texrender));
+                sys::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
+                sys::obs_source_video_render(it.source);
+                sys::gs_texrender_end(it.texrender);
+                sys::gs_stage_texture(it.stage, sys::gs_texrender_get_texture(it.texrender));
                 let mut data: *mut u8 = std::ptr::null_mut();
                 let mut linesize: u32 = 0;
-                if !ffi::gs_stagesurface_map(it.stage, &mut data, &mut linesize) || data.is_null() {
+                if !sys::gs_stagesurface_map(it.stage, &mut data, &mut linesize) || data.is_null() {
                     continue;
                 }
                 let slot = fills(it.sequence, SLOTS);
@@ -348,7 +346,7 @@ impl Ring {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(y * stride), row);
                     whole.extend_from_slice(src);
                 }
-                ffi::gs_stagesurface_unmap(it.stage);
+                sys::gs_stagesurface_unmap(it.stage);
                 it.sequence += 1;
                 (*ring.base.add(counts_at).cast::<AtomicU64>())
                     .store(it.sequence, Ordering::Release);
@@ -379,7 +377,7 @@ impl Ring {
         Some((out, WIDE, TALL))
     }
 
-    extern "C" fn on_frame(param: *mut c_void, frame: *mut ffi::VideoData) {
+    unsafe extern "C" fn on_frame(param: *mut c_void, frame: *mut sys::video_data) {
         // SAFETY: `param` is the ring `watch` registered; `frame` is
         // libobs's for the duration of the call.
         unsafe {
@@ -430,16 +428,16 @@ impl Drop for Ring {
         self.render(false);
         // SAFETY: the graphics objects go inside the graphics context.
         unsafe {
-            ffi::obs_enter_graphics();
+            sys::obs_enter_graphics();
             for alone in [&self.camera, &self.screen] {
                 if let Ok(it) = alone.lock() {
                     if !it.texrender.is_null() {
-                        ffi::gs_texrender_destroy(it.texrender);
-                        ffi::gs_stagesurface_destroy(it.stage);
+                        sys::gs_texrender_destroy(it.texrender);
+                        sys::gs_stagesurface_destroy(it.stage);
                     }
                 }
             }
-            ffi::obs_leave_graphics();
+            sys::obs_leave_graphics();
         }
         // SAFETY: mapped in `new`.
         unsafe {

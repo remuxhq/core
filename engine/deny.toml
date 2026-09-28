@@ -27,3 +27,6 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# libobs's C API generated from OBS 32.1's headers (the motor's bindings), at a
+# pinned commit of the libobs-rs main branch: the release on crates.io trails it.
+allow-git = ["https://github.com/libobs-rs/libobs-rs"]

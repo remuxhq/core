@@ -5,7 +5,6 @@
 //! One port at a time: what is not ported yet answers as `NoPipeline` does.
 
 pub mod effect;
-pub mod ffi;
 mod picture;
 mod pipeline;
 pub mod place;
@@ -15,6 +14,8 @@ mod sources;
 pub mod text;
 
 use std::ffi::{CStr, CString};
+
+use libobs as sys;
 use std::sync::{Arc, Mutex};
 
 pub use pipeline::ObsPipeline;
@@ -22,6 +23,20 @@ use remuxd_domain::engine::{Pipeline, Sources};
 pub use sources::ObsSources;
 
 pub use platform::app;
+
+/// libobs's `vec2`, a union of `{x, y}` and `ptr[2]`, built through `ptr`.
+pub fn vec2(x: f32, y: f32) -> sys::vec2 {
+    sys::vec2 {
+        __bindgen_anon_1: sys::vec2__bindgen_ty_1 { ptr: [x, y] },
+    }
+}
+
+/// libobs's `vec4`, built the same way.
+pub fn vec4(x: f32, y: f32, z: f32, w: f32) -> sys::vec4 {
+    sys::vec4 {
+        __bindgen_anon_1: sys::vec4__bindgen_ty_1 { ptr: [x, y, z, w] },
+    }
+}
 
 pub fn c(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
@@ -43,7 +58,7 @@ impl Obs {
         // keeps. A null store is what OBS documents for a process with no
         // profiler.
         let up =
-            unsafe { ffi::obs_startup(locale.as_ptr(), config.as_ptr(), std::ptr::null_mut()) };
+            unsafe { sys::obs_startup(locale.as_ptr(), config.as_ptr(), std::ptr::null_mut()) };
         if !up {
             return Err("libobs refused to start".into());
         }
@@ -55,7 +70,7 @@ impl Obs {
         let app = app();
         let table = &platform::TABLE;
         let graphics = c(&(table.graphics)(&app));
-        let mut video = ffi::VideoInfo {
+        let mut video = sys::obs_video_info {
             graphics_module: graphics.as_ptr(),
             fps_num: 30,
             fps_den: 1,
@@ -63,33 +78,33 @@ impl Obs {
             base_height: 1080,
             output_width: 1920,
             output_height: 1080,
-            output_format: ffi::VIDEO_FORMAT_NV12,
+            output_format: sys::video_format_VIDEO_FORMAT_NV12,
             adapter: 0,
             gpu_conversion: true,
-            colorspace: ffi::VIDEO_CS_709,
-            range: ffi::VIDEO_RANGE_PARTIAL,
-            scale_type: ffi::OBS_SCALE_BICUBIC,
+            colorspace: sys::video_colorspace_VIDEO_CS_709,
+            range: sys::video_range_type_VIDEO_RANGE_PARTIAL,
+            scale_type: sys::obs_scale_type_OBS_SCALE_BICUBIC,
         };
         // SAFETY: every string outlives its call; libobs copies them.
         unsafe {
-            ffi::obs_add_data_path(c(&(table.data)(&app)).as_ptr());
-            let video_said = ffi::obs_reset_video(&mut video);
+            sys::obs_add_data_path(c(&(table.data)(&app)).as_ptr());
+            let video_said = sys::obs_reset_video(&mut video);
             if video_said != 0 {
                 return Err(format!("libobs could not set up video: {video_said}"));
             }
-            let audio = ffi::AudioInfo {
+            let audio = sys::obs_audio_info {
                 samples_per_sec: 48_000,
-                speakers: ffi::SPEAKERS_STEREO,
+                speakers: sys::speaker_layout_SPEAKERS_STEREO,
             };
-            if !ffi::obs_reset_audio(&audio) {
+            if !sys::obs_reset_audio(&audio) {
                 return Err("libobs could not set up audio".into());
             }
             for name in table.modules.iter().chain(table.optional_modules) {
                 let mut module = std::ptr::null_mut();
                 let (bin, data) = (table.module)(&app, name);
                 let (bin, data) = (c(&bin), c(&data));
-                if ffi::obs_open_module(&mut module, bin.as_ptr(), data.as_ptr()) != 0
-                    || !ffi::obs_init_module(module)
+                if sys::obs_open_module(&mut module, bin.as_ptr(), data.as_ptr()) != 0
+                    || !sys::obs_init_module(module)
                 {
                     if table.optional_modules.contains(name) {
                         remuxd_domain::log::note(&format!(
@@ -101,19 +116,19 @@ impl Obs {
                 }
             }
             // VideoToolbox registers its encoders here, not on load.
-            ffi::obs_post_load_modules();
+            sys::obs_post_load_modules();
         }
         Ok(())
     }
 
     pub fn initialized() -> bool {
         // SAFETY: a pure read.
-        unsafe { ffi::obs_initialized() }
+        unsafe { sys::obs_initialized() }
     }
 
     pub fn version() -> String {
         // SAFETY: libobs hands out a static string.
-        unsafe { CStr::from_ptr(ffi::obs_get_version_string()) }
+        unsafe { CStr::from_ptr(sys::obs_get_version_string()) }
             .to_string_lossy()
             .into_owned()
     }
@@ -122,7 +137,7 @@ impl Obs {
 impl Drop for Obs {
     fn drop(&mut self) {
         // SAFETY: started in `start`, and once.
-        unsafe { ffi::obs_shutdown() }
+        unsafe { sys::obs_shutdown() }
     }
 }
 
