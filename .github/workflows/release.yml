@@ -25,7 +25,9 @@ jobs:
   # generates a why: the version engine/cli/Cargo.toml says, without
   # docs/releases/<version>.md, is refused before a build.
   notes:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
