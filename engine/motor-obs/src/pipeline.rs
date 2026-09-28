@@ -379,6 +379,12 @@ impl ObsPipeline {
                 sys::obs_data_set_int(video, c("bitrate").as_ptr(), 6000);
                 sys::obs_data_set_string(video, c("rate_control").as_ptr(), c("CBR").as_ptr());
                 sys::obs_data_set_int(video, c("keyint_sec").as_ptr(), 2);
+                // No B-frames, as the native motor encodes: a reordered frame
+                // parts presentation from decode time, which RTMP's muxers
+                // assume are one. VideoToolbox reads `bframes`, x264 its opts;
+                // each ignores the other's.
+                sys::obs_data_set_bool(video, c("bframes").as_ptr(), false);
+                sys::obs_data_set_string(video, c("x264opts").as_ptr(), c("bframes=0").as_ptr());
                 let table = &crate::platform::TABLE;
                 let encoder = sys::obs_video_encoder_create(
                     c(table.video_encoder).as_ptr(),
