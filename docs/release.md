@@ -98,7 +98,9 @@ gh pr checks --watch
 Merging the pull request publishes it once `ci` is green on main. Then watch the run:
 
 ```sh
-sleep 5; run=$(gh run list -w release.yml -b main -L 1 --json databaseId --jq '.[0].databaseId')
+git fetch -q origin main; sha=$(git rev-parse origin/main)   # the merge
+# The run starts once ci on that commit is green, minutes later.
+until run=$(gh run list -w release.yml -c "$sha" --json databaseId --jq '.[0].databaseId') && [ -n "$run" ]; do sleep 30; done
 gh run watch "$run" --exit-status
 gh release view v$new --json assets --jq '.assets[].name'   # a tarball and a .sha256 per target
 ```
