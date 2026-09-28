@@ -49,9 +49,8 @@ fn value_of(row: Row) -> Option<String> {
 }
 
 /// One list property of one source type, as (name, value) pairs, without the
-/// row for "none".
+/// row for "none", read off a source made to be asked and released after.
 pub fn list(source: &str, property: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
     // SAFETY: a source is created and released here; the properties are read
     // and destroyed before it goes; every string is copied out.
     unsafe {
@@ -62,37 +61,60 @@ pub fn list(source: &str, property: &str) -> Vec<(String, String)> {
             std::ptr::null_mut(),
         );
         if made.is_null() {
-            return out;
+            return Vec::new();
         }
-        let props = sys::obs_source_properties(made);
-        if !props.is_null() {
-            let p = sys::obs_properties_get(props, c(property).as_ptr());
-            if !p.is_null() {
-                // A list of numbers (the windows) and a list of text (the
-                // displays, the devices) say which they are.
-                let numbers =
-                    sys::obs_property_list_format(p) == sys::obs_combo_format_OBS_COMBO_FORMAT_INT;
-                for i in 0..sys::obs_property_list_item_count(p) {
-                    let name = CStr::from_ptr(sys::obs_property_list_item_name(p, i))
-                        .to_string_lossy()
-                        .into_owned();
-                    let row = if numbers {
-                        Row::Number(sys::obs_property_list_item_int(p, i))
-                    } else {
-                        let text = sys::obs_property_list_item_string(p, i);
-                        Row::Text(
-                            (!text.is_null())
-                                .then(|| CStr::from_ptr(text).to_string_lossy().into_owned()),
-                        )
-                    };
-                    if let Some(value) = value_of(row) {
-                        out.push((name, value));
-                    }
+        let out = rows(sys::obs_source_properties(made), property);
+        sys::obs_source_release(made);
+        out
+    }
+}
+
+/// The same list off the source type, with no source made. A microphone
+/// source starts capturing the moment it exists: on AirPods that switched
+/// them to the headset profile ("[24000 Hz] initialized") and glitched what
+/// the operator heard on every listing. `coreaudio_properties` and
+/// `pulse_properties` read no instance, so the type's own list is the list.
+pub fn list_of_type(source: &str, property: &str) -> Vec<(String, String)> {
+    // SAFETY: the properties are libobs's to build and ours to destroy.
+    unsafe { rows(sys::obs_get_source_properties(c(source).as_ptr()), property) }
+}
+
+/// The rows of `property` in `props`, which is destroyed here.
+///
+/// # Safety
+/// `props` is null or a live properties object nobody else will destroy.
+unsafe fn rows(props: *mut sys::obs_properties_t, property: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if props.is_null() {
+        return out;
+    }
+    // SAFETY: `props` is live until the destroy below; every string is copied out.
+    unsafe {
+        let p = sys::obs_properties_get(props, c(property).as_ptr());
+        if !p.is_null() {
+            // A list of numbers (the windows) and a list of text (the
+            // displays, the devices) say which they are.
+            let numbers =
+                sys::obs_property_list_format(p) == sys::obs_combo_format_OBS_COMBO_FORMAT_INT;
+            for i in 0..sys::obs_property_list_item_count(p) {
+                let name = CStr::from_ptr(sys::obs_property_list_item_name(p, i))
+                    .to_string_lossy()
+                    .into_owned();
+                let row = if numbers {
+                    Row::Number(sys::obs_property_list_item_int(p, i))
+                } else {
+                    let text = sys::obs_property_list_item_string(p, i);
+                    Row::Text(
+                        (!text.is_null())
+                            .then(|| CStr::from_ptr(text).to_string_lossy().into_owned()),
+                    )
+                };
+                if let Some(value) = value_of(row) {
+                    out.push((name, value));
                 }
             }
-            sys::obs_properties_destroy(props);
         }
-        sys::obs_source_release(made);
+        sys::obs_properties_destroy(props);
     }
     out
 }
@@ -166,7 +188,7 @@ impl Sources for ObsSources {
             } else {
                 Vec::new()
             },
-            mics: named(list(
+            mics: named(list_of_type(
                 crate::platform::TABLE.mic.source,
                 crate::platform::TABLE.mic.devices,
             )),
