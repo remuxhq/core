@@ -35,6 +35,9 @@ pub struct Table {
     pub helper: fn() -> Result<(), String>,
     /// The face the cards are set in, one this OS has.
     pub card_font: &'static str,
+    /// Its weight, by the name the face gives it: Medium on macOS, what the
+    /// native motor sets its text in.
+    pub card_style: &'static str,
 }
 
 /// The source that shows a display or a window, and how it is asked.
@@ -152,6 +155,7 @@ pub const TABLE: Table = Table {
     grants: true,
     helper: helper_beside_us,
     card_font: "Helvetica Neue",
+    card_style: "Medium",
 };
 
 /// The screen source of this session: on macOS there is one.
@@ -304,6 +308,8 @@ pub const TABLE: Table = Table {
     // The distribution installs the helper where libobs looks.
     helper: || Ok(()),
     card_font: "DejaVu Sans",
+    // DejaVu has no Medium; Book is its regular weight.
+    card_style: "Book",
 };
 
 /// Wayland: the desktop's portal (xdg-desktop-portal and its backend) picks

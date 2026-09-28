@@ -252,13 +252,16 @@ unsafe fn element_settings(width: u32, height: u32, words: &str) -> *mut sys::ob
     settings
 }
 
-/// The words, in white, at four fifths of the box's height: what the text
-/// element was on the compositor this replaces.
+/// The words, in white, at four fifths of the box's height, in the weight
+/// the native motor uses.
 fn text_json(words: &str, height: u32) -> String {
-    let face = crate::platform::TABLE.card_font;
+    let (face, style) = (
+        crate::platform::TABLE.card_font,
+        crate::platform::TABLE.card_style,
+    );
     let size = (f64::from(height) * 0.8).round().max(1.0) as i64;
     format!(
-        r#"{{"text":{},"font":{{"face":"{face}","style":"Regular","size":{size},"flags":0}},"color1":4294967295,"color2":4294967295,"antialiasing":true}}"#,
+        r#"{{"text":{},"font":{{"face":"{face}","style":"{style}","size":{size},"flags":0}},"color1":4294967295,"color2":4294967295,"antialiasing":true}}"#,
         serde_json::to_string(words).unwrap_or_default()
     )
 }
