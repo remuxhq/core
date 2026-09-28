@@ -62,8 +62,7 @@ its own lockfile.
 
 ## 4. The notes
 
-`docs/releases/<version>.md`, a new file per version, for a person who uses remux
-first:
+`docs/releases/<version>.md`, one file per version, for the people who use remux:
 
 ```
 remux 0.1.2.

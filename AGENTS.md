@@ -77,9 +77,9 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - A release is a pull request: `docs/release.md` is the whole process and the `release`
   skill walks it. A person names the version; it and its notes
   (`docs/releases/<version>.md`, what changed and why, for a person) land in one pull
-  request. Its merge, once `ci` is green on main, runs `release.yml`, which refuses a version without notes, leaves
-  one already released alone, builds every target, and makes the tag and the release.
-  Nothing else publishes.
+  request. Its merge, once `ci` is green on main, runs `release.yml`, which refuses a
+  version without notes, leaves one already released alone, builds every target, and
+  makes the tag and the release. Nothing else publishes.
 
 ## Conventions
 

@@ -2,8 +2,9 @@
 # Build the release tarball of remux for the machine this runs on: the CLI
 # and the engine on the libobs motor (the GPL build), the docs, the BYO
 # files, the scripts, and the tarball's sha256 beside it. The version is
-# engine/cli/Cargo.toml's; the release workflow, run by the merge that moves it, runs this
-# on every target and publishes them under the tag of the same number.
+# engine/cli/Cargo.toml's; the release workflow, run by the merge that moves
+# it, runs this on every target and publishes them under the tag of the same
+# number.
 #
 #   sh scripts/release.sh [dist dir]      -> dist/remux-<version>-<target>.tar.gz
 #
