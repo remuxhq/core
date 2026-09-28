@@ -46,7 +46,7 @@ jobs:
       # OBS's headers reach for simde on ARM; the bindings are generated from them.
       - name: simde, for the libobs bindings
         run: brew install simde
-      # seam, fmt --check, clippy -D warnings, nextest, llvm-cov ≥ 90% of the domain
+      # remuxd.lint, remuxd.tests, remuxd.cover: what a person runs
       - run: make remuxd.check
 
   # The same engine on the other OS it ships for: the seam, the domain and
@@ -75,10 +75,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio libobs-dev xvfb
           echo "LIBOBS_PATH=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
-      - run: make remuxd.seam
-      - run: cd engine && cargo clippy --locked --all-targets --features remuxd/obs -- -D warnings
-      - run: cd engine && xvfb-run -a cargo nextest run --locked --all-targets --features remuxd/obs
-      - run: cd engine && cargo test --locked --manifest-path motor-obs/Cargo.toml
+      - run: make remuxd.lint
+      - run: xvfb-run -a make remuxd.tests
 
   security:
     name: sec / secrets, advisories, deny

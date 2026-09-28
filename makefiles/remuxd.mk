@@ -1,6 +1,6 @@
 ##@ remuxd (the engine, Rust, runs on the host)
 
-.PHONY: obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.deps remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
+.PHONY: remuxd.lint remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.deps remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
 
 remuxd.deps: ## What the engine needs on this machine
 	@command -v cargo >/dev/null || { echo "cargo missing: https://rustup.rs"; exit 1; }
@@ -67,12 +67,24 @@ remuxd.build.obs: ## Build the engine with the libobs motor alone (macOS: agains
 	@$(CARGO) build --locked --release -p remuxd -p remux --features remuxd/obs
 	$(sign)
 
-remuxd.check: ## The gate: seam, format, clippy as errors, tests, coverage
+remuxd.check: ## The gate: remuxd.lint, remuxd.tests, remuxd.cover
+	@$(MAKE) remuxd.lint
+	@$(MAKE) remuxd.tests
+	@$(MAKE) remuxd.cover
+
+# The gate's parts, which CI calls by name so a job runs what a person runs.
+# motor-obs is a workspace of its own (it links the machine's OBS), so
+# `--all` never reaches it: it is formatted, linted and tested by its manifest.
+remuxd.lint: ## Seam, format and clippy as errors, the engine's workspace and motor-obs's
 	@$(MAKE) remuxd.seam
 	@$(CARGO) fmt --all -- --check
+	@$(CARGO) fmt --manifest-path motor-obs/Cargo.toml -- --check
 	@$(CARGO) clippy --locked --all-targets --all-features -- -D warnings
-	@$(CARGO) nextest run --locked --all-targets 
-	@$(MAKE) remuxd.cover
+	@$(CARGO) clippy --locked --manifest-path motor-obs/Cargo.toml --all-targets -- -D warnings
+
+remuxd.tests: ## Every test, the engine's workspace and motor-obs's
+	@$(CARGO) nextest run --locked --all-targets
+	@$(CARGO) test --locked --manifest-path motor-obs/Cargo.toml
 
 # The seam, asserted rather than trusted. remuxd-domain holds every decision
 # and must never learn what an Apple framework is; keeping that true is the
