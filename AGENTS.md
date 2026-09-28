@@ -67,8 +67,9 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - `make remuxd.check`: the gate, `remuxd.lint` (seam, fmt, clippy, both workspaces) then
   `remuxd.tests` then `remuxd.cover` (domain ≥ 90%). CI calls the same targets.
   `make remuxd.test F=name` mid-loop. `make security` the scanners.
-- Setup is README's "Building it", per OS (macOS: `brew install simde`, `make obs.fetch`,
-  and `make remuxd.identity` before running a build; Linux: `obs-studio libobs-dev clang`). It is the one list: a
+- Setup is README's "Development setup", per OS, then `make setup` (macOS: `brew
+  install simde`, `make obs.fetch`, and `make remuxd.identity` before running a build;
+  Linux: `obs-studio libobs-dev clang`). It is the one list: a
   new build prerequisite lands there, in `ci.yml` and in `release.yml` in the same
   commit. A release needs none of it; `install.sh` asks only for OBS.
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
