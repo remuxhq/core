@@ -232,9 +232,7 @@ impl Engine {
                         let name = first.name.clone();
                         self.pick_genre(&name)
                     }
-                    None => Reply::Error {
-                        message: "there is no music in the folder".into(),
-                    },
+                    None => no_music(),
                 },
             }
         } else {
@@ -320,6 +318,9 @@ impl Engine {
     /// Start a genre from the beginning of its rotation.
     pub(super) fn pick_genre(&mut self, name: &str) -> Reply {
         let playlists = self.library.playlists();
+        if playlists.is_empty() {
+            return no_music();
+        }
         let Some(playlist) = playlists.iter().find(|p| p.name == name) else {
             return Reply::Error {
                 message: format!(
@@ -400,5 +401,18 @@ impl Engine {
             }
             Err(why) => Reply::Error { message: why },
         }
+    }
+}
+
+/// Nothing in the music folder, which is every machine on its first day: no
+/// track ships with remux, since the ones free for a stream are not ours to
+/// redistribute. So the refusal says where tracks go and where to find some.
+fn no_music() -> Reply {
+    Reply::Error {
+        message: format!(
+            "no music yet: put tracks in {}, one folder per genre \
+             (free for streams: https://www.streambeats.com)",
+            crate::config::music_dir().join("lofi").display()
+        ),
     }
 }

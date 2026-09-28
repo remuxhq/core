@@ -3073,3 +3073,22 @@ fn a_destination_of_its_own_outranks_the_app_s() {
         vec![Some(DESTINATION.to_string())]
     );
 }
+
+#[test]
+fn no_music_says_where_it_goes_and_where_to_find_some() {
+    let folder = crate::config::music_dir().display().to_string();
+    for command in [
+        Command::Music { on: true },
+        Command::Genre {
+            name: "lofi".into(),
+        },
+    ] {
+        let Reply::Error { message } = engine().handle(command) else {
+            panic!("no music is an error")
+        };
+        assert!(
+            message.contains(&folder) && message.contains("https://www.streambeats.com"),
+            "{message}"
+        );
+    }
+}
