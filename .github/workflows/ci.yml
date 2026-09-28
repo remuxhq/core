@@ -48,9 +48,10 @@ jobs:
       - run: make remuxd.check
 
   # The same engine on the other OS it ships for: the seam, the domain and
-  # the CLI tests, the libobs motor built against OBS's own PPA: the motor's
-  # bindings are OBS 32.1's headers, and pkg-config has to find a libobs at
-  # least that new, which the distribution's is not.
+  # the CLI tests, the libobs motor built against the distribution's OBS.
+  # LIBOBS_PATH links it straight from the multiarch folder: the bindings'
+  # own pkg-config check asks for the OBS their headers are from (32.1),
+  # which the distribution's is not.
   # The smokes stay on a machine (a display, a session); this is the compile
   # and the decisions, where a macOS-only default shows.
   engine-linux:
@@ -69,10 +70,10 @@ jobs:
       - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: cargo-nextest
-      - name: libobs from OBS's PPA, and a display for the daemon the socket tests spawn
+      - name: libobs, the distribution's, and a display for the daemon the socket tests spawn
         run: |
-          sudo add-apt-repository -y ppa:obsproject/obs-studio
-          sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio xvfb
+          sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio libobs-dev xvfb
+          echo "LIBOBS_PATH=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
       - run: make remuxd.seam
       - run: cd engine && cargo clippy --locked --all-targets --features remuxd/obs -- -D warnings
       - run: cd engine && xvfb-run -a cargo nextest run --locked --all-targets --features remuxd/obs

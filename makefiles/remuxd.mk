@@ -29,6 +29,11 @@ HOST_OS := $(shell uname -s)
 ifeq ($(HOST_OS),Darwin)
 OBS_APP ?= $(CURDIR)/engine/target/obs/OBS.app
 export OBS_APP
+else
+# The motor's bindings link the distribution's libobs from its folder (the
+# libobs-dev package's libobs.so), not through pkg-config.
+LIBOBS_PATH ?= $(patsubst %/,%,$(dir $(firstword $(wildcard /usr/lib/*/libobs.so /usr/lib64/libobs.so /usr/lib/libobs.so))))
+export LIBOBS_PATH
 endif
 OBS_VERSION ?= 32.1.2
 
@@ -50,7 +55,7 @@ remuxd.build: ## Build the engine (this OS's motor) and sign it so its permissio
 # that is a surprise and the build should say so rather than resolve around it.
 
 obs.fetch: ## macOS: fetch OBS $(OBS_VERSION) into engine/target/obs, the copy the obs motor links and runs against (Linux: OBS from the distribution)
-	@test "$(HOST_OS)" = Darwin || { echo "obs.fetch is macOS's; here: sudo apt-get install obs-studio"; exit 0; }
+	@test "$(HOST_OS)" = Darwin || { echo "obs.fetch is macOS's; here: sudo apt-get install obs-studio libobs-dev"; exit 0; }
 	@mkdir -p engine/target/obs && cd engine/target/obs && \
 	test -f OBS-$(OBS_VERSION).dmg || curl -sL -o OBS-$(OBS_VERSION).dmg https://github.com/obsproject/obs-studio/releases/download/$(OBS_VERSION)/OBS-Studio-$(OBS_VERSION)-macOS-$$(test "$$(uname -m)" = arm64 && echo Apple || echo Intel).dmg && \
 	hdiutil attach -nobrowse -quiet -mountpoint /tmp/remux-obs-dmg OBS-$(OBS_VERSION).dmg && rm -rf OBS.app && cp -R /tmp/remux-obs-dmg/OBS.app OBS.app; hdiutil detach -quiet /tmp/remux-obs-dmg; \

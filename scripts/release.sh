@@ -14,7 +14,7 @@
 #           (OBS_APP names another); signed with SIGN_ID when that identity is
 #           in the keychain, ad hoc otherwise (then macOS asks for Screen
 #           Recording again after each upgrade)
-#   Linux   libobs from the distribution (sudo apt-get install obs-studio)
+#   Linux   libobs from the distribution (sudo apt-get install obs-studio libobs-dev)
 set -eu
 cd "$(dirname "$0")/.."
 DIST="${1:-$PWD/dist}"
@@ -37,7 +37,14 @@ if [ "$OS" = "Darwin" ]; then
   export OBS_APP
   rm -f engine/target/release/obs-ffmpeg-mux engine/target/Frameworks
 else
-  have_libobs || { echo "release: no libobs: sudo apt-get install obs-studio" >&2; exit 1; }
+  have_libobs || { echo "release: no libobs: sudo apt-get install obs-studio libobs-dev" >&2; exit 1; }
+  # The bindings link the distribution's libobs from its folder, not through
+  # pkg-config, which would ask for the OBS their headers are from.
+  if [ -z "${LIBOBS_PATH:-}" ]; then
+    LIBOBS_PATH=$(dirname "$(ls /usr/lib/*/libobs.so /usr/lib64/libobs.so /usr/lib/libobs.so 2>/dev/null | head -1)")
+  fi
+  [ -e "$LIBOBS_PATH/libobs.so" ] || { echo "release: no libobs.so in $LIBOBS_PATH: sudo apt-get install libobs-dev" >&2; exit 1; }
+  export LIBOBS_PATH
 fi
 
 (cd engine && cargo build --locked --release -p remuxd -p remux --no-default-features --features remuxd/obs)
