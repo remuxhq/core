@@ -11,10 +11,20 @@ CARGO := cd engine && cargo
 # stranger. `make remuxd.identity` creates it once, in the login keychain.
 SIGN_ID := remux dev
 
-.PHONY: help cli.link
+.PHONY: help setup cli.link
 
 help: ## Show every target, grouped by context
 	@awk 'BEGIN {FS = ":.*##"} /^##@/ {printf "\n%s\n", substr($$0, 5)} /^[a-zA-Z0-9_.-]+:.*?##/ {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+##@ Setup
+setup: ## Install what the gate and the scanners need; the OS's packages are README's
+	@command -v rustup >/dev/null || { echo "rustup missing: https://rustup.rs"; exit 1; }
+	@$(CARGO) --version
+	@cd engine && rustup component add llvm-tools-preview
+	@command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+	@command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
+	@$(MAKE) --no-print-directory security.tools
+	@echo "ok: $$(cargo nextest --version | head -1), $$(cargo llvm-cov --version)"
 
 ##@ The shell
 cli.link: ## `remux` on the PATH: a link to the built CLI in ~/.local/bin (where install.sh puts it)

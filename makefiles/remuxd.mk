@@ -1,12 +1,6 @@
 ##@ remuxd (the engine, Rust, runs on the host)
 
-.PHONY: remuxd.lint remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.deps remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
-
-remuxd.deps: ## What the engine needs on this machine
-	@command -v cargo >/dev/null || { echo "cargo missing: https://rustup.rs"; exit 1; }
-	@command -v cargo-llvm-cov >/dev/null || { echo "cargo-llvm-cov missing: cargo install cargo-llvm-cov"; exit 1; }
-	@command -v cargo-nextest >/dev/null || { echo "cargo-nextest missing: cargo install cargo-nextest"; exit 1; }
-	@echo "ok: $$(cargo --version), $$(cargo llvm-cov --version), $$(cargo nextest --version)"
+.PHONY: remuxd.lint remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
 
 # Signing with our own certificate is not a nicety. **macOS ties a screen
 # recording grant to the code signature.** Left ad hoc, cargo's linker-signed
