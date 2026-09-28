@@ -71,7 +71,7 @@ Both:
 
 ```
 curl https://sh.rustup.rs -sSf | sh   # engine/rust-toolchain.toml pins the version
-make setup                            # nextest, llvm-cov, scanners, gate setup
+make setup                            # nextest, llvm-cov, scanners
 ```
 
 ## What it runs on
