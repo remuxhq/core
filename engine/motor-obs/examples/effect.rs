@@ -1,6 +1,6 @@
 //! `cargo run --example effect`, from `engine/motor-obs`: libobs off OBS.app,
 //! the motor's two sources registered, a red square inverted by
-//! `examples/invert.effect` and a text element, read back off the output.
+//! `examples/invert.wgsl` and a text element, read back off the output.
 
 use std::ffi::c_void;
 use std::sync::Mutex;
@@ -35,14 +35,16 @@ fn main() {
     obs.set_up().expect("libobs sets up");
     effect::register();
     let here = std::env::current_dir().unwrap();
-    let invert = here.join("examples/invert.effect").display().to_string();
-    assert!(effect::check("/nowhere.effect").is_err());
-    let broken = std::env::temp_dir().join("remux-broken.effect");
-    std::fs::write(&broken, "technique Draw { pass { nonsense } }").unwrap();
+    let invert = here.join("examples/invert.wgsl").display().to_string();
+    assert!(effect::check("/nowhere.wgsl").is_err());
+    let broken = std::env::temp_dir().join("remux-broken.wgsl");
+    std::fs::write(&broken, "@fragment fn main() -> nonsense").unwrap();
     let said = effect::check(&broken.display().to_string());
     println!("a broken file: {said:?}");
     assert!(said.is_err());
     effect::check(&invert).expect("the example builds");
+    let everything = here.join("examples/everything.wgsl").display().to_string();
+    effect::check(&everything).expect("the filter that covers the writer builds");
     // SAFETY: an example driving libobs by hand.
     unsafe {
         let scene = sys::obs_scene_create(c"example".as_ptr());

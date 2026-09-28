@@ -195,11 +195,11 @@ pub enum Command {
     Mirror {
         on: bool,
     },
-    /// Load an OBS effect file (HLSL) over the entire scene, or clear it.
+    /// Load a WGSL filter over the entire scene, or clear it.
     Shader {
         path: Option<String>,
     },
-    /// Apply an OBS effect file to a layer's own pixels before composition.
+    /// Apply a WGSL filter to a layer's own pixels before composition.
     LayerShader {
         id: String,
         path: Option<String>,

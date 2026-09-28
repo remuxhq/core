@@ -1,10 +1,9 @@
 //! The two kinds of source this motor adds to libobs.
 //!
-//! `remux_filter`: an operator's OBS effect file (HLSL, the language of OBS's
-//! own `.effect` files) as a filter, on a layer's source or on the scene. It
-//! draws with the file's `Draw` technique and fills two uniforms when the
-//! file declares them: `time`, seconds since the motor started drawing, and
-//! `resolution`, the size in pixels of what it filters.
+//! `remux_filter`: an operator's WGSL filter (the `remux-filter` crate, the contract both
+//! motors share), written out as an OBS effect, on a layer's source or on the
+//! scene. It fills two uniforms every frame: `time`, seconds since the motor
+//! started drawing, and `resolution`, the size in pixels of what it filters.
 //!
 //! `remux_element`: a text or a timer as a picture of its own, exactly the
 //! element's width by height, the words centred and shrunk to fit. A filter
@@ -68,43 +67,43 @@ pub fn register() {
     });
 }
 
-/// Whether the file builds, with libobs's own complaint when it does not.
-/// Asked before a filter is put anywhere, so a bad file is the reply to the
-/// command that named it and never a picture that went quietly unfiltered.
-pub fn check(path: &str) -> Result<(), String> {
-    if !std::path::Path::new(path).is_file() {
-        return Err(format!("no effect file at {path}"));
-    }
-    // SAFETY: inside the graphics context; the effect and the error string
-    // are freed here.
-    unsafe {
-        sys::obs_enter_graphics();
-        let mut error: *mut c_char = std::ptr::null_mut();
-        let effect = sys::gs_effect_create_from_file(c(path).as_ptr(), &mut error);
-        let said = if error.is_null() {
-            String::new()
-        } else {
-            let said = CStr::from_ptr(error).to_string_lossy().trim().to_string();
-            sys::bfree(error.cast());
-            said
-        };
-        if !effect.is_null() {
-            sys::gs_effect_destroy(effect);
-        }
-        sys::obs_leave_graphics();
-        if effect.is_null() {
-            Err(if said.is_empty() {
-                format!("{path} is not an effect libobs can build")
-            } else {
-                format!("{path}: {said}")
-            })
-        } else {
-            Ok(())
-        }
+/// The effect a WGSL filter file is written out as, built in the graphics
+/// context the caller is in, with the reason when it does not build.
+unsafe fn build(path: &str) -> Result<*mut sys::gs_effect_t, String> {
+    let written = remux_filter::load(path)?;
+    let mut error: *mut c_char = std::ptr::null_mut();
+    let effect = sys::gs_effect_create(c(&written).as_ptr(), c(path).as_ptr(), &mut error);
+    let said = if error.is_null() {
+        String::new()
+    } else {
+        let said = CStr::from_ptr(error).to_string_lossy().trim().to_string();
+        sys::bfree(error.cast());
+        said
+    };
+    if effect.is_null() {
+        Err(format!("{path}: libobs did not build the filter: {said}"))
+    } else {
+        Ok(effect)
     }
 }
 
-/// A filter on `source` that draws with the effect at `path`.
+/// Whether the file builds, with the reason when it does not. Asked before a
+/// filter is put anywhere, so a bad file is the reply to the command that
+/// named it and never a picture that went quietly unfiltered.
+pub fn check(path: &str) -> Result<(), String> {
+    // SAFETY: inside the graphics context; the effect is freed here.
+    unsafe {
+        sys::obs_enter_graphics();
+        let built = build(path);
+        if let Ok(effect) = built {
+            sys::gs_effect_destroy(effect);
+        }
+        sys::obs_leave_graphics();
+        built.map(|_| ())
+    }
+}
+
+/// A filter that draws with the WGSL filter at `path`.
 pub fn filter(path: &str) -> Result<*mut sys::obs_source_t, String> {
     check(path)?;
     // SAFETY: settings made and released around the create.
@@ -150,8 +149,9 @@ unsafe extern "C" fn filter_create(
             std::ptr::null_mut(),
         );
         if !path.is_null() {
+            let path = CStr::from_ptr(path).to_string_lossy().into_owned();
             sys::obs_enter_graphics();
-            effect = sys::gs_effect_create_from_file(path, std::ptr::null_mut());
+            effect = build(&path).unwrap_or(std::ptr::null_mut());
             if !effect.is_null() {
                 time = sys::gs_effect_get_param_by_name(effect, c"time".as_ptr());
                 resolution = sys::gs_effect_get_param_by_name(effect, c"resolution".as_ptr());

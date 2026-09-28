@@ -139,27 +139,27 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
     assert!(matches!(
         engine.handle(Command::LayerShader {
             id: "title".into(),
-            path: Some("good.frag".into())
+            path: Some("good.wgsl".into())
         }),
         Reply::Status(_)
     ));
     assert_eq!(
         engine.status().scenes[0].elements[0].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
     assert!(matches!(
         engine.handle(Command::LayerShader {
             id: "title".into(),
-            path: Some("bad.frag".into())
+            path: Some("bad.wgsl".into())
         }),
         Reply::Error { .. }
     ));
     assert_eq!(
         engine.status().scenes[0].elements[0].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
     let mut invalid = text("invalid", "No");
-    invalid.shader = Some("bad.frag".into());
+    invalid.shader = Some("bad.wgsl".into());
     assert!(matches!(
         engine.handle(Command::SceneElementAdd { element: invalid }),
         Reply::Error { .. }
@@ -188,12 +188,12 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
             .elements[0]
             .shader
             .as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
     let saved = crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
     assert_eq!(
         saved.scenes[0].elements[0].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
 
     let mut restored = Engine::new().with_pipeline(Box::new(super::Wrote {
@@ -203,7 +203,7 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
     restored.restore(&saved);
     assert_eq!(
         restored.status().scenes[0].elements[0].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
     restored.handle(Command::LayerShader {
         id: "title".into(),
@@ -217,7 +217,7 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
         .find(|s| s.name == "bad")
         .unwrap()
         .elements[0]
-        .shader = Some("bad.frag".into());
+        .shader = Some("bad.wgsl".into());
     restored.handle(Command::SceneSwitch {
         name: "default".into(),
     });
@@ -487,10 +487,10 @@ fn legacy_layers_restore_as_default_and_named_scenes_round_trip() {
 fn shader_commands_and_scene_choices_round_trip() {
     let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
     assert_eq!(
-        crate::cli::parse(&words("scene layer filter face effect.frag")),
+        crate::cli::parse(&words("scene layer filter face effect.wgsl")),
         Ok(Command::LayerShader {
             id: "face".into(),
-            path: Some("effect.frag".into())
+            path: Some("effect.wgsl".into())
         })
     );
     assert_eq!(
@@ -505,14 +505,14 @@ fn shader_commands_and_scene_choices_round_trip() {
     engine.status.layers = vec![layer("face", Kind::Camera, "cam", 0)];
     let set = engine.handle(Command::LayerShader {
         id: "face".into(),
-        path: Some("layer.frag".into()),
+        path: Some("layer.wgsl".into()),
     });
     let Reply::Status(status) = set else {
         panic!("expected status")
     };
-    assert_eq!(status.layers[0].shader.as_deref(), Some("layer.frag"));
+    assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
     engine.handle(Command::Shader {
-        path: Some("global.frag".into()),
+        path: Some("global.wgsl".into()),
     });
     engine.handle(Command::SceneDuplicate {
         name: "second".into(),
@@ -526,13 +526,13 @@ fn shader_commands_and_scene_choices_round_trip() {
         name: "default".into(),
     });
     let status = engine.status();
-    assert_eq!(status.shader.as_deref(), Some("global.frag"));
-    assert_eq!(status.layers[0].shader.as_deref(), Some("layer.frag"));
+    assert_eq!(status.shader.as_deref(), Some("global.wgsl"));
+    assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
     let saved = crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
-    assert_eq!(saved.scenes[0].shader.as_deref(), Some("global.frag"));
+    assert_eq!(saved.scenes[0].shader.as_deref(), Some("global.wgsl"));
     assert_eq!(
         saved.scenes[0].layers[0].shader.as_deref(),
-        Some("layer.frag")
+        Some("layer.wgsl")
     );
     let second = saved
         .scenes
@@ -559,7 +559,7 @@ fn invalid_layer_assignment_and_scene_shader_roll_back_without_stopping_live() {
     engine.status.layers = vec![old.clone()];
     engine.status.on_air = true;
     let mut next = layer("new", Kind::Screen, "display", 0);
-    next.shader = Some("bad.frag".into());
+    next.shader = Some("bad.wgsl".into());
     engine.status.scenes.push(Scene {
         name: "next".into(),
         layers: vec![next],
@@ -587,7 +587,7 @@ fn invalid_layer_assignment_and_scene_shader_roll_back_without_stopping_live() {
     assert!(matches!(
         engine.handle(Command::LayerShader {
             id: "old".into(),
-            path: Some("bad.frag".into())
+            path: Some("bad.wgsl".into())
         }),
         Reply::Error { .. }
     ));
@@ -597,7 +597,7 @@ fn invalid_layer_assignment_and_scene_shader_roll_back_without_stopping_live() {
         layers: vec![],
         elements: vec![],
         order: vec![],
-        shader: Some("bad.frag".into()),
+        shader: Some("bad.wgsl".into()),
     });
     assert!(matches!(
         engine.handle(Command::SceneSwitch {
@@ -616,21 +616,21 @@ fn runtime_failure_hides_only_the_affected_shader_in_status_and_persistence() {
     };
     let mut engine = Engine::new().with_pipeline(Box::new(fake));
     let mut disabled = layer("disabled", Kind::Camera, "cam", 0);
-    disabled.shader = Some("failed.frag".into());
+    disabled.shader = Some("failed.wgsl".into());
     let mut healthy = layer("healthy", Kind::Screen, "1", 0);
-    healthy.shader = Some("good.frag".into());
+    healthy.shader = Some("good.wgsl".into());
     engine.status.layers = vec![disabled, healthy];
-    engine.status.shader = Some("scene.frag".into());
+    engine.status.shader = Some("scene.wgsl".into());
     let Reply::Status(status) = engine.handle(Command::Status) else {
         panic!("status")
     };
     assert_eq!(status.layers[0].shader, None);
-    assert_eq!(status.layers[1].shader.as_deref(), Some("good.frag"));
-    assert_eq!(status.shader.as_deref(), Some("scene.frag"));
+    assert_eq!(status.layers[1].shader.as_deref(), Some("good.wgsl"));
+    assert_eq!(status.shader.as_deref(), Some("scene.wgsl"));
     assert_eq!(engine.remembered().layers[0].shader, None);
     assert_eq!(
         engine.remembered().layers[1].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
 
     let fake = super::Wrote {
@@ -638,14 +638,14 @@ fn runtime_failure_hides_only_the_affected_shader_in_status_and_persistence() {
         ..Default::default()
     };
     let mut engine = Engine::new().with_pipeline(Box::new(fake));
-    engine.status.shader = Some("failed.frag".into());
+    engine.status.shader = Some("failed.wgsl".into());
     engine.status.layers = vec![layer("healthy", Kind::Camera, "cam", 0)];
-    engine.status.layers[0].shader = Some("good.frag".into());
+    engine.status.layers[0].shader = Some("good.wgsl".into());
     let Reply::Status(status) = engine.handle(Command::Status) else {
         panic!("status")
     };
     assert_eq!(status.shader, None);
-    assert_eq!(status.layers[0].shader.as_deref(), Some("good.frag"));
+    assert_eq!(status.layers[0].shader.as_deref(), Some("good.wgsl"));
     assert_eq!(engine.remembered().scenes[0].shader, None);
 }
 
@@ -654,7 +654,7 @@ fn restore_skips_bad_shader_paths_without_losing_sources_or_other_scenes() {
     let mut engine = Engine::with_sources(Box::new(super::ThisMachine))
         .with_pipeline(Box::new(super::Wrote::default()));
     let mut saved_layer = layer("desktop", Kind::Screen, "1", 0);
-    saved_layer.shader = Some("bad.frag".into());
+    saved_layer.shader = Some("bad.wgsl".into());
     let setup = crate::remembered::Remembered {
         scenes: vec![
             Scene {
@@ -662,14 +662,14 @@ fn restore_skips_bad_shader_paths_without_losing_sources_or_other_scenes() {
                 layers: vec![saved_layer],
                 elements: vec![],
                 order: vec![],
-                shader: Some("bad.frag".into()),
+                shader: Some("bad.wgsl".into()),
             },
             Scene {
                 name: "later".into(),
                 layers: vec![],
                 elements: vec![],
                 order: vec![],
-                shader: Some("good.frag".into()),
+                shader: Some("good.wgsl".into()),
             },
         ],
         ..Default::default()
@@ -680,7 +680,7 @@ fn restore_skips_bad_shader_paths_without_losing_sources_or_other_scenes() {
     assert_eq!(engine.status.shader, None);
     assert_eq!(
         engine.remembered().scenes[1].shader.as_deref(),
-        Some("good.frag")
+        Some("good.wgsl")
     );
 }
 

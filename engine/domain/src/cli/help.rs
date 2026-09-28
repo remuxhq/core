@@ -26,8 +26,8 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["live"], args: "[--confirm <plan>|--yes]", summary: "Go live on every armed destination.", note: "Alone, it prints the plan and asks a person at a terminal. A script runs `remux plan --json`, then `remux live --confirm <fingerprint>`, which goes only if nothing moved since the plan. Arm destinations first with `remux destination arm <id>`." },
     Topic { names: &["stop"], args: "", summary: "Stop the live broadcast.", note: "" },
     Topic { names: &["quit"], args: "", summary: "Shut down the engine.", note: "" },
-    Topic { names: &["layer"], args: "add|set screen|camera|window <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.effect|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]", summary: "Compose captures, text and timers in one back-to-front order.", note: "Example: `remux scene layer add text title 200 200 1000 160 Welcome`; `remux scene layer add timer clock 700 450 520 160 180`; `remux scene timer start clock`. Set uses the same arguments and preserves ID, order and visibility. Move uses a zero-based back-to-front index across captures and generated layers. Hide/show and remove work for all layers; hiding a capture keeps its device open. Transform uses scene pixels and clockwise degrees for captures; generated text/timer layers require degrees 0 and must fit in 1920x1080. Crop uses native capture pixels; crop, shape, mirror, position and screen-sound do not apply to text or timers. Shape and mirror apply only to cameras; `remux scene layer mirror face off` overrides that camera's broadcast mirror independently of the legacy panel self-view mirror. Shot reads one layer even while hidden. A layer filter processes captured pixels or a generated layer's own width×height pixels before composition; a scene filter runs after composition. Both may be active at once. Filter files are OBS effects (see `remux help scene filter`) and must be trusted local files; paths and layouts survive restart. A set to a new capture source keeps its order and viewport, discarding a crop that no longer fits." },
-    Topic { names: &["shader"], args: "<file.effect|off>", summary: "Apply an OBS effect (HLSL) to the whole scene.", note: "An OBS effect file, the language of OBS's own .effect files (HLSL, as libobs reads it on every platform). Declare `uniform float4x4 ViewProj; uniform texture2d image;` and a technique `Draw`; sample with `image.Sample(sampler, uv)`. `image` is the composed 1920x1080 frame for a scene filter, or the layer's own pixels for a layer filter (a capture's native pixels, or a text/timer layer's width×height box). Optional uniforms, set every frame when declared: `uniform float time;` (seconds since the engine started drawing) and `uniform float2 resolution;` (the size of `image` in pixels), so `uv * resolution` is a pixel. libobs's compile error is the reply when a file does not build. Load only trusted local files: GPU code is not sandboxed. Example: remux scene filter /path/to/invert.effect. `off` removes it. Filters belong to scenes and reload on restart; a missing or invalid file is skipped." },
+    Topic { names: &["layer"], args: "add|set screen|camera|window <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]", summary: "Compose captures, text and timers in one back-to-front order.", note: "Example: `remux scene layer add text title 200 200 1000 160 Welcome`; `remux scene layer add timer clock 700 450 520 160 180`; `remux scene timer start clock`. Set uses the same arguments and preserves ID, order and visibility. Move uses a zero-based back-to-front index across captures and generated layers. Hide/show and remove work for all layers; hiding a capture keeps its device open. Transform uses scene pixels and clockwise degrees for captures; generated text/timer layers require degrees 0 and must fit in 1920x1080. Crop uses native capture pixels; crop, shape, mirror, position and screen-sound do not apply to text or timers. Shape and mirror apply only to cameras; `remux scene layer mirror face off` overrides that camera's broadcast mirror independently of the legacy panel self-view mirror. Shot reads one layer even while hidden. A layer filter processes captured pixels or a generated layer's own width×height pixels before composition; a scene filter runs after composition. Both may be active at once. Filter files are WGSL (see `remux help scene filter`) and must be trusted local files; paths and layouts survive restart. A set to a new capture source keeps its order and viewport, discarding a crop that no longer fits." },
+    Topic { names: &["shader"], args: "<file.wgsl|off>", summary: "Apply a WGSL filter to the whole scene.", note: "A WGSL file, the same in both motors: one @fragment function taking @location(0) uv: vec2<f32> ((0, 0) is the top left) and returning @location(0) vec4<f32>, with the picture as a texture_2d<f32> at @group(0) @binding(0) and its sampler at @binding(1); sample it with `textureSample(scene, scene_sampler, uv)`. It is the composed 1920x1080 frame for a scene filter, or the layer's own pixels for a layer filter (a capture's native pixels, or a text/timer layer's width×height box). Optionally declare `struct Remux { time: f32, resolution: vec2<f32> }` and `@group(0) @binding(2) var<uniform> remux: Remux;`: time is seconds since the engine started drawing, resolution the picture's size in pixels, so `uv * remux.resolution` is a pixel; `textureDimensions(scene)` is the same size. A file that does not build, or does not keep to this, is the reply, with the reason. Load only trusted local files: GPU code is not sandboxed. Example: remux scene filter /path/to/invert.wgsl. `off` removes it. Filters belong to scenes and reload on restart; a missing or invalid file is skipped." },
     Topic { names: &["mic"], args: "[name|off]", summary: "Select a microphone or turn it off.", note: "Find microphone names with `remux devices`; omitted also turns it off." },
     Topic { names: &["mute"], args: "[on|off]", summary: "Mute or unmute the microphone.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["monitor"], args: "[on|off]", summary: "Toggle monitoring music through the speakers.", note: "Omitted means on; true/yes and false/no also work." },
@@ -157,11 +157,11 @@ own, so a camera coming back takes a moment for its first frame.
 Switching prepares new sources and filters before committing and retains
 shared physical captures. remux scene status --json reports saved layouts.
 
-Filters: remux scene filter /path/to/effect.effect applies after composition;
-remux scene layer filter face /path/to/effect.effect processes native pixels;
+Filters: remux scene filter /path/to/effect.wgsl applies after composition;
+remux scene layer filter face /path/to/effect.wgsl processes native pixels;
 text and timer filters run in the layer's own width x height viewport.
-A filter is an OBS effect file (HLSL); see remux help scene filter for its
-uniforms. Use only trusted local files. remux scene filter off and
+A filter is a WGSL file, the same in both motors; see remux help scene filter
+for what it takes and returns. Use only trusted local files. remux scene filter off and
 remux scene layer filter face off remove them.
 Filter paths are remembered per scene; invalid files are skipped on restore.
 
@@ -421,15 +421,15 @@ mod tests {
     }
 
     #[test]
-    fn filter_help_describes_obs_effects_and_rejects_old_command_name() {
+    fn filter_help_describes_the_wgsl_contract_and_rejects_old_command_name() {
         let text = help(&["help".into(), "scene".into(), "filter".into()])
             .unwrap()
             .unwrap();
-        assert!(text.contains("technique `Draw`"));
-        assert!(text.contains("uniform float time;"));
-        assert!(text.contains("uniform float2 resolution;"));
-        assert!(text.contains("uv * resolution"));
-        assert!(!text.contains("GLSL"));
+        assert!(text.contains("@fragment"));
+        assert!(text.contains("@location(0) uv: vec2<f32>"));
+        assert!(text.contains("var<uniform> remux: Remux"));
+        assert!(text.contains("uv * remux.resolution"));
+        assert!(!text.contains("GLSL") && !text.contains("HLSL"));
         assert!(text.contains("Usage: remux scene filter"));
         assert!(help(&["help".into(), "scene".into(), "shader".into()])
             .unwrap()
@@ -437,7 +437,7 @@ mod tests {
         let layer = help(&["help".into(), "scene".into(), "layer".into()])
             .unwrap()
             .unwrap();
-        assert!(layer.contains("filter <id> <file.effect|off>"));
+        assert!(layer.contains("filter <id> <file.wgsl|off>"));
         assert!(!layer.contains("shader <id>"));
     }
 

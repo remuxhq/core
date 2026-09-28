@@ -147,7 +147,7 @@ pub struct Layer {
     /// Flip only this camera, independently of other cameras.
     #[serde(default)]
     pub mirrored: bool,
-    /// GLSL fragment shader applied to native captured pixels before layout.
+    /// A WGSL filter applied to native captured pixels before layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shader: Option<String>,
 }

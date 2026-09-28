@@ -641,7 +641,7 @@ def screen_sound(daemon):
 
 @check("filter")
 def scene_filter(daemon):
-    """An OBS effect over the whole scene changes the picture that goes out,
+    """A WGSL filter over the whole scene changes the picture that goes out,
     and off restores it. A file that does not build is refused and leaves the
     filter that was there."""
 
@@ -668,7 +668,7 @@ def scene_filter(daemon):
     daemon.until(lambda: daemon.ask({"cmd": "status"})["scene_flowing"]["frames"] > 2,
                  "the screen to reach the scene")
     plain = middle()
-    path = os.path.abspath("engine/motor-obs/examples/invert.effect")
+    path = os.path.abspath("engine/motor-obs/examples/invert.wgsl")
     selected = daemon.ask({"cmd": "shader", "path": path})
     expect(selected.get("reply") == "status" and selected.get("shader") == path,
            f"filter selection: {selected}")
@@ -676,11 +676,11 @@ def scene_filter(daemon):
     inverted = middle()
     expect(abs(inverted - (765 - plain)) < 60,
            f"the scene filter did not invert the middle: {plain} -> {inverted}")
-    broken = os.path.join(tempfile.gettempdir(), "remux-parity-broken.effect")
+    broken = os.path.join(tempfile.gettempdir(), "remux-parity-broken.wgsl")
     with open(broken, "w") as f:
-        f.write("technique Draw { pass { nonsense } }")
+        f.write("@fragment fn main() -> nonsense")
     rejected = daemon.ask({"cmd": "shader", "path": broken})
-    expect(rejected.get("reply") == "error", "an effect that does not build was accepted")
+    expect(rejected.get("reply") == "error", "a filter that does not build was accepted")
     expect(daemon.ask({"cmd": "status"})["shader"] == path, "the refusal replaced the filter")
     daemon.ask({"cmd": "shader", "path": None})
     time.sleep(0.5)

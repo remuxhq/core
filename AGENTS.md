@@ -48,7 +48,8 @@ the documentation; a measurement behind a decision goes in the comment beside it
   checks, `cli.py` and the lab.
 - `engine/motor-obs/`: the libobs motor; `platform.rs` is the table per OS, `picture.rs`
   the layers and elements on one scene, `effect.rs` the two sources it adds to libobs
-  (an operator's OBS effect as a filter, an element's box of text).
+  (an operator's WGSL filter as an OBS effect, an element's box of text); `engine/filter/`
+  is everything about filters: the WGSL contract and its OBS effect.
 - `engine/wire/`: the HTTP the daemon and the CLI share (login, session).
 - `cli/`: `remux`. The words are `domain/src/cli.rs`; its prose is a contract.
 - `byo/`, `docs/`, `scripts/`, `install*.sh`, `uninstall.sh`.

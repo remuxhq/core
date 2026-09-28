@@ -252,7 +252,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
             [path] if !path.is_empty() => Ok(Command::Shader {
                 path: Some(path.clone()),
             }),
-            _ => Err("filter takes one .frag file or `off`".into()),
+            _ => Err("filter takes one .wgsl file or `off`".into()),
         },
         "camera-shape" => match rest {
             [shape] if shape == "circle" => Ok(Command::CameraShape {
@@ -701,7 +701,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             transform.validate()?;
             Ok(Command::LayerTransform { id: id(name)?, transform })
         }
-        _ => Err("layer: add|set screen|camera|window <id> <display-id|name>, filter <id> <file.effect|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
+        _ => Err("layer: add|set screen|camera|window <id> <display-id|name>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
     }
 }
 
@@ -1772,9 +1772,9 @@ mod tests {
     #[test]
     fn scene_filter_is_one_file_or_off() {
         assert_eq!(
-            typed("scene filter /tmp/invert.frag"),
+            typed("scene filter /tmp/invert.wgsl"),
             Ok(Command::Shader {
-                path: Some("/tmp/invert.frag".into())
+                path: Some("/tmp/invert.wgsl".into())
             })
         );
         assert_eq!(

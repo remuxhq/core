@@ -23,7 +23,7 @@ REMUXD = os.environ.get("REMUXD_BIN", "engine/target/release/remuxd")
 
 #: The verb, and what a person should be able to read in the answer. `None`
 #: where the answer is a status line that says nothing specific back.
-EFFECT = "$PWD/engine/motor-obs/examples/invert.effect"
+EFFECT = "$PWD/engine/motor-obs/examples/invert.wgsl"
 SAYS = [
     ("status", "off air"),
     # the same, every line of it, and for a program
@@ -125,7 +125,7 @@ REFUSES = [
     ("audio screen-sound", 1, "no display layer"),
     ("scene switch nope", 1, "no scene"),
     ("scene delete default", 1, "cannot delete the active scene"),
-    ("scene filter /no-such-remux-filter.effect", 1, "no effect file"),
+    ("scene filter /no-such-remux-filter.wgsl", 1, "cannot open filter"),
     ("scene layer add text late 1900 0 100 100 Hi", 2, "must fit"),
     ("scene layer transform nobody 0 0 10 10 0", 1, "no layer"),
     ("scene layer add window w no-such-window-anywhere", 1, "no window matches"),

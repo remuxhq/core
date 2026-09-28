@@ -14,7 +14,7 @@ port it drives; `mod.rs` holds the state, the dispatcher and what crosses contex
 (the panic button, the tick, the status):
 
 - `picture`: the active scene's layers (captures) and elements (text, timers) in one
-  back-to-front order, the scenes and their switch, the filters (OBS effects), the
+  back-to-front order, the scenes and their switch, the filters (WGSL), the
   preview lease. Port: `Picture`.
 - `sound`: the microphone, the gate, the denoiser, the music and its rotation, the
   clips, the faders, the speakers, the screen's sound, one application's sound, the

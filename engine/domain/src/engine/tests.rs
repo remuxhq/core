@@ -1014,11 +1014,11 @@ impl Picture for Wrote {
         }
         if let Some(reason) = &self.refuse {
             if reason.starts_with("shader:")
-                && (shader == Some("bad.frag")
-                    || to.iter().any(|l| l.shader.as_deref() == Some("bad.frag"))
+                && (shader == Some("bad.wgsl")
+                    || to.iter().any(|l| l.shader.as_deref() == Some("bad.wgsl"))
                     || elements
                         .iter()
-                        .any(|e| e.shader.as_deref() == Some("bad.frag")))
+                        .any(|e| e.shader.as_deref() == Some("bad.wgsl")))
             {
                 for source in prepared.iter().rev() {
                     events.push(format!("rollback {source}"));
@@ -1120,7 +1120,7 @@ impl Picture for Wrote {
         self.refuse.as_deref() != Some("runtime:layer") || id != "disabled"
     }
     fn element_shader(&mut self, _element: &Element, path: Option<&str>) -> Result<(), String> {
-        if path == Some("bad.frag") {
+        if path == Some("bad.wgsl") {
             Err("invalid shader".into())
         } else {
             Ok(())
@@ -1131,14 +1131,14 @@ impl Picture for Wrote {
         _layer: &crate::layers::Layer,
         path: Option<&str>,
     ) -> Result<(), String> {
-        if path == Some("bad.frag") {
+        if path == Some("bad.wgsl") {
             Err("invalid shader".into())
         } else {
             Ok(())
         }
     }
     fn shader(&mut self, path: Option<&str>) -> Result<(), String> {
-        if path == Some("bad.frag") {
+        if path == Some("bad.wgsl") {
             return Err("invalid shader".into());
         }
         if let Some(why) = &self.refuse {
@@ -1792,7 +1792,7 @@ fn a_shader_changes_the_scene_without_restarting_live_and_refusal_keeps_the_last
         query: "remux".into(),
     });
     assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
-    let path = "/tmp/invert.frag".to_string();
+    let path = "/tmp/invert.wgsl".to_string();
     let Reply::Status(status) = engine.handle(Command::Shader {
         path: Some(path.clone()),
     }) else {
@@ -1808,7 +1808,7 @@ fn a_shader_changes_the_scene_without_restarting_live_and_refusal_keeps_the_last
     assert!(status.on_air);
     assert_eq!(published.lock().unwrap().len(), 1);
     engine.handle(Command::Shader {
-        path: Some("/tmp/unsafe.frag".into()),
+        path: Some("/tmp/unsafe.wgsl".into()),
     });
     engine.handle(Command::HideEverything);
     assert_eq!(
