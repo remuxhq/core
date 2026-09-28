@@ -996,12 +996,13 @@ impl Sound for ObsPipeline {
             return heard;
         }
         // libobs meters after the filters, so a closed gate reads as silence
-        // here.
+        // here. Silence is the domain's floor, as the native motor says it.
         let level_db = self.heard.db(&self.heard.level_mdb);
+        let floor = remuxd_domain::levels::Meter::FLOOR_DB;
         Hearing {
             samples: self.heard.updates.load(Ordering::Relaxed) * 480,
-            level_db,
-            peak_db: self.heard.db(&self.heard.peak_mdb),
+            level_db: level_db.max(floor),
+            peak_db: self.heard.db(&self.heard.peak_mdb).max(floor),
             gate_open: level_db > -100.0,
             ..heard
         }
