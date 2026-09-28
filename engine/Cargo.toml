@@ -2,7 +2,7 @@
 # same dependency graph, which is the whole point of committing the lock.
 [workspace]
 resolver = "2"
-members = ["remuxd", "domain", "wire", "../cli"]
+members = ["remuxd", "domain", "wire", "filter", "../cli"]
 # The libobs motor links against the OBS on this machine: its own workspace,
 # so this one builds on a machine with no OBS.
 exclude = ["motor-obs"]
