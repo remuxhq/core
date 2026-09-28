@@ -131,7 +131,7 @@ remuxd.test: ## Tests, mid-loop. F=name to filter
 #
 # Lines and functions, not branches: Rust emits branch counters only on nightly.
 remuxd.cover: ## Coverage of the decisions, and fail under the gate
-	@$(CARGO) llvm-cov --locked -p remuxd-domain --summary-only \
+	@$(CARGO) llvm-cov nextest --locked -p remuxd-domain --summary-only \
 		--fail-under-lines 90 --fail-under-functions 90
 
 # The parity suite: every feature driven against a real daemon over its real
