@@ -46,6 +46,44 @@ pub const AUDIO_FORMAT_FLOAT_PLANAR: i32 = 8;
 pub const GS_BGRA: i32 = 5;
 pub const GS_ZS_NONE: i32 = 0;
 pub const GS_CLEAR_COLOR: u32 = 1;
+pub const GS_RGBA: i32 = 3;
+/// `OBS_ALIGN_CENTER`: an item placed and rotated about its middle.
+pub const OBS_ALIGN_CENTER: u32 = 0;
+/// `OBS_ALIGN_LEFT | OBS_ALIGN_TOP`.
+pub const OBS_ALIGN_TOP_LEFT: u32 = 1 | 4;
+/// `enum obs_source_type`.
+pub const OBS_SOURCE_TYPE_INPUT: i32 = 0;
+pub const OBS_SOURCE_TYPE_FILTER: i32 = 1;
+/// `OBS_SOURCE_VIDEO`, and `OBS_SOURCE_CUSTOM_DRAW` for a source that draws
+/// with its own effect.
+pub const OBS_SOURCE_VIDEO: u32 = 1;
+pub const OBS_SOURCE_CUSTOM_DRAW: u32 = 1 << 3;
+/// `enum obs_allow_direct_render`.
+pub const OBS_ALLOW_DIRECT_RENDERING: i32 = 1;
+
+/// The head of `struct obs_source_info` (libobs 32, `obs-source.h`), as far
+/// as `video_render`: `obs_register_source_s` takes the size it is given and
+/// zeroes the rest.
+#[repr(C)]
+pub struct SourceInfo {
+    pub id: *const c_char,
+    pub kind: i32,
+    pub output_flags: u32,
+    pub get_name: Option<extern "C" fn(*mut c_void) -> *const c_char>,
+    pub create: Option<extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>,
+    pub destroy: Option<extern "C" fn(*mut c_void)>,
+    pub get_width: Option<extern "C" fn(*mut c_void) -> u32>,
+    pub get_height: Option<extern "C" fn(*mut c_void) -> u32>,
+    pub get_defaults: Option<extern "C" fn(*mut c_void)>,
+    pub get_properties: Option<extern "C" fn(*mut c_void) -> *mut c_void>,
+    pub update: Option<extern "C" fn(*mut c_void, *mut c_void)>,
+    pub activate: Option<extern "C" fn(*mut c_void)>,
+    pub deactivate: Option<extern "C" fn(*mut c_void)>,
+    pub show: Option<extern "C" fn(*mut c_void)>,
+    pub hide: Option<extern "C" fn(*mut c_void)>,
+    pub video_tick: Option<extern "C" fn(*mut c_void, f32)>,
+    pub video_render: Option<extern "C" fn(*mut c_void, *mut c_void)>,
+}
 
 #[repr(C)]
 pub struct FramesPerSecond {
@@ -144,6 +182,7 @@ extern "C" {
     pub fn obs_data_set_string(data: *mut c_void, name: *const c_char, value: *const c_char);
     pub fn obs_data_set_int(data: *mut c_void, name: *const c_char, value: i64);
     pub fn obs_data_get_string(data: *mut c_void, name: *const c_char) -> *const c_char;
+    pub fn obs_data_get_int(data: *mut c_void, name: *const c_char) -> i64;
     pub fn obs_data_release(data: *mut c_void);
     /// A new reference to the source's settings; released by the caller.
     pub fn obs_source_get_settings(source: *mut c_void) -> *mut c_void;
@@ -248,6 +287,32 @@ extern "C" {
     pub fn obs_sceneitem_set_scale(item: *mut c_void, scale: *const Vec2);
     pub fn obs_sceneitem_set_crop(item: *mut c_void, crop: *const Crop);
     pub fn obs_sceneitem_set_visible(item: *mut c_void, visible: bool) -> bool;
+    pub fn obs_sceneitem_set_rot(item: *mut c_void, degrees: f32);
+    pub fn obs_sceneitem_set_alignment(item: *mut c_void, alignment: u32);
+    pub fn obs_sceneitem_set_bounds_alignment(item: *mut c_void, alignment: u32);
+
+    pub fn obs_register_source_s(info: *const SourceInfo, size: usize);
+    pub fn obs_filter_get_target(filter: *const c_void) -> *mut c_void;
+    pub fn obs_source_get_base_width(source: *mut c_void) -> u32;
+    pub fn obs_source_get_base_height(source: *mut c_void) -> u32;
+    pub fn obs_source_process_filter_begin(filter: *mut c_void, format: i32, allow: i32) -> bool;
+    pub fn obs_source_process_filter_end(
+        filter: *mut c_void,
+        effect: *mut c_void,
+        width: u32,
+        height: u32,
+    );
+    pub fn obs_source_skip_video_filter(filter: *mut c_void);
+    pub fn gs_effect_create_from_file(file: *const c_char, error: *mut *mut c_char) -> *mut c_void;
+    pub fn gs_effect_destroy(effect: *mut c_void);
+    pub fn gs_effect_get_param_by_name(effect: *const c_void, name: *const c_char) -> *mut c_void;
+    pub fn gs_effect_set_float(param: *mut c_void, value: f32);
+    pub fn gs_effect_set_vec2(param: *mut c_void, value: *const Vec2);
+    pub fn gs_matrix_push();
+    pub fn gs_matrix_pop();
+    pub fn gs_matrix_translate3f(x: f32, y: f32, z: f32);
+    pub fn gs_matrix_scale3f(x: f32, y: f32, z: f32);
+    pub fn bfree(ptr: *mut c_void);
     pub fn obs_add_tick_callback(tick: extern "C" fn(*mut c_void, f32), param: *mut c_void);
     pub fn obs_remove_tick_callback(tick: extern "C" fn(*mut c_void, f32), param: *mut c_void);
 

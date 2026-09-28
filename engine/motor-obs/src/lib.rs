@@ -4,6 +4,7 @@
 //!
 //! One port at a time: what is not ported yet answers as `NoPipeline` does.
 
+pub mod effect;
 pub mod ffi;
 mod pipeline;
 pub mod platform;
