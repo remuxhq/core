@@ -6,6 +6,8 @@
 # target (scripts/release.sh) from the commit that set the version, then tags
 # that commit and publishes the release with the notes as its body. ci.yml is
 # what checks a pull request.
+#
+# Every action is pinned by commit, with the release beside it.
 name: release
 on:
   workflow_run:
@@ -40,7 +42,7 @@ jobs:
       released: ${{ steps.version.outputs.released }}
       sha: ${{ steps.version.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The commit ci checked, or main's head on a dispatch.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -70,10 +72,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.notes.outputs.sha }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: stable
       # The distribution's libobs, linked straight (release.sh sets LIBOBS_PATH).
       - name: libobs (Linux)
         if: runner.os == 'Linux'
@@ -86,7 +90,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install simde
       - run: sh scripts/release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: remux-${{ matrix.target }}
           path: |
@@ -96,15 +100,15 @@ jobs:
     needs: [notes, build]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.notes.outputs.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
       # The tag is made here, on the commit that was built, never by hand.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.notes.outputs.version }}
           target_commitish: ${{ needs.notes.outputs.sha }}
