@@ -689,6 +689,32 @@ impl ObsPipeline {
         if self.publishing.iter().any(|(there, _)| *there == id) {
             return Err("this engine is already live there".into());
         }
+        let output = if url.starts_with("rtmp://") || url.starts_with("rtmps://") {
+            self.rtmp(url)?
+        } else {
+            // Anything else is a file, as the native motor's ffmpeg takes it:
+            // the smokes send a live to one. An FLV is libobs's own writer of
+            // what RTMP would carry (its ffmpeg muxer wrote nothing to one).
+            let kind = if url.ends_with(".flv") {
+                "flv_output"
+            } else {
+                "ffmpeg_muxer"
+            };
+            // SAFETY: released by `start_output`.
+            let settings = unsafe {
+                let settings = sys::obs_data_create();
+                sys::obs_data_set_string(settings, c("path").as_ptr(), c(url).as_ptr());
+                settings
+            };
+            self.start_output(kind, settings, std::ptr::null_mut())?
+        };
+        self.publishing.push((id, output));
+        Ok(())
+    }
+
+    /// An RTMP output to `rtmp://host/app/key`: libobs wants the door and
+    /// the key apart, so the last segment is the key.
+    fn rtmp(&mut self, url: &str) -> Result<Output, String> {
         let (server, key) = url
             .rsplit_once('/')
             .ok_or("a destination is rtmp://host/app/key")?;
@@ -711,9 +737,7 @@ impl ObsPipeline {
         }
         // SAFETY: an empty settings object, released by `start_output`.
         let settings = unsafe { sys::obs_data_create() };
-        let output = self.start_output("rtmp_output", settings, service)?;
-        self.publishing.push((id, output));
-        Ok(())
+        self.start_output("rtmp_output", settings, service)
     }
 
     /// The preview ring, made on first use.
