@@ -576,6 +576,7 @@ impl Engine {
             name: screen.name.clone(),
             width: 0,
             height: 0,
+            stable: screen.stable.clone(),
         })
     }
 
@@ -599,6 +600,7 @@ impl Engine {
             name: window_label(window),
             width: 0,
             height: 0,
+            stable: None,
         })
     }
 
@@ -616,6 +618,7 @@ impl Engine {
             name: camera.name.clone(),
             width: 0,
             height: 0,
+            stable: None,
         })
     }
 
@@ -675,8 +678,11 @@ impl Engine {
         }
         // Selecting the same physical source is a no-op: never blink the live
         // or restart audio just because a client sent the same choice twice.
-        if old.source.kind == source.kind && old.source.handle == source.handle {
-            self.status.layers[index].source.name = source.name;
+        if old.source.same_capture(&source) {
+            let kept = &mut self.status.layers[index].source;
+            kept.name = source.name;
+            kept.handle = source.handle;
+            kept.stable = source.stable;
             return Reply::Status(Box::new(self.reported()));
         }
         let mut next = old.clone();

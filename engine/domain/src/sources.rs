@@ -15,6 +15,10 @@ pub struct DisplayId(pub u32);
 pub struct Screen {
     pub id: DisplayId,
     pub name: String,
+    /// What the platform calls this monitor for good (its UUID), where it
+    /// has such a thing: a number is a position in a list, and a monitor
+    /// plugged in or pulled out renumbers the rest.
+    pub stable: Option<String>,
 }
 
 /// A window, as the window server numbers it. Same discipline as DisplayId:
@@ -126,6 +130,7 @@ pub fn screens(capturer: &[(DisplayId, &str)], monitors: &[(DisplayId, &str)]) -
         .iter()
         .map(|(id, label)| Screen {
             id: *id,
+            stable: None,
             name: monitors
                 .iter()
                 .find(|(known, _)| known == id)
@@ -151,7 +156,8 @@ mod tests {
             screens,
             vec![Screen {
                 id: DisplayId(9),
-                name: "Screen 1".into()
+                name: "Screen 1".into(),
+                stable: None,
             }]
         );
     }
@@ -276,11 +282,13 @@ mod tests {
             vec![
                 Screen {
                     id: DisplayId(2),
-                    name: "Built-in Retina Display".into()
+                    name: "Built-in Retina Display".into(),
+                    stable: None,
                 },
                 Screen {
                     id: DisplayId(7),
-                    name: "VG2791R".into()
+                    name: "VG2791R".into(),
+                    stable: None,
                 },
             ]
         );

@@ -323,6 +323,7 @@ fn layer(id: &str, kind: Kind, handle: &str, x: i32) -> Layer {
             name: id.into(),
             width: 640,
             height: 480,
+            stable: None,
         },
         transform: Transform {
             x,

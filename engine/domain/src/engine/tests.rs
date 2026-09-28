@@ -78,10 +78,12 @@ impl Sources for ThisMachine {
                 Screen {
                     id: DisplayId(1),
                     name: "Built-in Retina Display".into(),
+                    stable: Some("37D8832A".into()),
                 },
                 Screen {
                     id: DisplayId(3),
                     name: "VG2791R".into(),
+                    stable: Some("5C1E09B4".into()),
                 },
             ],
             windows: vec![
@@ -473,6 +475,52 @@ fn what_was_chosen_comes_back_after_a_restart() {
     let _ = played;
 }
 
+// A display is put back by what the monitor is, not by the number it had:
+// the VG2791R saved as display 2 is display 3 now, and a monitor that is not
+// here is left out rather than swapped for the one that took its number.
+#[test]
+fn a_saved_display_comes_back_as_the_same_monitor_whatever_its_number() {
+    let (mut engine, _, _) = machine_with_music();
+    let desk = |id: &str, handle: &str, stable: &str| crate::layers::Layer {
+        id: id.into(),
+        source: crate::layers::Source {
+            kind: crate::layers::Kind::Screen,
+            handle: handle.into(),
+            name: "a monitor".into(),
+            width: 1920,
+            height: 1080,
+            stable: Some(stable.into()),
+        },
+        transform: crate::layers::Transform::native((1920, 1080)),
+        visible: true,
+        crop: None,
+        shape: None,
+        mirrored: false,
+        shader: None,
+    };
+    engine.restore(&crate::remembered::Remembered {
+        layers: vec![desk("desk", "2", "5C1E09B4"), desk("gone", "1", "0FF1CE00")],
+        ..Default::default()
+    });
+    let layers = &engine.status().layers;
+    assert_eq!(
+        layers.len(),
+        1,
+        "the absent monitor is left out: {layers:?}"
+    );
+    assert_eq!(
+        (layers[0].id.as_str(), layers[0].source.handle.as_str()),
+        ("desk", "3")
+    );
+    assert_eq!(layers[0].source.name, "VG2791R");
+    assert_eq!(layers[0].source.stable.as_deref(), Some("5C1E09B4"));
+    assert_eq!(
+        engine.remembered().layers[0].source.stable.as_deref(),
+        Some("5C1E09B4"),
+        "and it is kept by its identity again"
+    );
+}
+
 // Losing a webcam is not a reason to lose the gate settings somebody spent
 // an evening on.
 #[test]
@@ -487,6 +535,7 @@ fn a_device_that_is_gone_does_not_take_the_rest_of_the_setup_with_it() {
                 name: "a camera nobody has".into(),
                 width: 1280,
                 height: 720,
+                stable: None,
             },
             transform: crate::layers::Transform::native((1280, 720)),
             visible: true,

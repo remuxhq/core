@@ -19,6 +19,23 @@ pub struct Source {
     /// Native pixels captured from this source, before any crop or transform.
     pub width: u32,
     pub height: u32,
+    /// The monitor's own identity, for a display on a platform that has one:
+    /// what a saved layer is opened by, since `handle` is the display's
+    /// number now and the numbers move when a monitor comes or goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable: Option<String>,
+}
+
+impl Source {
+    /// Whether two sources are one physical capture: by the monitor's own
+    /// identity when both have it, by kind and handle otherwise.
+    pub fn same_capture(&self, other: &Source) -> bool {
+        self.kind == other.kind
+            && match (&self.stable, &other.stable) {
+                (Some(a), Some(b)) => a == b,
+                _ => self.handle == other.handle,
+            }
+    }
 }
 
 /// A rectangle in the source's native pixels, measured from its top-left.
@@ -248,6 +265,22 @@ mod tests {
         ] {
             assert!(crop.validate((640, 480)).is_err());
         }
+    }
+
+    #[test]
+    fn a_monitor_is_the_same_capture_by_its_identity_whatever_its_number() {
+        let desk = |handle: &str, stable: Option<&str>| Source {
+            kind: Kind::Screen,
+            handle: handle.into(),
+            name: "Display".into(),
+            width: 0,
+            height: 0,
+            stable: stable.map(String::from),
+        };
+        assert!(desk("2", Some("A")).same_capture(&desk("1", Some("A"))));
+        assert!(!desk("1", Some("A")).same_capture(&desk("1", Some("B"))));
+        assert!(desk("1", None).same_capture(&desk("1", Some("A"))));
+        assert!(!desk("1", None).same_capture(&desk("2", None)));
     }
 
     #[test]

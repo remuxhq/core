@@ -691,11 +691,7 @@ impl Engine {
         for saved in &saved_layers {
             let reply = match saved.source.kind {
                 crate::layers::Kind::Screen => {
-                    saved
-                        .source
-                        .handle
-                        .parse()
-                        .ok()
+                    self.display_now(&saved.source)
                         .map(|display| Command::LayerScreen {
                             id: saved.id.clone(),
                             display,
@@ -836,6 +832,44 @@ impl Engine {
         }
     }
 
+    /// The number a saved display has now: found by the monitor's own
+    /// identity when the layer kept one, and `None` when that monitor is not
+    /// connected, rather than whichever display took its number since. A layer
+    /// saved before identities, or on a platform without them, keeps its number.
+    fn display_now(&self, source: &crate::layers::Source) -> Option<u32> {
+        let Some(stable) = &source.stable else {
+            return source.handle.parse().ok();
+        };
+        let found = self
+            .sources
+            .available()
+            .ok()?
+            .screens
+            .into_iter()
+            .find(|screen| screen.stable.as_ref() == Some(stable))
+            .map(|screen| screen.id.0);
+        if found.is_none() {
+            crate::log::note(&format!(
+                "{} is not connected: its layer is not put back",
+                source.name
+            ));
+        }
+        found
+    }
+
+    /// The displays of these layers under their numbers of now, so what the
+    /// status says a face can type again.
+    fn renumber(&self, layers: &mut [crate::layers::Layer]) {
+        for layer in layers
+            .iter_mut()
+            .filter(|l| l.source.kind == crate::layers::Kind::Screen)
+        {
+            if let Some(display) = self.display_now(&layer.source) {
+                layer.source.handle = display.to_string();
+            }
+        }
+    }
+
     fn current_scenes(&self) -> Vec<crate::scenes::Scene> {
         let mut scenes = self.status.scenes.clone();
         if let Some(active) = scenes
@@ -962,6 +996,8 @@ impl Engine {
                 .map(|layer| layer.id.clone())
         });
         self.status.scenes = previous_scenes;
+        let mut next = next;
+        self.renumber(&mut next);
         self.status.layers = next;
         self.status.shader = next_shader;
         self.status.active_scene = name;

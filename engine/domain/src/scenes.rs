@@ -131,10 +131,16 @@ pub struct CaptureKey {
     pub handle: String,
 }
 impl CaptureKey {
+    /// A display by its own identity when it has one, so a monitor whose
+    /// number moved is still the capture a scene switch keeps.
     pub fn of(layer: &Layer) -> Self {
         Self {
             kind: layer.source.kind,
-            handle: layer.source.handle.clone(),
+            handle: layer
+                .source
+                .stable
+                .clone()
+                .unwrap_or_else(|| layer.source.handle.clone()),
         }
     }
 }

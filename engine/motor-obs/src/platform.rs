@@ -59,6 +59,10 @@ pub struct Screen {
     /// the pick on the next boot without asking again.
     pub portal: bool,
     pub token_key: Option<&'static str>,
+    /// Whether a display's value in the list is the monitor's own identity
+    /// (a UUID, the same after a reboot or a replug) rather than its
+    /// position: what a saved layer is opened by, where it is.
+    pub stable_displays: bool,
 }
 
 pub struct Camera {
@@ -87,6 +91,9 @@ pub struct ScreenSound {
 
 #[cfg(target_os = "macos")]
 pub const DEFAULT_APP: &str = "/Applications/OBS.app";
+/// ScreenCaptureKit names a display by its UUID.
+#[cfg(target_os = "macos")]
+const STABLE_DISPLAYS: bool = true;
 #[cfg(target_os = "macos")]
 pub const TABLE: Table = Table {
     optional_modules: &[],
@@ -122,6 +129,7 @@ pub const TABLE: Table = Table {
         apps: Some("application"),
         portal: false,
         token_key: None,
+        stable_displays: STABLE_DISPLAYS,
     },
     camera: Camera {
         source: "macos-avcapture",
@@ -208,6 +216,9 @@ mod tests {
 
 #[cfg(target_os = "linux")]
 pub const DEFAULT_APP: &str = "/usr";
+/// X11 names a screen by its number: a position, not an identity.
+#[cfg(target_os = "linux")]
+const STABLE_DISPLAYS: bool = false;
 #[cfg(target_os = "linux")]
 pub const TABLE: Table = Table {
     // The portal's plugin needs a PipeWire this machine may not have.
@@ -262,6 +273,7 @@ pub const TABLE: Table = Table {
         apps: None,
         portal: false,
         token_key: None,
+        stable_displays: STABLE_DISPLAYS,
     },
     camera: Camera {
         source: "v4l2_input",
@@ -309,6 +321,7 @@ pub const WAYLAND_SCREEN: Screen = Screen {
     apps: None,
     portal: true,
     token_key: Some("restore_token"),
+    stable_displays: false,
 };
 
 /// The screen source of this session: the portal's under Wayland, X11's

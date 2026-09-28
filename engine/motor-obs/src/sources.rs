@@ -130,9 +130,10 @@ impl Sources for ObsSources {
             screens: displays
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _))| Screen {
+                .map(|(i, (name, value))| Screen {
                     id: DisplayId(i as u32 + 1),
                     name: name.split(':').next().unwrap_or(name).to_string(),
+                    stable: table.stable_displays.then(|| value.clone()),
                 })
                 .collect(),
             // "App: title" with the window id as the value, off the same source.

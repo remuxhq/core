@@ -115,6 +115,7 @@ mod tests {
                 name: "Cam".into(),
                 width: 1280,
                 height: 720,
+                stable: None,
             },
             transform: Transform {
                 x: 100,

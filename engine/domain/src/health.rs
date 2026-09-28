@@ -90,6 +90,7 @@ pub(crate) mod tests {
                 name: name.into(),
                 width: 1920,
                 height: 1080,
+                stable: None,
             },
             transform: crate::layers::Transform::native((1920, 1080)),
             visible: true,

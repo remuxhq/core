@@ -61,12 +61,6 @@ pub struct Written {
 
 /// What a capture is, as a physical thing: two layers of the same display
 /// are one capture as far as a scene switch is concerned.
-/// What a capture is, as a physical thing: two layers of the same display
-/// are one capture as far as a scene switch is concerned.
-fn same_capture(a: &Source, b: &Source) -> bool {
-    a.kind == b.kind && a.handle == b.handle
-}
-
 fn size_of(source: *mut sys::obs_source_t) -> (u32, u32) {
     // SAFETY: pure reads on a live source.
     unsafe {
@@ -314,19 +308,30 @@ impl ObsPipeline {
         unsafe {
             let (kind, settings) = match source.kind {
                 Kind::Screen => {
-                    let number: u32 = source
-                        .handle
-                        .parse()
-                        .map_err(|_| format!("display {:?} is not a number", source.handle))?;
-                    let uuid = self
+                    let table = crate::platform::screen();
+                    let known = self
                         .known
                         .lock()
-                        .map_err(|_| "the display list is poisoned")?
-                        .displays
-                        .get(&number)
-                        .cloned()
-                        .ok_or_else(|| format!("no display {number}: remux devices lists them"))?;
-                    let table = crate::platform::screen();
+                        .map_err(|_| "the display list is poisoned")?;
+                    // The monitor itself when the layer knows it, whatever
+                    // its number now; the number otherwise.
+                    let uuid = match source.stable.as_ref().filter(|_| table.stable_displays) {
+                        Some(stable) => known
+                            .displays
+                            .values()
+                            .find(|uuid| *uuid == stable)
+                            .cloned()
+                            .ok_or_else(|| format!("{} is not connected", source.name))?,
+                        None => {
+                            let number: u32 = source.handle.parse().map_err(|_| {
+                                format!("display {:?} is not a number", source.handle)
+                            })?;
+                            known.displays.get(&number).cloned().ok_or_else(|| {
+                                format!("no display {number}: remux devices lists them")
+                            })?
+                        }
+                    };
+                    drop(known);
                     let settings = sys::obs_data_create();
                     if let Some(kind) = table.kind_key {
                         sys::obs_data_set_int(settings, c(kind).as_ptr(), 0);
@@ -780,7 +785,7 @@ impl Picture for ObsPipeline {
         for layer in to {
             let reuse = pool.iter().enumerate().position(|(at, d)| {
                 d.as_ref()
-                    .is_some_and(|d| same_capture(&d.layer.source, &layer.source))
+                    .is_some_and(|d| d.layer.source.same_capture(&layer.source))
                     && !kept.contains(&Some(at))
             });
             kept.push(reuse);
