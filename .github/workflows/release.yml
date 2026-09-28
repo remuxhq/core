@@ -1,39 +1,41 @@
-# The release, run by hand and only by hand: the release skill dispatches it
-# once the version's pull request is merged (docs/release.md). It checks the
+# The release, published when a merge to main moves the version: the push that
+# changes engine/cli/Cargo.toml runs it, and a version already released is left
+# alone. A dispatch runs it again for a version whose run failed. It checks the
 # notes and the version, builds one tarball per target on a machine of that
 # target (scripts/release.sh), then tags the commit it built and publishes the
-# release with the notes as its body. A push, a tag or a pull request starts
-# nothing here; ci.yml is what checks a pull request.
+# release with the notes as its body. ci.yml is what checks a pull request.
 name: release
 on:
+  push:
+    branches: [main]
+    paths: [engine/cli/Cargo.toml]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "The version to publish, as engine/cli/Cargo.toml says it (0.2.0)"
-        required: true
 
 permissions:
   contents: write
 
 jobs:
   # The notes are the record of why a release is what it is, and nothing
-  # generates a why: a version without docs/releases/<version>.md, one that
-  # disagrees with the binaries, or one already released is refused before a
-  # build.
+  # generates a why: the version engine/cli/Cargo.toml says, without
+  # docs/releases/<version>.md, is refused before a build.
   notes:
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      released: ${{ steps.version.outputs.released }}
     steps:
       - uses: actions/checkout@v4
-      - env:
-          VERSION: ${{ inputs.version }}
+      - id: version
         run: |
-          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "$VERSION is not a version"; exit 1; }
-          said=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
-          test "$VERSION" = "$said" || { echo "asked for $VERSION, engine/cli/Cargo.toml says $said"; exit 1; }
-          test -s "docs/releases/$VERSION.md" || { echo "no notes: write docs/releases/$VERSION.md"; exit 1; }
-          if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null; then echo "v$VERSION is already released"; exit 1; fi
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "v$version" >/dev/null; then
+            echo "v$version is already released"; echo "released=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          test -s "docs/releases/$version.md" || { echo "no notes: write docs/releases/$version.md"; exit 1; }
   build:
     needs: notes
+    if: needs.notes.outputs.released != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -67,7 +69,7 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
   publish:
-    needs: build
+    needs: [notes, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -78,10 +80,10 @@ jobs:
       # The tag is made here, on the commit that was built, never by hand.
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ inputs.version }}
+          tag_name: v${{ needs.notes.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: remux ${{ inputs.version }}
-          body_path: docs/releases/${{ inputs.version }}.md
+          name: remux ${{ needs.notes.outputs.version }}
+          body_path: docs/releases/${{ needs.notes.outputs.version }}.md
           files: |
             dist/*.tar.gz
             dist/*.sha256
