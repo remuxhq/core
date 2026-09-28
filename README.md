@@ -47,7 +47,6 @@ xcode-select --install          # clang, which reads OBS's headers, and codesign
 curl https://sh.rustup.rs -sSf | sh   # engine/rust-toolchain.toml pins the version
 brew install simde              # OBS's headers include it on ARM
 make obs.fetch                  # the OBS the engine links, pinned, in engine/target/obs
-make remuxd.identity            # once: the certificate, so a grant survives a rebuild
 ```
 
 Linux, X11 (Ubuntu 24.04+):
@@ -66,8 +65,11 @@ rustup component add llvm-tools-preview
 make security.tools             # gitleaks, cargo-audit, cargo-deny
 ```
 
-Then `make remuxd.check` (the gate), `make security` (the scanners) and `make
-remuxd.run` (the engine in the foreground).
+Then `make remuxd.check` (the gate) and `make security` (the scanners). To run the
+engine you built on macOS, `make remuxd.identity` once first: macOS ties the Screen
+Recording grant to the code signature, and signed ad hoc every rebuild is a stranger
+whose capture comes back empty while the toggle stays on. A certificate of your own
+keeps the grant across rebuilds; `make remuxd.run` is the engine in the foreground.
 
 ## What it runs on
 
