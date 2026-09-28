@@ -17,14 +17,45 @@ pub const CHAT_LINES: usize = 1000;
 
 /// What a client asks the engine to do.
 ///
-/// Named after the CLI verbs a person already types, so `remux screen 1` is
-/// one hop from `{"cmd":"screen","index":1}` and a bug report can be pasted
+/// A CLI scene layer command is one hop from
+/// `{"cmd":"screen","display":1}` and a bug report can be pasted
 /// straight into `nc`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
 pub enum Command {
     // ---- what is going on -------------------------------------------------
     Status,
+    /// A new scene with nothing in it, switched to: its layers are added
+    /// there. On the air the picture is empty until they are.
+    SceneCreate {
+        name: String,
+    },
+    /// A copy of the active scene (its layers, elements, order and filter),
+    /// made active: the picture that goes out does not change.
+    SceneDuplicate {
+        name: String,
+    },
+    SceneSwitch {
+        name: String,
+    },
+    SceneDelete {
+        name: String,
+    },
+    AudioLayerAdd {
+        id: String,
+        source: crate::audio_layers::Source,
+    },
+    AudioLayerRemove {
+        id: String,
+    },
+    AudioLayerVolume {
+        id: String,
+        volume: f64,
+    },
+    AudioLayerMute {
+        id: String,
+        on: bool,
+    },
     /// Whether a window is drawing the preview.
     ///
     /// The engine renders the preview into shared memory on a clock, and that
@@ -86,26 +117,93 @@ pub enum Command {
     Camera {
         device: Option<String>,
     },
+    /// Add a camera layer under a caller-chosen ID.
+    LayerCamera {
+        id: String,
+        device: String,
+    },
+    /// Add a display by its stable display id, with no reserved layer id.
+    LayerScreen {
+        id: String,
+        display: u32,
+    },
+    /// Add one window, matched by title at selection time.
+    LayerWindow {
+        id: String,
+        query: String,
+    },
+    /// Replace the source of this layer without changing its ID or order.
+    LayerReplaceScreen {
+        id: String,
+        display: u32,
+    },
+    LayerReplaceWindow {
+        id: String,
+        query: String,
+    },
+    LayerReplaceCamera {
+        id: String,
+        device: String,
+    },
+    /// Hide/show the layer's video without closing its capture.
+    LayerVisible {
+        id: String,
+        on: bool,
+    },
+    LayerRemove {
+        id: String,
+    },
+    /// Zero is the bottommost layer.
+    LayerMove {
+        id: String,
+        index: usize,
+    },
+    LayerTransform {
+        id: String,
+        transform: crate::layers::Transform,
+    },
+    /// Cut a source in its native pixels; null restores the entire source.
+    LayerCrop {
+        id: String,
+        crop: Option<crate::layers::Crop>,
+    },
+    /// A camera's mask, independent of every other camera in the scene.
+    LayerShape {
+        id: String,
+        shape: crate::scene::CameraShape,
+    },
+    LayerMirror {
+        id: String,
+        on: bool,
+    },
+    /// Move a camera viewport without changing its size or rotation.
+    /// `None` restores the layer's original native position (0,0).
+    LayerPosition {
+        id: String,
+        at: Option<crate::scene::CameraPosition>,
+    },
+    /// Top-left pixel of the camera viewport on the 1920x1080 scene.
+    /// `None` restores the default corner.
+    CameraPosition {
+        at: Option<crate::scene::CameraPosition>,
+    },
+    /// Choose the composited camera's crop without changing its device or position.
+    CameraShape {
+        shape: crate::scene::CameraShape,
+    },
     Mirror {
         on: bool,
     },
-    /// Where and how the camera sits: some of the layout, the rest as it was.
-    Layout {
-        patch: crate::scene::LayoutPatch,
+    /// Load a WGSL filter over the entire scene, or clear it.
+    Shader {
+        path: Option<String>,
     },
-    /// Keep the setup of now under a name: what is behind the picture, the
-    /// camera's layout, the mirror, the apps heard.
-    SceneSave {
-        name: String,
+    /// Apply a WGSL filter to a layer's own pixels before composition.
+    LayerShader {
+        id: String,
+        path: Option<String>,
     },
-    /// Put a kept setup back, whole.
-    SceneSwitch {
-        name: String,
-    },
-    SceneForget {
-        name: String,
-    },
-    /// Black, with "No content shared", instead of the screen.
+    /// Remove the single selected screen/window from the current scene.
     Share {
         on: bool,
     },
@@ -145,6 +243,20 @@ pub enum Command {
     ScreenSound {
         on: bool,
     },
+    /// Select one display layer as the only source of system audio.
+    LayerScreenSound {
+        id: String,
+        on: bool,
+    },
+    /// Capture one running application's sound, independently of screen sound.
+    /// None closes the dedicated capture. Names must match a running app.
+    AppAudio {
+        app: Option<String>,
+    },
+    /// Dedicated application audio fader, 0 to 1.
+    AppAudioVolume {
+        level: f64,
+    },
     Music {
         on: bool,
     },
@@ -169,18 +281,21 @@ pub enum Command {
         patch: serde_json::Value,
     },
 
-    // ---- the cards --------------------------------------------------------
-    /// Starting soon, back in a moment, or the live picture.
-    Card {
-        which: Card,
+    // ---- scene content ----------------------------------------------------
+    SceneElementAdd {
+        element: crate::scenes::Element,
     },
-    /// Start the countdown on the starting-soon card.
-    Countdown {
-        seconds: Option<u32>,
+    SceneElementSet {
+        element: crate::scenes::Element,
     },
-    CardText {
-        which: Card,
-        text: String,
+    SceneElementRemove {
+        id: String,
+    },
+    SceneTimerStart {
+        id: String,
+    },
+    SceneTimerStop {
+        id: String,
     },
     /// Everything off but the music: the panic button.
     HideEverything,
@@ -225,6 +340,10 @@ pub enum Command {
     Shot {
         #[serde(default)]
         of: Framed,
+    },
+    /// A source-only preview of precisely this layer, independent of scene order.
+    LayerShot {
+        id: String,
     },
     /// What the OS is letting this engine do.
     Grants,
@@ -274,10 +393,6 @@ pub enum Command {
     Rewire,
     Quit,
 }
-
-/// Which picture is going out. Declared in [`crate::card`], beside the words
-/// it shows and the reasoning about why it is not flat black.
-pub use crate::card::Card;
 
 /// What the engine answers. One reply per command, always.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -335,8 +450,7 @@ pub enum Reply {
 )]
 #[serde(rename_all = "kebab-case")]
 pub enum Framed {
-    /// Everything, as it is going out: the card when one is up, the camera
-    /// over the screen when it is not.
+    /// Everything, as it is going out: captures and visual elements.
     #[default]
     Scene,
     /// The camera alone, in the shape and the flip its slot gives it. A
@@ -345,11 +459,8 @@ pub enum Framed {
     Camera,
     /// The screen alone, whatever is on air.
     ///
-    /// Its own picture because going from a card back to Live is otherwise
-    /// blind: the big preview is showing the card, which is correct, and the
-    /// one thing somebody needs before pressing Live is what the screen looks
-    /// like right now. The engine this replaces says it in words beside the
-    /// frame: "This is your screen, not what is leaving."
+    /// Its own picture: the scene preview may have visual elements
+    /// while the operator checks a screen independently.
     Screen,
 }
 
@@ -389,7 +500,7 @@ pub struct Flowing {
     /// indistinguishable from a live that broke, and a repeated frame costs
     /// almost nothing in H264: there is no difference to encode.
     ///
-    /// It does not restart when the operator changes monitors, puts a card up
+    /// It does not restart when the operator changes monitors, switches scenes
     /// or hides everything. The capture restarts; the stream does not.
     pub frames: u64,
     pub width: u32,
@@ -457,6 +568,11 @@ pub struct Hearing {
     /// microphone.
     #[serde(default)]
     pub screen_complaint: Option<String>,
+    /// Samples and latest capture failure from the dedicated app stream.
+    #[serde(default)]
+    pub app_samples: u64,
+    #[serde(default)]
+    pub app_complaint: Option<String>,
     /// Set when a device speaks a format this does not understand. A meter
     /// sitting at zero with no explanation sends a person looking at a cable.
     pub complaint: Option<String>,
@@ -479,6 +595,8 @@ impl Default for Hearing {
             dropped: 0,
             screen_samples: 0,
             screen_complaint: None,
+            app_samples: 0,
+            app_complaint: None,
             complaint: None,
         }
     }
@@ -506,6 +624,9 @@ pub struct Mixing {
     pub music_out_db: f64,
     #[serde(default = "floor")]
     pub music_out_peak_db: f64,
+    /// Dedicated app bus after its fader, in dBFS.
+    #[serde(default = "floor")]
+    pub app_db: f64,
     pub playing: bool,
     /// How far the duck has the bed stepped back right now, in dB at or
     /// below zero: zero while nobody is talking, easing toward the depth
@@ -533,6 +654,7 @@ impl Default for Mixing {
             music_peak_db: crate::levels::Meter::FLOOR_DB,
             music_out_db: crate::levels::Meter::FLOOR_DB,
             music_out_peak_db: crate::levels::Meter::FLOOR_DB,
+            app_db: crate::levels::Meter::FLOOR_DB,
             playing: false,
             ducked_db: 0.0,
             monitor_db: crate::levels::Meter::FLOOR_DB,
@@ -609,8 +731,16 @@ fn yes() -> bool {
     true
 }
 
+pub fn default_scene_name() -> String {
+    "default".into()
+}
+
 fn floor() -> f64 {
     crate::levels::Meter::FLOOR_DB
+}
+
+fn yes_volume() -> f64 {
+    1.0
 }
 
 /// Everything a client needs to draw the state of the engine in one line.
@@ -629,30 +759,33 @@ pub struct Status {
     /// The same reason as `recording_since`: one clock, the engine's.
     #[serde(default)]
     pub on_air_since: Option<i64>,
-    pub screen: Option<String>,
-    pub camera: Option<String>,
+    /// Scene layers, back to front. Their choices and layout survive a restart.
+    #[serde(default)]
+    pub layers: Vec<crate::layers::Layer>,
+    /// Named layouts; the active entry reflects the current layers.
+    #[serde(default)]
+    pub scenes: Vec<crate::scenes::Scene>,
+    #[serde(default = "default_scene_name")]
+    pub active_scene: String,
+    /// Independent audio captures, not ordered visual scene layers.
+    #[serde(default)]
+    pub audio_layers: Vec<crate::audio_layers::Layer>,
+    /// The selected scene shader, if any. Never its source.
+    #[serde(default)]
+    pub shader: Option<String>,
     pub mic: Option<String>,
     pub muted: bool,
     /// Whether the self-view is flipped. On the status rather than assumed,
     /// because it is a switch on the panel and a panel that cannot read its
     /// own switches back draws them wrong after anything else changes them.
     pub mirrored: bool,
-    /// Where and how the camera sits in the picture.
-    #[serde(default)]
-    pub layout: crate::scene::Layout,
-    /// The kept scenes, by name, and the one last switched to.
-    #[serde(default)]
-    pub scenes: Vec<String>,
-    #[serde(default)]
-    pub scene: Option<String>,
     pub music: Option<String>,
-    pub card: Option<Card>,
-    /// What the screen capture is doing.
-    pub flowing: Flowing,
-    /// What the camera is doing. Separate because a camera that has stopped
-    /// while the screen keeps going is a thing that happens, and one number
-    /// covering both would hide it.
-    pub camera_flowing: Flowing,
+    /// The scene's frames, drawn at the full rate whether or not anything is
+    /// in it; the plan, not the count, keeps an empty scene off the air.
+    pub scene_flowing: Flowing,
+    /// Capture measurements keyed by layer ID; no arbitrary first source.
+    #[serde(default)]
+    pub layer_flowing: std::collections::BTreeMap<String, Flowing>,
     pub hearing: Hearing,
     pub mixing: Mixing,
     /// Summed across the destinations that answered. A destination that could
@@ -670,10 +803,6 @@ pub struct Status {
     /// one that did not move it goes on drawing the old position forever. Same
     /// reason `muted` and `mirrored` are here.
     pub faders: Faders,
-    /// What the two customisable cards say, so a panel can show a person what
-    /// they wrote last time rather than an empty box. Same reason as the
-    /// faders: the engine owns them and every face reads them from here.
-    pub words: crate::card::Words,
     /// Where the gate's thresholds are. On the status for the same reason as
     /// everything else here: a panel with five sliders on it has to be able to
     /// draw them where they are, and the engine is what knows.
@@ -704,9 +833,8 @@ pub struct Status {
     /// independent on purpose.
     #[serde(default = "yes")]
     pub music_to_stream: bool,
-    /// Whether the screen's sound is in the mix that leaves. Off unless
-    /// somebody said otherwise, the opposite default from the music: a bed
-    /// is chosen, what the computer plays is not.
+    /// Whether screen sound was requested. Off by default; while its display
+    /// layer is hidden, the mixer gates it out and resumes it on show.
     #[serde(default)]
     pub screen_sound: bool,
     /// Whether the microphone goes through the denoiser before the gate.
@@ -715,6 +843,15 @@ pub struct Status {
     /// The applications whose sound is heard; empty is the whole screen's.
     #[serde(default)]
     pub hearing_apps: Vec<String>,
+    /// The display layer supplying system audio; never more than one.
+    #[serde(default)]
+    pub screen_sound_layer: Option<String>,
+    /// Dedicated application capture, independent of the screen's sound.
+    #[serde(default)]
+    pub app_audio: Option<String>,
+    /// Its fader. Kept when the source is off.
+    #[serde(default = "yes_volume")]
+    pub app_audio_volume: f64,
     /// Where recordings are written, as the engine was started with. `None`
     /// is an engine that can capture, mix and publish but cannot record, which
     /// is a real configuration and not a broken one.
@@ -760,9 +897,6 @@ impl Default for Status {
         Self {
             on_air: false,
             recording: false,
-            layout: crate::scene::Layout::default(),
-            scenes: Vec::new(),
-            scene: None,
             denoise: false,
             version: String::new(),
             motor: String::new(),
@@ -771,26 +905,30 @@ impl Default for Status {
             viewers_peak: None,
             recording_since: None,
             on_air_since: None,
-            screen: None,
-            camera: None,
+            layers: Vec::new(),
+            scenes: crate::scenes::defaults(),
+            active_scene: default_scene_name(),
+            audio_layers: Vec::new(),
+            shader: None,
             mic: None,
             muted: false,
             mirrored: false,
             music: None,
-            card: None,
-            flowing: Flowing::default(),
-            camera_flowing: Flowing::default(),
+            scene_flowing: Flowing::default(),
+            layer_flowing: std::collections::BTreeMap::new(),
             hearing: Hearing::default(),
             mixing: Mixing::default(),
             viewers: None,
             faders: Faders::default(),
-            words: crate::card::Words::default(),
             gate: crate::gate::GateParams::default(),
             app: false,
             monitoring: false,
             speakers: None,
             music_to_stream: true,
             screen_sound: false,
+            screen_sound_layer: None,
+            app_audio: None,
+            app_audio_volume: 1.0,
             record_dir: None,
             server: None,
             preview: None,
@@ -932,6 +1070,9 @@ pub struct Devices {
     pub windows: Vec<Named>,
     pub cameras: Vec<Named>,
     pub mics: Vec<Named>,
+    /// The running applications: what `hear` and `audio app` pick sound from.
+    #[serde(default)]
+    pub apps: Vec<Named>,
     /// The music folders, by the name a person picks them with.
     ///
     /// Here rather than in a reply of its own because this is the "what can I
@@ -939,9 +1080,6 @@ pub struct Devices {
     /// list of cameras are both things on the machine that the operator picks
     /// between. Without it a panel could play music and could not offer any.
     pub genres: Vec<Named>,
-    /// The running applications, whose sound `hear` picks.
-    #[serde(default)]
-    pub apps: Vec<Named>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1026,6 +1164,12 @@ mod tests {
         assert_eq!(encode(&Command::GoLive), "{\"cmd\":\"go-live\"}\n");
         assert_eq!(encode(&Command::Status), "{\"cmd\":\"status\"}\n");
         assert_eq!(
+            encode(&Command::AppAudio {
+                app: Some("Safari".into())
+            }),
+            "{\"cmd\":\"app-audio\",\"app\":\"Safari\"}\n"
+        );
+        assert_eq!(
             encode(&Command::Screen { display: 7 }),
             "{\"cmd\":\"screen\",\"display\":7}\n"
         );
@@ -1036,10 +1180,22 @@ mod tests {
             "{\"cmd\":\"window\",\"query\":\"tmux\"}\n"
         );
         assert_eq!(
-            encode(&Command::Card {
-                which: Card::StartingSoon
+            encode(&Command::CameraPosition {
+                at: Some(crate::scene::CameraPosition { x: 300, y: 200 })
             }),
-            "{\"cmd\":\"card\",\"which\":\"starting-soon\"}\n"
+            "{\"cmd\":\"camera-position\",\"at\":{\"x\":300,\"y\":200}}\n"
+        );
+        assert_eq!(
+            encode(&Command::CameraShape {
+                shape: crate::scene::CameraShape::Rectangle
+            }),
+            "{\"cmd\":\"camera-shape\",\"shape\":\"rectangle\"}\n"
+        );
+        assert_eq!(
+            encode(&Command::SceneSwitch {
+                name: "Studio".into()
+            }),
+            "{\"cmd\":\"scene-switch\",\"name\":\"Studio\"}\n"
         );
     }
 
@@ -1077,11 +1233,35 @@ mod tests {
     }
 
     #[test]
+    fn independent_audio_layers_are_labeled_in_status_json() {
+        let mut status = Status::default();
+        status.audio_layers.push(
+            crate::audio_layers::Layer::new(
+                "call".into(),
+                crate::audio_layers::Source::app("Zoom".into()),
+            )
+            .unwrap(),
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            json["audio_layers"][0]["source"],
+            serde_json::json!({"kind":"app", "name":"Zoom"})
+        );
+        assert_eq!(json["audio_layers"][0]["id"], "call");
+        assert_eq!(serde_json::from_value::<Status>(json).unwrap(), status);
+    }
+
+    #[test]
     fn status_carries_nothing_it_does_not_know() {
         let status = Status::default();
         assert_eq!(status.viewers, None, "nobody asked is not nobody watching");
         assert!(!status.on_air);
         let json = serde_json::to_value(&status).expect("status encodes");
         assert_eq!(json["viewers"], serde_json::Value::Null);
+        assert_eq!(json["layers"], serde_json::json!([]));
+        assert_eq!(json["audio_layers"], serde_json::json!([]));
+        assert_eq!(json["layer_flowing"], serde_json::json!({}));
+        assert!(json.get("camera_shape").is_none());
+        assert!(json.get("screen").is_none());
     }
 }

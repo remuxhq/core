@@ -1,8 +1,8 @@
 //! Links libobs wherever this OS keeps it. macOS: the frameworks inside
 //! OBS.app (`OBS_APP` overrides `/Applications/OBS.app`). Linux: the
 //! distribution's `libobs.so.0` in the multiarch folder (`OBS_APP` is the
-//! prefix, `/usr`). No headers are needed: the few functions used are
-//! declared by hand in `src/lib.rs`.
+//! prefix, `/usr`). The functions and types come from the `libobs` crate,
+//! generated from OBS 32.1's headers.
 
 fn main() {
     println!("cargo:rerun-if-env-changed=OBS_APP");

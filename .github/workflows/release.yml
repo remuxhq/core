@@ -52,12 +52,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The distribution's libobs, linked straight (release.sh sets LIBOBS_PATH).
       - name: libobs (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio libobs-dev
       - name: OBS.app (macOS)
         if: runner.os == 'macOS'
         run: make obs.fetch
+      # OBS's headers reach for simde on ARM; the bindings are generated from them.
+      - name: simde (macOS)
+        if: runner.os == 'macOS'
+        run: brew install simde
       - run: sh scripts/release.sh
       - uses: actions/upload-artifact@v4
         with:

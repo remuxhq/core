@@ -5,9 +5,9 @@
 //! be talked around. It also means this crate's coverage number is about
 //! decisions rather than about glue, so a gate on it says something true.
 
+pub mod audio_layers;
 pub mod bug;
 pub mod camera;
-pub mod card;
 pub mod chat;
 pub mod cli;
 pub mod clips;
@@ -19,6 +19,7 @@ pub mod gate;
 pub mod health;
 pub mod history;
 pub mod journal;
+pub mod layers;
 pub mod levels;
 pub mod log;
 pub mod login;
@@ -34,5 +35,6 @@ pub mod scenes;
 pub mod session;
 pub mod socket;
 pub mod sources;
+pub mod timer;
 pub mod wait;
 pub mod wire;
