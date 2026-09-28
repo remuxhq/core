@@ -674,7 +674,7 @@ def scene_filter(daemon):
     daemon.until(lambda: daemon.ask({"cmd": "status"})["scene_flowing"]["frames"] > 2,
                  "the screen to reach the scene")
     plain = middle()
-    path = os.path.abspath("engine/motor-obs/examples/invert.wgsl")
+    path = os.path.abspath("engine/shader/examples/invert.wgsl")
     selected = daemon.ask({"cmd": "shader", "path": path})
     expect(selected.get("reply") == "status" and selected.get("shader") == path,
            f"filter selection: {selected}")

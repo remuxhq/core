@@ -23,7 +23,7 @@ REMUXD = os.environ.get("REMUXD_BIN", "engine/target/release/remuxd")
 
 #: The verb, and what a person should be able to read in the answer. `None`
 #: where the answer is a status line that says nothing specific back.
-EFFECT = "$PWD/engine/motor-obs/examples/invert.wgsl"
+EFFECT = "$PWD/engine/shader/examples/invert.wgsl"
 SAYS = [
     ("status", "off air"),
     # the same, every line of it, and for a program
