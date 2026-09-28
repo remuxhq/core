@@ -1,21 +1,21 @@
-//! `remux_gate`: the domain's gate as a libobs audio filter on the microphone.
+//! `remux_gate`: the mixer's gate (`remux-mixer`) as a libobs audio filter on
+//! the microphone, hosted under the mixer's `Filter` contract.
 //!
 //! libobs's own noise gate has an open and a close threshold, a hold and an
 //! attack, and nothing else. The domain's gate also hears the highs apart (a
 //! key press from behind the microphone), lifts a keyboard with no voice by
 //! the keys boost, closes to a floor rather than to silence, and looks 60 ms
-//! ahead so a word from silence keeps its first syllable. So the motor runs
-//! the domain's gate itself, the one the native motor runs, and the settings
-//! every face shows are the ones that act.
+//! ahead so a word from silence keeps its first syllable. So the motor hosts
+//! the remux gate, the one every motor runs, and the settings every face
+//! shows are the ones that act.
 
 use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use libobs as sys;
-use remuxd_domain::sound::mixer::gate::{
-    frames_for, GateDetector, GateLevels, GateParams, Gated, Steady, BLOCK, LOOKAHEAD_MS,
-};
+use remux_mixer::gate::{Gate, GateLevels, GateParams};
+use remux_mixer::Filter as _;
 
 pub const GATE: &str = "remux_gate";
 
@@ -51,7 +51,7 @@ pub fn heard() -> (bool, GateLevels) {
 /// is not later against the lips.
 pub fn latency_ns() -> i64 {
     let rate = sample_rate();
-    let frames = BLOCK + frames_for(LOOKAHEAD_MS, rate);
+    let frames = Gate::new(rate, channels().max(1), GateParams::default()).latency_frames();
     (frames as f64 / rate * 1e9) as i64
 }
 
@@ -123,8 +123,8 @@ pub fn register() {
     });
 }
 
-struct Filter {
-    steady: Steady,
+struct Hosted {
+    gate: Gate,
     channels: usize,
     interleaved: Vec<f32>,
 }
@@ -137,14 +137,9 @@ unsafe extern "C" fn create(
     settings: *mut sys::obs_data_t,
     _: *mut sys::obs_source_t,
 ) -> *mut c_void {
-    let (rate, channels) = (sample_rate(), channels().max(1));
-    let gated = Gated::new(
-        GateDetector::new(rate, params(settings)),
-        channels,
-        frames_for(LOOKAHEAD_MS, rate),
-    );
-    Box::into_raw(Box::new(Filter {
-        steady: Steady::new(gated),
+    let channels = channels().max(1);
+    Box::into_raw(Box::new(Hosted {
+        gate: Gate::new(sample_rate(), channels, params(settings)),
         channels,
         interleaved: Vec::new(),
     }))
@@ -153,7 +148,7 @@ unsafe extern "C" fn create(
 
 unsafe extern "C" fn destroy(data: *mut c_void) {
     // SAFETY: the box made in `create`, dropped once.
-    drop(unsafe { Box::from_raw(data.cast::<Filter>()) });
+    drop(unsafe { Box::from_raw(data.cast::<Hosted>()) });
 }
 
 /// libobs's audio is float, one plane per channel; the gate's is
@@ -165,7 +160,7 @@ unsafe extern "C" fn filter_audio(
     // SAFETY: our filter, and libobs's buffer of `frames` floats per plane,
     // for the call.
     unsafe {
-        let filter = &mut *data.cast::<Filter>();
+        let filter = &mut *data.cast::<Hosted>();
         let frames = (*audio).frames as usize;
         let planes: Vec<*mut f32> = (0..filter.channels)
             .map(|channel| (*audio).data[channel].cast::<f32>())
@@ -179,7 +174,8 @@ unsafe extern "C" fn filter_audio(
                 filter.interleaved.push(*plane.add(frame));
             }
         }
-        if let Some((frame, levels)) = filter.steady.process(&mut filter.interleaved) {
+        filter.gate.process(&mut filter.interleaved);
+        if let Some((frame, levels)) = filter.gate.heard() {
             OPEN.store(frame.open, Ordering::Relaxed);
             FULL.store(levels.full.to_bits(), Ordering::Relaxed);
             HF.store(levels.hf.to_bits(), Ordering::Relaxed);

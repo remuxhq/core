@@ -789,6 +789,7 @@ dependencies = [
  "libc",
  "libobs",
  "png",
+ "remux-mixer",
  "remux-shader",
  "remux-wire",
  "remuxd-domain",
@@ -1115,6 +1116,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remux-mixer"
+version = "0.1.1"
+dependencies = [
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "remux-shader"
 version = "0.1.0"
 dependencies = [
@@ -1148,6 +1157,7 @@ name = "remuxd-domain"
 version = "0.1.1"
 dependencies = [
  "base64",
+ "remux-mixer",
  "schemars",
  "serde",
  "serde_json",

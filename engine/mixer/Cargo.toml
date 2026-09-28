@@ -1,0 +1,13 @@
+[package]
+name = "remux-mixer"
+version = "0.1.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Audio filtering: the contract every motor hosts, and remux's filters (the gate). Everything about filtering sound, apart."
+
+# serde and schemars because a gate's settings and levels are on the status
+# every face reads, and `remux schema` prints them.
+[dependencies]
+schemars = "1"
+serde = { workspace = true }
