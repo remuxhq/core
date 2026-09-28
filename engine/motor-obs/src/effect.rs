@@ -70,7 +70,7 @@ pub fn register() {
 /// The effect a WGSL filter file is written out as, built in the graphics
 /// context the caller is in, with the reason when it does not build.
 unsafe fn build(path: &str) -> Result<*mut sys::gs_effect_t, String> {
-    let written = remux_shader::load(path)?;
+    let written = remuxd_domain::picture::shader::load(path)?;
     let mut error: *mut c_char = std::ptr::null_mut();
     let effect = sys::gs_effect_create(c(&written).as_ptr(), c(path).as_ptr(), &mut error);
     let said = if error.is_null() {

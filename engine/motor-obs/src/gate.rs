@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use libobs as sys;
-use remux_mixer::gate::{Gate, GateLevels, GateParams};
-use remux_mixer::Filter as _;
+use remuxd_domain::sound::mixer::gate::{Gate, GateLevels, GateParams};
+use remuxd_domain::sound::mixer::Filter as _;
 
 pub const GATE: &str = "remux_gate";
 

@@ -311,8 +311,6 @@ dependencies = [
  "libc",
  "libobs",
  "png",
- "remux-mixer",
- "remux-shader",
  "remuxd-domain",
  "serde_json",
 ]
@@ -497,6 +495,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "remux-mixer",
+ "remux-shader",
  "schemars",
  "serde",
  "serde_json",
