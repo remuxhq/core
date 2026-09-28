@@ -32,9 +32,25 @@ impl ObsSources {
     }
 }
 
-/// One list property of one source type, as (name, value) pairs; the empty
-/// first row the plugins put in for "none" is dropped.
-pub(crate) fn list(source: &str, property: &str) -> Vec<(String, String)> {
+/// What one row of a list property holds, by the list's own format.
+enum Row {
+    Text(Option<String>),
+    Number(i64),
+}
+
+/// A row's value, or `None` for the row the plugins put in for "none": in a
+/// list of text that row has no text. Read as a number it used to come back
+/// as "0", which made a display with no name and no picture.
+fn value_of(row: Row) -> Option<String> {
+    match row {
+        Row::Text(text) => text.filter(|t| !t.trim().is_empty()),
+        Row::Number(n) => Some(n.to_string()),
+    }
+}
+
+/// One list property of one source type, as (name, value) pairs, without the
+/// row for "none".
+pub fn list(source: &str, property: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     // SAFETY: a source is created and released here; the properties are read
     // and destroyed before it goes; every string is copied out.
@@ -52,18 +68,24 @@ pub(crate) fn list(source: &str, property: &str) -> Vec<(String, String)> {
         if !props.is_null() {
             let p = sys::obs_properties_get(props, c(property).as_ptr());
             if !p.is_null() {
+                // A list of numbers (the windows) and a list of text (the
+                // displays, the devices) say which they are.
+                let numbers =
+                    sys::obs_property_list_format(p) == sys::obs_combo_format_OBS_COMBO_FORMAT_INT;
                 for i in 0..sys::obs_property_list_item_count(p) {
                     let name = CStr::from_ptr(sys::obs_property_list_item_name(p, i))
                         .to_string_lossy()
                         .into_owned();
-                    let value = sys::obs_property_list_item_string(p, i);
-                    // A list of numbers (the windows) has no string: the number is the value.
-                    let value = if value.is_null() {
-                        sys::obs_property_list_item_int(p, i).to_string()
+                    let row = if numbers {
+                        Row::Number(sys::obs_property_list_item_int(p, i))
                     } else {
-                        CStr::from_ptr(value).to_string_lossy().into_owned()
+                        let text = sys::obs_property_list_item_string(p, i);
+                        Row::Text(
+                            (!text.is_null())
+                                .then(|| CStr::from_ptr(text).to_string_lossy().into_owned()),
+                        )
                     };
-                    if !value.trim().is_empty() {
+                    if let Some(value) = value_of(row) {
                         out.push((name, value));
                     }
                 }
@@ -157,5 +179,21 @@ impl Sources for ObsSources {
                 })
                 .unwrap_or_default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{value_of, Row};
+
+    #[test]
+    fn the_row_for_none_is_not_a_device() {
+        assert_eq!(value_of(Row::Text(None)), None, "no text is the none row");
+        assert_eq!(value_of(Row::Text(Some("  ".into()))), None);
+        assert_eq!(
+            value_of(Row::Text(Some("37D8832A".into()))).as_deref(),
+            Some("37D8832A")
+        );
+        assert_eq!(value_of(Row::Number(2399)).as_deref(), Some("2399"));
     }
 }

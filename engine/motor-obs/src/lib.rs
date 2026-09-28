@@ -10,7 +10,7 @@ mod pipeline;
 pub mod place;
 pub mod platform;
 mod preview;
-mod sources;
+pub mod sources;
 pub mod text;
 
 use std::ffi::{CStr, CString};
