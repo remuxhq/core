@@ -56,6 +56,7 @@ pub struct ObsPipeline {
     /// The screen's sound, on channel 3: one app's, or off. `sck_audio_capture`
     /// hears every app but this one; with none named, the whole screen.
     screen_sound: *mut sys::obs_source_t,
+    screen_heard: Followed,
     hearing_apps: Vec<String>,
     screen_sound_on: bool,
     /// A clip, on channel 4, played once over the mix.
@@ -68,6 +69,7 @@ pub struct ObsPipeline {
     height: u32,
     /// An application's sound on its own, on channel 5, and its fader.
     app_audio: *mut sys::obs_source_t,
+    app_heard: Followed,
     app_audio_volume: f64,
     /// The independent audio captures, each on its own channel from 8.
     audio_layers: Vec<(String, *mut sys::obs_source_t, u32)>,
@@ -90,6 +92,8 @@ struct Heard {
     level_mdb: AtomicU64,
     peak_mdb: AtomicU64,
     updates: AtomicU64,
+    /// Samples the source handed over, both channels, when followed.
+    samples: AtomicU64,
 }
 
 impl Heard {
@@ -111,6 +115,86 @@ impl Heard {
     }
     fn db(&self, mdb: &AtomicU64) -> f64 {
         mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0
+    }
+    unsafe extern "C" fn on_audio(
+        param: *mut c_void,
+        _source: *mut sys::obs_source_t,
+        data: *const sys::audio_data,
+        _muted: bool,
+    ) {
+        // SAFETY: `param` is the boxed `Heard`; `data` is libobs's for the
+        // call. Counted in both channels, as the native motor counts them.
+        unsafe {
+            let heard = &*(param as *const Self);
+            heard
+                .samples
+                .fetch_add(u64::from((*data).frames) * 2, Ordering::Relaxed);
+        }
+    }
+}
+
+/// A meter that follows whichever source is there now: the level off a
+/// volmeter (after the source's fader), the samples off the source's own
+/// audio, kept across sources.
+struct Followed {
+    meter: *mut sys::obs_volmeter_t,
+    heard: Box<Heard>,
+}
+
+impl Default for Followed {
+    fn default() -> Self {
+        Self {
+            meter: std::ptr::null_mut(),
+            heard: Box::default(),
+        }
+    }
+}
+
+impl Followed {
+    fn param(&self) -> *mut c_void {
+        &*self.heard as *const Heard as *mut c_void
+    }
+    /// SAFETY: `source` is live, and is left before it is released.
+    unsafe fn follow(&mut self, source: *mut sys::obs_source_t) {
+        unsafe {
+            if self.meter.is_null() {
+                self.meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
+                sys::obs_volmeter_add_callback(self.meter, Some(Heard::on_level), self.param());
+            }
+            sys::obs_volmeter_attach_source(self.meter, source);
+            sys::obs_source_add_audio_capture_callback(source, Some(Heard::on_audio), self.param());
+        }
+    }
+    /// SAFETY: `source` is the live one `follow` was given.
+    unsafe fn leave(&mut self, source: *mut sys::obs_source_t) {
+        unsafe {
+            sys::obs_source_remove_audio_capture_callback(
+                source,
+                Some(Heard::on_audio),
+                self.param(),
+            );
+            if !self.meter.is_null() {
+                sys::obs_volmeter_detach_source(self.meter);
+            }
+        }
+        // Nothing followed is silence, not the last level heard.
+        self.heard.level_mdb.store(0, Ordering::Relaxed);
+        self.heard.peak_mdb.store(0, Ordering::Relaxed);
+    }
+    fn samples(&self) -> u64 {
+        self.heard.samples.load(Ordering::Relaxed)
+    }
+    fn db(&self) -> f64 {
+        self.heard.db(&self.heard.level_mdb)
+    }
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        if !self.meter.is_null() {
+            // SAFETY: ours; its source was left first.
+            unsafe { sys::obs_volmeter_destroy(self.meter) };
+        }
     }
 }
 
@@ -262,6 +346,7 @@ impl ObsPipeline {
             monitoring: false,
             music_was_playing: false,
             screen_sound: std::ptr::null_mut(),
+            screen_heard: Followed::default(),
             hearing_apps: Vec::new(),
             screen_sound_on: false,
             clip: std::ptr::null_mut(),
@@ -271,6 +356,7 @@ impl ObsPipeline {
             width: 1920,
             height: 1080,
             app_audio: std::ptr::null_mut(),
+            app_heard: Followed::default(),
             app_audio_volume: 1.0,
             audio_layers: Vec::new(),
             video_encoder: std::ptr::null_mut(),
@@ -417,6 +503,7 @@ impl ObsPipeline {
         unsafe {
             if !self.screen_sound.is_null() {
                 sys::obs_set_output_source(3, std::ptr::null_mut());
+                self.screen_heard.leave(self.screen_sound);
                 sys::obs_source_release(self.screen_sound);
                 self.screen_sound = std::ptr::null_mut();
             }
@@ -462,6 +549,7 @@ impl ObsPipeline {
                 return Err("libobs could not hear the screen".into());
             }
             sys::obs_set_output_source(3, source);
+            self.screen_heard.follow(source);
             self.screen_sound = source;
         }
         Ok(())
@@ -899,8 +987,13 @@ impl Sound for ObsPipeline {
         }
     }
     fn hearing(&self) -> Hearing {
+        let heard = Hearing {
+            screen_samples: self.screen_heard.samples(),
+            app_samples: self.app_heard.samples(),
+            ..Hearing::default()
+        };
         if self.mic.is_null() {
-            return Hearing::default();
+            return heard;
         }
         // libobs meters after the filters, so a closed gate reads as silence
         // here.
@@ -910,7 +1003,7 @@ impl Sound for ObsPipeline {
             level_db,
             peak_db: self.heard.db(&self.heard.peak_mdb),
             gate_open: level_db > -100.0,
-            ..Hearing::default()
+            ..heard
         }
     }
     fn play(&mut self, track: Option<&Track>) -> Result<(), String> {
@@ -1060,12 +1153,14 @@ impl Sound for ObsPipeline {
         unsafe {
             if !self.app_audio.is_null() {
                 sys::obs_set_output_source(5, std::ptr::null_mut());
+                self.app_heard.leave(self.app_audio);
                 sys::obs_source_release(self.app_audio);
                 self.app_audio = std::ptr::null_mut();
             }
             if let Some(source) = made {
                 sys::obs_source_set_volume(source, self.app_audio_volume as f32);
                 sys::obs_set_output_source(5, source);
+                self.app_heard.follow(source);
                 self.app_audio = source;
                 self.meter_the_mix();
             }
@@ -1126,27 +1221,38 @@ impl Sound for ObsPipeline {
         self.monitoring.then(|| "Default".to_string())
     }
     fn mixing(&self) -> Mixing {
-        let db = |mdb: &AtomicU64| mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0;
-        let music_out = |db: f64| if self.music_to_stream { db } else { -120.0 };
+        // Silence is the domain's floor, as the native motor reports it, not
+        // libobs's -120.
+        let floor = remuxd_domain::levels::Meter::FLOOR_DB;
+        let db = |mdb: &AtomicU64| (mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0).max(floor);
+        let music = |mdb: &AtomicU64| {
+            if self.music.is_null() {
+                floor
+            } else {
+                self.music_heard.db(mdb).max(floor)
+            }
+        };
+        let music_out = |db: f64| if self.music_to_stream { db } else { floor };
         Mixing {
             playing: self.music_was_playing,
-            music_out_db: music_out(if self.music.is_null() {
-                -120.0
-            } else {
-                self.music_heard.db(&self.music_heard.level_mdb)
-            }),
+            music_out_db: music_out(music(&self.music_heard.level_mdb)),
+            music_out_peak_db: music_out(music(&self.music_heard.peak_mdb)),
             frames: self.mixed.frames.load(Ordering::Relaxed),
             level_db: db(&self.mixed.level_mdb),
             peak_db: db(&self.mixed.peak_mdb),
-            music_db: if self.music.is_null() {
-                -120.0
+            music_db: music(&self.music_heard.level_mdb),
+            music_peak_db: music(&self.music_heard.peak_mdb),
+            app_db: if self.app_audio.is_null() {
+                floor
             } else {
-                self.music_heard.db(&self.music_heard.level_mdb)
+                self.app_heard.db().max(floor)
             },
-            music_peak_db: if self.music.is_null() {
-                -120.0
+            // Only the music is monitored (`apply_music_routing`): the
+            // speakers hear it, as you hear it, or nothing.
+            monitor_db: if self.monitoring {
+                music(&self.music_heard.level_mdb)
             } else {
-                self.music_heard.db(&self.music_heard.peak_mdb)
+                floor
             },
             ..Mixing::default()
         }
