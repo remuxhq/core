@@ -8,12 +8,6 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = [
-  # ttf-parser 0.25.1 is unmaintained (RUSTSEC-2026-0192, 2026-06-28), no
-  # vulnerability and no patched release; it reaches the libobs motor through
-  # ab_glyph, which draws the cards' text. Moving to skrifa is the way out.
-  "RUSTSEC-2026-0192",
-]
 
 [bans]
 multiple-versions = "warn"
