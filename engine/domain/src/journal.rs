@@ -34,6 +34,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Levels
             | Command::Devices
             | Command::Shot { .. }
+            | Command::LayerShot { .. }
             | Command::Chat { .. }
             | Command::Plan
             | Command::Hide { .. }
@@ -45,6 +46,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
     let on = |on: &bool| if *on { "on" } else { "off" };
     let named = |device: &Option<String>| device.clone().unwrap_or_else(|| "none".into());
     Some(match command {
+        Command::SceneCreate { name } => format!("scene {name} created"),
+        Command::SceneSwitch { name } => format!("scene switched to {name}"),
+        Command::SceneDelete { name } => format!("scene {name} deleted"),
+        Command::AudioLayerAdd { id, .. } => format!("audio layer {id} added"),
+        Command::AudioLayerRemove { id } => format!("audio layer {id} removed"),
+        Command::AudioLayerMute { id, on } => {
+            format!("audio layer {id} {}", if *on { "muted" } else { "open" })
+        }
         Command::GoLive | Command::Live { .. } => "\u{25b6} on air".into(),
         Command::Stop => "\u{25a0} off air".into(),
         Command::RecordStart => "\u{23fa} recording".into(),
@@ -52,14 +61,39 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::Screen { display } => format!("screen: display {display}"),
         Command::Window { query } => format!("window: {query}"),
         Command::Camera { device } => format!("camera: {}", named(device)),
+        Command::CameraPosition { at: Some(at) } => format!("camera at {},{}", at.x, at.y),
+        Command::CameraPosition { at: None } => "camera position: default".into(),
+        Command::CameraShape { shape } => format!("camera shape: {shape:?}"),
+        Command::LayerCamera { id, .. }
+        | Command::LayerWindow { id, .. }
+        | Command::LayerScreen { id, .. } => {
+            format!("layer {id} added")
+        }
+        Command::LayerReplaceCamera { id, .. }
+        | Command::LayerReplaceWindow { id, .. }
+        | Command::LayerReplaceScreen { id, .. } => format!("layer {id} source changed"),
+        Command::LayerVisible { id, on } => {
+            format!("layer {id} {}", if *on { "shown" } else { "hidden" })
+        }
+        Command::LayerRemove { id } => format!("layer {id} removed"),
+        Command::LayerMove { id, index } => format!("layer {id} moved to {index}"),
+        Command::LayerShape { id, shape } => format!("layer {id} shape: {shape:?}"),
+        Command::LayerMirror { id, on } => format!("layer {id} mirror: {on}"),
+        Command::LayerPosition { id, at } => match at {
+            Some(at) => format!("layer {id} at {},{}", at.x, at.y),
+            None => format!("layer {id} position: default"),
+        },
+        Command::LayerTransform { id, .. } => format!("layer {id} transformed"),
+        Command::LayerCrop { id, crop } => format!(
+            "layer {id} crop {}",
+            if crop.is_some() { "set" } else { "off" }
+        ),
+        Command::Shader { path } => format!("shader: {}", named(path)),
+        Command::LayerShader { id, path } => format!("layer {id} shader: {}", named(path)),
         Command::Hide { seq } => format!("chat: line {seq} hidden"),
         Command::Delete { seq } => format!("chat: line {seq} deleted on the platform"),
         Command::Mic { device } => format!("mic: {}", named(device)),
         Command::Mirror { on: flipped } => format!("mirror {}", on(flipped)),
-        Command::Layout { patch } => format!("camera layout: {}", crate::cli::layout_words(patch)),
-        Command::SceneSave { name } => format!("scene {name} kept"),
-        Command::SceneSwitch { name } => format!("scene: {name}"),
-        Command::SceneForget { name } => format!("scene {name} forgotten"),
         Command::Share { on: shared } => format!("screen {}", on(shared)),
         Command::Mute { on: muted } => format!("mic {}", if *muted { "muted" } else { "open" }),
         Command::Monitor { on: hearing } => format!("monitoring {}", on(hearing)),
@@ -71,19 +105,18 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::ScreenSound { on: sent } => {
             format!("the screen's sound to the stream {}", on(sent))
         }
+        Command::LayerScreenSound { id, on: sent } => {
+            format!("display layer {id} sound {}", on(sent))
+        }
+        Command::AppAudio { app } => format!("app audio: {}", named(app)),
         Command::Music { on: playing } => format!("music {}", on(playing)),
         Command::Genre { name } => format!("music: {name}"),
         Command::NextTrack => "music: next".into(),
-        Command::Card { which } => match which {
-            crate::card::Card::Live => "\u{25a3} card off, the picture is back".into(),
-            crate::card::Card::StartingSoon => "\u{25a3} card: starting soon".into(),
-            crate::card::Card::BackInAMoment => "\u{25a3} card: back in a moment".into(),
-            crate::card::Card::NothingShared => "\u{25a3} card: nothing shared".into(),
-        },
-        Command::Countdown { seconds } => match seconds {
-            Some(seconds) => format!("countdown: {seconds}s"),
-            None => "countdown off".into(),
-        },
+        Command::SceneElementAdd { .. } => "scene element added".into(),
+        Command::SceneElementSet { .. } => "scene element updated".into(),
+        Command::SceneElementRemove { .. } => "scene element removed".into(),
+        Command::SceneTimerStart { .. } => "scene timer started".into(),
+        Command::SceneTimerStop { .. } => "scene timer stopped".into(),
         Command::HideEverything => "\u{2716} everything hidden".into(),
         Command::Retitle { adapter, title, .. } => match title {
             Some(title) => format!("destination {adapter} titled {title:?}"),
@@ -116,12 +149,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::Plan
         | Command::Levels
         | Command::Devices
+        | Command::AudioLayerVolume { .. }
         | Command::Volume { .. }
         | Command::MusicVolume { .. }
+        | Command::AppAudioVolume { .. }
         | Command::Duck { .. }
         | Command::Gate { .. }
-        | Command::CardText { .. }
         | Command::Shot { .. }
+        | Command::LayerShot { .. }
         | Command::Grants
         | Command::Chat { .. }
         | Command::Categories { .. }
@@ -133,18 +168,39 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
 /// The name a failure is reported under, which is the word somebody typed.
 fn verb(command: &Command) -> &'static str {
     match command {
+        Command::SceneCreate { .. } | Command::SceneSwitch { .. } | Command::SceneDelete { .. } => {
+            "scene"
+        }
+        Command::AudioLayerAdd { .. }
+        | Command::AudioLayerRemove { .. }
+        | Command::AudioLayerVolume { .. }
+        | Command::AudioLayerMute { .. } => "audio layer",
         Command::GoLive | Command::Live { .. } => "go live",
         Command::Stop => "stop",
         Command::RecordStart | Command::RecordStop => "recording",
         Command::Screen { .. } => "screen",
         Command::Window { .. } => "window",
         Command::Camera { .. } => "camera",
+        Command::CameraPosition { .. } => "camera-position",
+        Command::CameraShape { .. } => "camera-shape",
+        Command::LayerCamera { .. }
+        | Command::LayerScreen { .. }
+        | Command::LayerWindow { .. }
+        | Command::LayerReplaceScreen { .. }
+        | Command::LayerReplaceWindow { .. }
+        | Command::LayerReplaceCamera { .. }
+        | Command::LayerVisible { .. }
+        | Command::LayerRemove { .. }
+        | Command::LayerMove { .. }
+        | Command::LayerTransform { .. }
+        | Command::LayerCrop { .. }
+        | Command::LayerShape { .. }
+        | Command::LayerMirror { .. }
+        | Command::LayerPosition { .. } => "layer",
+        Command::Shader { .. } => "shader",
+        Command::LayerShader { .. } => "layer-shader",
         Command::Mic { .. } => "mic",
         Command::Mirror { .. } => "mirror",
-        Command::Layout { .. } => "layout",
-        Command::SceneSave { .. } | Command::SceneSwitch { .. } | Command::SceneForget { .. } => {
-            "scene"
-        }
         Command::Share { .. } => "share",
         Command::Mute { .. } => "mute",
         Command::Monitor { .. } => "monitor",
@@ -152,12 +208,17 @@ fn verb(command: &Command) -> &'static str {
         Command::Hear { .. } => "hear",
         Command::Clip { .. } => "play",
         Command::StreamMusic { .. } => "stream-music",
-        Command::ScreenSound { .. } => "screen-sound",
+        Command::ScreenSound { .. } | Command::LayerScreenSound { .. } => "screen-sound",
+        Command::AppAudio { .. } => "app-audio",
+        Command::AppAudioVolume { .. } => "app-audio-volume",
         Command::Music { .. } | Command::Genre { .. } | Command::NextTrack => "music",
         Command::Volume { .. } | Command::MusicVolume { .. } | Command::Duck { .. } => "volume",
         Command::Gate { .. } => "gate",
-        Command::Card { .. } | Command::CardText { .. } => "card",
-        Command::Countdown { .. } => "countdown",
+        Command::SceneElementAdd { .. }
+        | Command::SceneElementSet { .. }
+        | Command::SceneElementRemove { .. }
+        | Command::SceneTimerStart { .. }
+        | Command::SceneTimerStop { .. } => "scene",
         Command::HideEverything => "hide everything",
         Command::Arm { .. } => "arm",
         Command::Sandbox { .. } => "sandbox",
@@ -175,6 +236,7 @@ fn verb(command: &Command) -> &'static str {
         | Command::Devices
         | Command::Shot { .. }
         | Command::Plan
+        | Command::LayerShot { .. }
         | Command::Chat { .. } => "read",
         Command::Hide { .. } => "hide",
         Command::Delete { .. } => "delete",
@@ -363,8 +425,14 @@ mod tests {
             (Command::Share { on: false }, "screen off"),
             (Command::Mute { on: false }, "mic open"),
             (Command::Music { on: true }, "music on"),
-            (Command::Countdown { seconds: Some(300) }, "countdown: 300s"),
-            (Command::Countdown { seconds: None }, "countdown off"),
+            (
+                Command::SceneTimerStart { id: "clock".into() },
+                "scene timer started",
+            ),
+            (
+                Command::SceneTimerStop { id: "clock".into() },
+                "scene timer stopped",
+            ),
             (
                 Command::Arm {
                     adapter: 7,
@@ -380,20 +448,9 @@ mod tests {
 
     #[test]
     fn the_card_says_which_one_and_taking_it_down_says_that() {
-        use crate::card::Card;
         assert_eq!(
-            said(
-                &Command::Card {
-                    which: Card::StartingSoon
-                },
-                &Reply::Ok
-            )
-            .as_deref(),
-            Some("\u{25a3} card: starting soon")
-        );
-        assert_eq!(
-            said(&Command::Card { which: Card::Live }, &Reply::Ok).as_deref(),
-            Some("\u{25a3} card off, the picture is back")
+            said(&Command::SceneSwitch { name: "BRB".into() }, &Reply::Ok).as_deref(),
+            Some("scene switched to BRB")
         );
     }
 

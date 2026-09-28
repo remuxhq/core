@@ -42,277 +42,69 @@ pub enum Corner {
     BottomLeft,
 }
 
-/// How the camera and the screen share the picture.
+/// The two shapes the camera can take on the broadcast. The circular crop
+/// is the current default; rectangle restores the camera's native aspect.
 #[derive(
     Debug,
     Clone,
     Copy,
+    Default,
     PartialEq,
     Eq,
-    Default,
     serde::Serialize,
     serde::Deserialize,
     schemars::JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
-pub enum Mode {
-    /// The camera in its corner, over the screen.
+pub enum CameraShape {
     #[default]
-    Overlay,
-    /// The screen on the left, the camera in a column on the right.
-    Columns,
-    /// The camera drifting across the screen, bouncing off the edges.
-    Bounce,
-}
-
-/// The camera's outline: as it comes, cut to a square, or a circle.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum Shape {
-    #[default]
-    Rectangle,
-    Square,
     Circle,
+    Rectangle,
 }
 
-/// A look on the camera, applied in the compositor.
+/// The native scene's dimensions; the CLI positions its camera in these pixels.
+pub const CAMERA_OUTPUT: (u32, u32) = (1920, 1080);
+
+/// Requested upper-left corner of the composited camera in output pixels.
+/// The output is 1920×1080; Core Image uses a bottom-left origin, so the
+/// conversion belongs in this domain rather than the compositor.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
-#[serde(rename_all = "kebab-case")]
-pub enum Filter {
-    #[default]
-    Plain,
-    Sepia,
-    Mono,
-    Noir,
+pub struct CameraPosition {
+    pub x: u32,
+    pub y: u32,
 }
 
-/// Where and how the camera sits in the picture: one value the engine holds,
-/// every face reads, and a shell or a dragged window changes.
-#[derive(
-    Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-pub struct Layout {
-    /// The camera in a corner over the screen, beside it in a column of its
-    /// own, or wandering the picture like the DVD logo.
-    #[serde(default)]
-    pub mode: Mode,
-    pub corner: Corner,
-    /// How wide the camera is, as a share of the picture's width.
-    pub share: f64,
-    pub margin: f64,
-    pub shape: Shape,
-    #[serde(default)]
-    pub filter: Filter,
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Self {
-            mode: Mode::default(),
-            corner: Corner::default(),
-            share: CAMERA_SHARE,
-            margin: CAMERA_MARGIN,
-            shape: Shape::default(),
-            filter: Filter::default(),
+/// Place a camera viewport at the requested top-left pixel, keeping the whole
+/// viewport visible even when the requested point lies close to an edge.
+#[must_use]
+pub fn positioned_camera(
+    slot: Rect,
+    output: (f64, f64),
+    at: Option<CameraPosition>,
+    shape: CameraShape,
+) -> Rect {
+    let (width, height) = match shape {
+        CameraShape::Circle => {
+            let side = slot.width.min(slot.height);
+            (side, side)
         }
-    }
-}
-
-/// A change to some of the layout: what one verb or one drag moved.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
-pub struct LayoutPatch {
-    pub mode: Option<Mode>,
-    pub corner: Option<Corner>,
-    pub share: Option<f64>,
-    pub margin: Option<f64>,
-    pub shape: Option<Shape>,
-    pub filter: Option<Filter>,
-}
-
-/// Where everything goes for one frame: the screen's rectangle and the
-/// camera's slot with the part of it that is shown.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Placed {
-    pub screen: Rect,
-    pub camera: Option<(Rect, Rect)>,
-}
-
-/// The camera on the move, for [`Mode::Bounce`]: where it is and where it
-/// is going, in output pixels a frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bounce {
-    pub x: f64,
-    pub y: f64,
-    pub dx: f64,
-    pub dy: f64,
-}
-
-impl Default for Bounce {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            dx: 3.0,
-            dy: 2.0,
-        }
-    }
-}
-
-impl Bounce {
-    /// One frame on: a slot of this size moves and turns at the edges.
-    pub fn step(&mut self, output: (f64, f64), slot: (f64, f64)) {
-        let (max_x, max_y) = ((output.0 - slot.0).max(0.0), (output.1 - slot.1).max(0.0));
-        self.x += self.dx;
-        self.y += self.dy;
-        if self.x <= 0.0 || self.x >= max_x {
-            self.dx = -self.dx;
-            self.x = self.x.clamp(0.0, max_x);
-        }
-        if self.y <= 0.0 || self.y >= max_y {
-            self.dy = -self.dy;
-            self.y = self.y.clamp(0.0, max_y);
-        }
-    }
-}
-
-impl Layout {
-    /// The whole frame placed. `screen` is the screen's own size, so a
-    /// column keeps its shape; `bounced` is where the bounce has got to.
-    pub fn placed(
-        self,
-        output: (f64, f64),
-        screen: Option<(f64, f64)>,
-        camera: Option<(f64, f64)>,
-        bounced: Option<&Bounce>,
-    ) -> Placed {
-        let full = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: output.0,
-            height: output.1,
-        };
-        match self.mode {
-            Mode::Overlay => Placed {
-                screen: full,
-                camera: camera.and_then(|cam| self.slot(output, cam)),
-            },
-            Mode::Bounce => Placed {
-                screen: full,
-                camera: camera.and_then(|cam| {
-                    let (slot, source) = self.slot(output, cam)?;
-                    let at = bounced.copied().unwrap_or_default();
-                    Some((
-                        Rect {
-                            x: at.x,
-                            y: at.y,
-                            ..slot
-                        },
-                        source,
-                    ))
-                }),
-            },
-            Mode::Columns => {
-                let column = output.0 * self.share.clamp(0.2, 0.5);
-                let left = Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: output.0 - column,
-                    height: output.1,
-                };
-                let screen = screen.map_or(left, |from| fit(from, left));
-                let camera = camera.and_then(|cam| {
-                    let source = self.source(cam);
-                    let width = column - 2.0 * self.margin;
-                    let height = width * source.height / source.width;
-                    (width > 0.0 && height <= output.1).then_some((
-                        Rect {
-                            x: left.width + self.margin,
-                            y: (output.1 - height) / 2.0,
-                            width,
-                            height,
-                        },
-                        source,
-                    ))
-                });
-                Placed { screen, camera }
-            }
-        }
-    }
-
-    /// The part of the camera the shape keeps.
-    fn source(self, camera: (f64, f64)) -> Rect {
-        match self.shape {
-            Shape::Rectangle => Rect {
-                x: 0.0,
-                y: 0.0,
-                width: camera.0,
-                height: camera.1,
-            },
-            Shape::Square | Shape::Circle => {
-                let side = camera.0.min(camera.1);
-                Rect {
-                    x: (camera.0 - side) / 2.0,
-                    y: (camera.1 - side) / 2.0,
-                    width: side,
-                    height: side,
-                }
-            }
-        }
-    }
-
-    pub fn patched(self, patch: LayoutPatch) -> Self {
-        Self {
-            mode: patch.mode.unwrap_or(self.mode),
-            corner: patch.corner.unwrap_or(self.corner),
-            share: patch.share.unwrap_or(self.share).clamp(0.05, 1.0),
-            margin: patch.margin.unwrap_or(self.margin).max(0.0),
-            shape: patch.shape.unwrap_or(self.shape),
-            filter: patch.filter.unwrap_or(self.filter),
-        }
-    }
-
-    /// The camera's slot for a camera of this size, and the part of the
-    /// camera that fills it: the whole frame, or the centred square a square
-    /// or a circle is cut from.
-    pub fn slot(self, output: (f64, f64), camera: (f64, f64)) -> Option<(Rect, Rect)> {
-        let source = self.source(camera);
-        let slot = camera_slot(
-            output,
-            (source.width, source.height),
-            self.corner,
-            self.share,
-            self.margin,
-        )?;
-        Some((slot, source))
+        CameraShape::Rectangle => (slot.width, slot.height),
+    };
+    match at {
+        Some(at) => Rect {
+            x: (at.x as f64).clamp(0.0, (output.0 - width).max(0.0)),
+            y: (output.1 - at.y as f64 - height).clamp(0.0, (output.1 - height).max(0.0)),
+            width,
+            height,
+        },
+        None => Rect {
+            x: slot.x + (slot.width - width) / 2.0,
+            y: slot.y + (slot.height - height) / 2.0,
+            width,
+            height,
+        },
     }
 }
 
@@ -402,58 +194,76 @@ mod tests {
     const HD: (f64, f64) = (1920.0, 1080.0);
 
     #[test]
-    fn columns_put_the_screen_left_whole_and_the_camera_right_centred() {
-        let layout = Layout {
-            mode: Mode::Columns,
-            share: 0.25,
-            margin: 24.0,
-            ..Layout::default()
-        };
-        let placed = layout.placed(HD, Some((1920.0, 1080.0)), Some((1280.0, 960.0)), None);
-        assert_eq!((placed.screen.x, placed.screen.width), (0.0, 1440.0));
+    fn a_camera_moves_from_the_top_left_and_stays_wholly_in_frame() {
+        let slot = camera_slot(
+            HD,
+            (1280.0, 720.0),
+            Corner::BottomRight,
+            CAMERA_SHARE,
+            CAMERA_MARGIN,
+        )
+        .unwrap();
+        let at =
+            |x, y| positioned_camera(slot, HD, Some(CameraPosition { x, y }), CameraShape::Circle);
+        assert_eq!((at(300, 200).x, at(300, 200).y), (300.0, 610.0));
+        assert_eq!((at(0, 0).x, at(0, 0).y), (0.0, 810.0));
+        assert_eq!((at(1919, 1079).x, at(1919, 1079).y), (1650.0, 0.0));
         assert_eq!(
-            placed.screen.height, 810.0,
-            "the screen keeps 16:9 in a 1440 column"
-        );
-        assert_eq!(placed.screen.y, 135.0, "centred");
-        let (slot, _) = placed.camera.unwrap();
-        assert_eq!((slot.x, slot.width), (1464.0, 432.0));
-        assert_eq!(slot.height, 324.0, "4:3 kept");
-        assert_eq!(slot.y, 378.0);
-        assert_eq!(
-            Layout::default().placed(HD, None, None, None).screen.width,
-            1920.0
+            positioned_camera(slot, HD, None, CameraShape::Circle),
+            Rect {
+                x: slot.x + (slot.width - 270.0) / 2.0,
+                y: slot.y,
+                width: 270.0,
+                height: 270.0
+            },
+            "the original centered square stays in its corner"
         );
     }
 
     #[test]
-    fn the_bounce_turns_at_the_edges_and_places_the_camera_where_it_is() {
-        let mut bounce = Bounce {
-            x: 1438.0,
-            y: 0.0,
-            dx: 3.0,
-            dy: -2.0,
-        };
-        bounce.step(HD, (480.0, 270.0));
+    fn rectangle_preserves_the_camera_aspect_and_its_position() {
+        let slot = camera_slot(
+            HD,
+            (1280.0, 720.0),
+            Corner::BottomRight,
+            CAMERA_SHARE,
+            CAMERA_MARGIN,
+        )
+        .unwrap();
         assert_eq!(
-            (bounce.x, bounce.dx),
-            (1440.0, -3.0),
-            "hit the right edge and turned"
+            positioned_camera(slot, HD, None, CameraShape::Rectangle),
+            slot
+        );
+        let at = positioned_camera(
+            slot,
+            HD,
+            Some(CameraPosition { x: 1650, y: 810 }),
+            CameraShape::Rectangle,
         );
         assert_eq!(
-            (bounce.y, bounce.dy),
-            (0.0, 2.0),
-            "hit the bottom and turned"
+            at,
+            Rect {
+                x: 1440.0,
+                y: 0.0,
+                width: 480.0,
+                height: 270.0
+            }
         );
-        bounce.step(HD, (480.0, 270.0));
-        assert_eq!((bounce.x, bounce.y), (1437.0, 2.0));
-        let layout = Layout {
-            mode: Mode::Bounce,
-            ..Layout::default()
-        };
-        let placed = layout.placed(HD, None, Some((1920.0, 1080.0)), Some(&bounce));
-        let (slot, _) = placed.camera.unwrap();
-        assert_eq!((slot.x, slot.y, slot.width), (1437.0, 2.0, 480.0));
+        let at = positioned_camera(
+            slot,
+            HD,
+            Some(CameraPosition { x: 300, y: 200 }),
+            CameraShape::Rectangle,
+        );
+        assert_eq!(
+            at,
+            Rect {
+                x: 300.0,
+                y: 610.0,
+                width: 480.0,
+                height: 270.0
+            }
+        );
     }
 
     #[test]
@@ -624,54 +434,6 @@ mod thumbnail_tests {
     fn nothing_has_no_thumbnail_rather_than_a_division_by_zero() {
         assert_eq!(thumbnail((0.0, 0.0)), (0, 0));
         assert_eq!(thumbnail((1920.0, 0.0)), (0, 0));
-    }
-}
-
-#[cfg(test)]
-mod layout_tests {
-    use super::*;
-
-    const HD: (f64, f64) = (1920.0, 1080.0);
-
-    #[test]
-    fn a_square_or_a_circle_is_cut_from_the_middle_of_the_camera_and_keeps_its_width() {
-        let layout = Layout {
-            shape: Shape::Circle,
-            corner: Corner::TopLeft,
-            ..Layout::default()
-        };
-        let (slot, source) = layout.slot(HD, (1280.0, 720.0)).expect("it fits");
-        assert_eq!(
-            (source.x, source.y, source.width, source.height),
-            (280.0, 0.0, 720.0, 720.0)
-        );
-        assert_eq!(
-            (slot.width, slot.height),
-            (480.0, 480.0),
-            "square in, square out"
-        );
-        assert_eq!((slot.x, slot.y), (24.0, 1080.0 - 24.0 - 480.0), "top left");
-    }
-
-    #[test]
-    fn a_patch_moves_only_what_it_names_and_keeps_the_share_sane() {
-        let moved = Layout::default().patched(LayoutPatch {
-            share: Some(0.5),
-            ..LayoutPatch::default()
-        });
-        assert_eq!(
-            (moved.corner, moved.share, moved.shape),
-            (Corner::BottomRight, 0.5, Shape::Rectangle)
-        );
-        assert_eq!(
-            Layout::default()
-                .patched(LayoutPatch {
-                    share: Some(9.0),
-                    ..LayoutPatch::default()
-                })
-                .share,
-            1.0
-        );
     }
 }
 

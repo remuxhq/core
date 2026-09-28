@@ -9,25 +9,22 @@
 use crate::gate::GateParams;
 use crate::music::{fader_db, Playlist, Rotation, Track};
 use crate::protocol::{
-    Card, Command, Destination, Devices, Flowing, Found, Framed, Grant, Hearing, Mixing, Named,
-    Reply, Status,
+    Command, Destination, Devices, Flowing, Found, Framed, Grant, Hearing, Mixing, Named, Reply,
+    Status,
 };
+use crate::scenes::{Element, ElementContent};
 use crate::sources::{pick, pick_device, DisplayId, Screen, Window, WindowId};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod air;
 mod app;
+mod audio_layers;
 mod picture;
 mod sound;
 
 pub use air::Air;
-pub use picture::Picture;
-pub use sound::Sound;
-
-/// How long the countdown runs when nobody says otherwise. Three minutes is
-/// what a person needs to sit down, and long enough that somebody arriving
-/// early sees a number that is worth waiting out.
-pub const DEFAULT_COUNTDOWN_SECONDS: u32 = 180;
+pub use picture::{LayerSwapError, Picture};
+pub use sound::{Sound, SoundLevels};
 
 /// How many ticks a face's "watching" is good for, at four ticks a second.
 /// A face renews once a second while it draws, so three seconds is two missed
@@ -62,9 +59,7 @@ pub struct Available {
 /// disagree. There is one picture, and this is what is in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Behind {
-    /// Black, with "No content shared" written on it. Not an error: it is what
-    /// the switch on the panel does, and the live has to keep flowing through
-    /// it or the viewer sees a frozen frame instead of a deliberate blank.
+    /// No physical capture selected. The compositor still produces frames.
     #[default]
     Nothing,
     Screen(DisplayId),
@@ -87,38 +82,66 @@ pub trait Pipeline: Picture + Sound + Air + Send {
 /// A pipeline that captures nothing, for an engine that has not been given
 /// one. It is honest rather than a stub: `remuxd --no-capture` would run this.
 #[derive(Debug, Default)]
-pub struct NoPipeline {
-    behind: Behind,
-}
+pub struct NoPipeline;
 
 impl Picture for NoPipeline {
-    fn capture(&mut self, behind: Behind) -> Result<(), String> {
-        self.behind = behind;
-        Ok(())
+    fn layer_replace(
+        &mut self,
+        _old: &crate::layers::Layer,
+        new: &crate::layers::Layer,
+    ) -> Result<(u32, u32), picture::LayerSwapError> {
+        self.layer_add(new)
+            .map_err(|reason| picture::LayerSwapError {
+                reason,
+                restored: true,
+            })
     }
-    fn camera(&mut self, _device: Option<&str>) -> Result<(), String> {
-        Ok(())
+    fn scene_transition(
+        &mut self,
+        _: &[crate::layers::Layer],
+        to: &[crate::layers::Layer],
+        elements: &[Element],
+        shader: Option<&str>,
+    ) -> Result<(), String> {
+        if shader.is_some()
+            || to.iter().any(|layer| layer.shader.is_some())
+            || elements.iter().any(|element| element.shader.is_some())
+        {
+            Err("this engine has no compositor".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn layer_add(&mut self, layer: &crate::layers::Layer) -> Result<(u32, u32), String> {
+        // No-capture mode accepts a scene layout, but cannot produce frames.
+        Ok(match layer.source.kind {
+            crate::layers::Kind::Screen => (1920, 1080),
+            crate::layers::Kind::Camera => (1280, 720),
+            crate::layers::Kind::Window => (853, 479),
+        })
     }
     fn show(
         &mut self,
-        _card: Card,
-        _line: &str,
-        _counting: Option<Duration>,
+        _elements: &[Element],
+        _timers: &[(String, Duration)],
+        _order: &[String],
     ) -> Result<(), String> {
         Ok(())
     }
-    fn stop(&mut self) {
-        self.behind = Behind::Nothing;
-    }
+    fn stop(&mut self) {}
     fn flowing(&self) -> Flowing {
         Flowing::default()
     }
     fn mirror(&mut self, _on: bool) {}
+    fn shader(&mut self, path: Option<&str>) -> Result<(), String> {
+        if path.is_none() {
+            Ok(())
+        } else {
+            Err("this engine has no compositor".into())
+        }
+    }
     fn shot(&mut self, _of: Framed) -> Option<(Vec<u8>, u32, u32)> {
         None
-    }
-    fn camera_flowing(&self) -> Flowing {
-        Flowing::default()
     }
 }
 
@@ -126,10 +149,13 @@ impl Sound for NoPipeline {
     fn mic(&mut self, _device: Option<&str>) -> Result<(), String> {
         Ok(())
     }
+    fn app_audio(&mut self, _app: Option<&str>) -> Result<Option<String>, String> {
+        Err("this engine has no application audio capture".into())
+    }
     fn play(&mut self, _track: Option<&Track>) -> Result<(), String> {
         Ok(())
     }
-    fn levels(&mut self, _: f64, _: f64, _: f64, _: bool, _: bool, _: bool) -> Result<(), String> {
+    fn levels(&mut self, _: SoundLevels) -> Result<(), String> {
         Ok(())
     }
     fn monitor(&mut self, _on: bool) -> Result<(), String> {
@@ -400,13 +426,8 @@ fn now() -> i64 {
 /// of its own gets a pure module beside it, the way `gate` and `music` are.
 pub struct Engine {
     status: Status,
-    /// Whether the engine's own "No content shared" is up.
-    ///
-    /// Its own field because the status deliberately does not carry it: the
-    /// status says what the *operator* chose, and reading it back to decide
-    /// whether to take this down means the two requirements contradict each
-    /// other. They did, and a test found it.
-    blank_up: bool,
+    /// Running deadlines are transient and scoped to the active scene's element IDs.
+    counting: std::collections::HashMap<String, Instant>,
     quitting: bool,
     sources: Box<dyn Sources>,
     pipeline: Box<dyn Pipeline>,
@@ -431,13 +452,6 @@ pub struct Engine {
     /// [`crate::journal`]: the engine narrates itself, so "why is nothing
     /// going out" has an answer that is not a debugger.
     journal: crate::journal::Journal,
-    /// Which display was chosen, so a restart can choose it again. See
-    /// [`crate::remembered`].
-    chosen_display: Option<u32>,
-    /// The words that found the window behind the picture, when one is:
-    /// what a scene keeps, since a window's id is new every time it opens.
-    chosen_window: Option<String>,
-    scenes: Vec<crate::scenes::Scene>,
     /// How many windows are drawing the preview. See [`Command::Watching`].
     /// Ticks left on the last face's "watching". A lease, never a count: a
     /// count lived in this engine's memory, and an engine restarted under a
@@ -473,19 +487,16 @@ impl Engine {
     pub fn with_sources(sources: Box<dyn Sources>) -> Self {
         Self {
             status: Status::default(),
-            blank_up: false,
+            counting: Default::default(),
             quitting: false,
             sources,
             watching: Box::new(NoApp),
             chat: Default::default(),
-            pipeline: Box::new(NoPipeline::default()),
+            pipeline: Box::new(NoPipeline),
             library: Box::new(NoLibrary),
             playing: None,
             destination: None,
             journal: crate::journal::Journal::default(),
-            chosen_display: None,
-            chosen_window: None,
-            scenes: Vec::new(),
             watch_lease: 0,
             panel_lease: 0,
             recordings: None,
@@ -580,17 +591,41 @@ impl Engine {
     /// Choices only, never state: nothing here can bring an engine up on air.
     #[must_use]
     pub fn remembered(&self) -> crate::remembered::Remembered {
+        let mut layers = self.status.layers.clone();
+        for layer in &mut layers {
+            if !self.pipeline.layer_shader_active(&layer.id) {
+                layer.shader = None;
+            }
+        }
+        let shader = self
+            .pipeline
+            .shader_active()
+            .then(|| self.status.shader.clone())
+            .flatten();
+        let mut scenes = self.current_scenes();
+        if let Some(active) = scenes
+            .iter_mut()
+            .find(|scene| scene.name == self.status.active_scene)
+        {
+            active.layers = layers.clone();
+            for element in &mut active.elements {
+                if !self.pipeline.layer_shader_active(&element.id) {
+                    element.shader = None;
+                }
+            }
+            active.normalize_order();
+            active.shader = shader.clone();
+        }
         crate::remembered::Remembered {
-            screen: self.chosen_display,
-            camera: self.status.camera.clone(),
+            layers,
+            scenes,
+            active_scene: self.status.active_scene.clone(),
+            audio_layers: self.status.audio_layers.clone(),
             mic: self.status.mic.clone(),
             mirrored: self.status.mirrored,
-            layout: self.status.layout,
-            scenes: self.scenes.clone(),
             genre: self.playing.as_ref().map(|(genre, _)| genre.clone()),
             faders: self.status.faders,
             gate: self.status.gate,
-            words: self.status.words.clone(),
             monitoring: self.status.monitoring,
             denoise: self.status.denoise,
         }
@@ -605,19 +640,177 @@ impl Engine {
     /// comes back, because losing a webcam is not a reason to lose the gate
     /// settings somebody spent an evening on.
     pub fn restore(&mut self, setup: &crate::remembered::Remembered) {
-        self.status.words = setup.words.clone();
         self.status.faders = setup.faders;
         let _ = self.handle(Command::Gate {
             patch: serde_json::to_value(setup.gate).unwrap_or_default(),
         });
         let _ = self.sound();
-        if let Some(display) = setup.screen {
-            let _ = self.handle(Command::Screen { display });
+        let mut scenes = if setup.scenes.is_empty() {
+            let mut defaults = crate::scenes::defaults();
+            defaults[0].layers = setup.layers.clone();
+            defaults[0].normalize_order();
+            defaults
+        } else {
+            // A saved collection is authoritative: if the operator deleted
+            // the starter scene, do not silently recreate it on restart.
+            setup.scenes.clone()
+        };
+        for scene in &mut scenes {
+            scene.normalize_order();
         }
-        if let Some(camera) = &setup.camera {
-            let _ = self.handle(Command::Camera {
-                device: Some(camera.clone()),
+        let active = if scenes.iter().any(|scene| scene.name == setup.active_scene) {
+            setup.active_scene.clone()
+        } else {
+            scenes[0].name.clone()
+        };
+        let saved_order = scenes
+            .iter()
+            .find(|s| s.name == active)
+            .map(|s| s.ordered_ids())
+            .unwrap_or_default();
+        let saved_layers = scenes
+            .iter()
+            .find(|scene| scene.name == active)
+            .expect("active scene")
+            .layers
+            .clone();
+        self.status.scenes = scenes;
+        self.status.active_scene = active;
+        // Replay capture selections against empty slots, not saved IDs that
+        // have not been opened yet. The saved stacking order is restored below.
+        if let Some(scene) = self
+            .status
+            .scenes
+            .iter_mut()
+            .find(|s| s.name == self.status.active_scene)
+        {
+            scene.layers.clear();
+            scene.normalize_order();
+        }
+        self.render_scene();
+        for saved in &saved_layers {
+            let reply = match saved.source.kind {
+                crate::layers::Kind::Screen => {
+                    saved
+                        .source
+                        .handle
+                        .parse()
+                        .ok()
+                        .map(|display| Command::LayerScreen {
+                            id: saved.id.clone(),
+                            display,
+                        })
+                }
+                crate::layers::Kind::Camera => Some(Command::LayerCamera {
+                    id: saved.id.clone(),
+                    device: saved.source.name.clone(),
+                }),
+                crate::layers::Kind::Window => Some(Command::LayerWindow {
+                    id: saved.id.clone(),
+                    query: saved.source.name.clone(),
+                }),
+            };
+            if let Some(command) = reply {
+                if matches!(self.handle(command), Reply::Status(_)) {
+                    let _ = self.handle(Command::LayerTransform {
+                        id: saved.id.clone(),
+                        transform: saved.transform,
+                    });
+                    if let Some(crop) = saved.crop {
+                        let _ = self.handle(Command::LayerCrop {
+                            id: saved.id.clone(),
+                            crop: Some(crop),
+                        });
+                    }
+                    if let Some(shape) = saved.shape {
+                        let _ = self.handle(Command::LayerShape {
+                            id: saved.id.clone(),
+                            shape,
+                        });
+                    }
+                    if saved.mirrored {
+                        let _ = self.handle(Command::LayerMirror {
+                            id: saved.id.clone(),
+                            on: true,
+                        });
+                    }
+                    if let Some(path) = &saved.shader {
+                        let _ = self.handle(Command::LayerShader {
+                            id: saved.id.clone(),
+                            path: Some(path.clone()),
+                        });
+                    }
+                    if !saved.visible {
+                        let _ = self.handle(Command::LayerVisible {
+                            id: saved.id.clone(),
+                            on: false,
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(scene) = self
+            .status
+            .scenes
+            .iter_mut()
+            .find(|s| s.name == self.status.active_scene)
+        {
+            scene.order = saved_order;
+            scene.normalize_order();
+        }
+        self.render_scene();
+        let saved_element_shaders = self
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == self.status.active_scene)
+            .map(|s| s.elements.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|e| e.shader.map(|path| (e.id, path)))
+            .collect::<Vec<_>>();
+        if let Some(scene) = self
+            .status
+            .scenes
+            .iter_mut()
+            .find(|s| s.name == self.status.active_scene)
+        {
+            for element in &mut scene.elements {
+                element.shader = None;
+            }
+        }
+        for (id, path) in saved_element_shaders {
+            let _ = self.handle(Command::LayerShader {
+                id,
+                path: Some(path),
             });
+        }
+        let selected_shader = self
+            .status
+            .scenes
+            .iter()
+            .find(|scene| scene.name == self.status.active_scene)
+            .and_then(|scene| scene.shader.clone());
+        if let Some(path) = selected_shader {
+            let _ = self.handle(Command::Shader { path: Some(path) });
+        }
+        for saved in &setup.audio_layers {
+            if matches!(
+                self.handle(Command::AudioLayerAdd {
+                    id: saved.id.clone(),
+                    source: saved.source.clone(),
+                }),
+                Reply::Status(_)
+            ) {
+                let _ = self.handle(Command::AudioLayerVolume {
+                    id: saved.id.clone(),
+                    volume: saved.volume,
+                });
+                let _ = self.handle(Command::AudioLayerMute {
+                    id: saved.id.clone(),
+                    on: saved.muted,
+                });
+            }
         }
         if let Some(mic) = &setup.mic {
             let _ = self.handle(Command::Mic {
@@ -626,20 +819,6 @@ impl Engine {
         }
         if setup.mirrored {
             let _ = self.handle(Command::Mirror { on: true });
-        }
-        self.scenes = setup.scenes.clone();
-        self.status.scenes = self.scenes.iter().map(|s| s.name.clone()).collect();
-        if setup.layout != crate::scene::Layout::default() {
-            let _ = self.handle(Command::Layout {
-                patch: crate::scene::LayoutPatch {
-                    mode: Some(setup.layout.mode),
-                    corner: Some(setup.layout.corner),
-                    share: Some(setup.layout.share),
-                    margin: Some(setup.layout.margin),
-                    shape: Some(setup.layout.shape),
-                    filter: Some(setup.layout.filter),
-                },
-            });
         }
         if setup.monitoring {
             let _ = self.handle(Command::Monitor { on: true });
@@ -655,6 +834,180 @@ impl Engine {
         if let Some(genre) = &setup.genre {
             self.shelve(genre);
         }
+    }
+
+    fn current_scenes(&self) -> Vec<crate::scenes::Scene> {
+        let mut scenes = self.status.scenes.clone();
+        if let Some(active) = scenes
+            .iter_mut()
+            .find(|scene| scene.name == self.status.active_scene)
+        {
+            active.layers = self.status.layers.clone();
+            active.normalize_order();
+            active.shader = self.status.shader.clone();
+        }
+        scenes
+    }
+
+    fn scene_create(&mut self, name: String) -> Reply {
+        if name.is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
+            return Reply::Error {
+                message: "scene name must be 1–80 printable characters".into(),
+            };
+        }
+        if self.status.scenes.iter().any(|scene| scene.name == name) {
+            return Reply::Error {
+                message: format!("scene {name:?} already exists"),
+            };
+        }
+        let saved = self.remembered();
+        self.status.shader = saved
+            .scenes
+            .iter()
+            .find(|scene| scene.name == self.status.active_scene)
+            .and_then(|scene| scene.shader.clone());
+        self.status.scenes = saved.scenes;
+        self.status.layers = saved.layers;
+        self.status.scenes.push(crate::scenes::Scene {
+            name: name.clone(),
+            layers: self.status.layers.clone(),
+            elements: self
+                .status
+                .scenes
+                .iter()
+                .find(|s| s.name == self.status.active_scene)
+                .map(|s| s.elements.clone())
+                .unwrap_or_default(),
+            order: self
+                .status
+                .scenes
+                .iter()
+                .find(|s| s.name == self.status.active_scene)
+                .map(|s| s.ordered_ids())
+                .unwrap_or_default(),
+            shader: self.status.shader.clone(),
+        });
+        self.status.active_scene = name;
+        self.counting.clear();
+        self.render_scene();
+        Reply::Status(Box::new(self.reported()))
+    }
+
+    fn scene_delete(&mut self, name: String) -> Reply {
+        if name == self.status.active_scene {
+            return Reply::Error {
+                message: "cannot delete the active scene".into(),
+            };
+        }
+        let Some(index) = self
+            .status
+            .scenes
+            .iter()
+            .position(|scene| scene.name == name)
+        else {
+            return Reply::Error {
+                message: format!("no scene {name:?}"),
+            };
+        };
+        self.status.scenes.remove(index);
+        Reply::Status(Box::new(self.reported()))
+    }
+
+    fn scene_switch(&mut self, name: String) -> Reply {
+        if name == self.status.active_scene {
+            return Reply::Status(Box::new(self.reported()));
+        }
+        let Some(target) = self.status.scenes.iter().find(|scene| scene.name == name) else {
+            return Reply::Error {
+                message: format!("no scene {name:?}"),
+            };
+        };
+        let previous = self.status.clone();
+        let previous_clock = self.counting.clone();
+        let next = target.layers.clone();
+        let next_shader = target.shader.clone();
+        let next_elements = target.elements.clone();
+        let next_order = target.ordered_ids();
+        // Snapshot the outgoing scene *before* the pipeline swaps its active
+        // flags to the incoming programs (a runtime-disabled shader stays off).
+        let previous_scenes = self.remembered().scenes;
+        if !next_elements.is_empty() {
+            if let Err(message) = self.pipeline.show(&next_elements, &[], &next_order) {
+                return Reply::Error { message };
+            }
+        }
+        if let Err(message) = self.pipeline.scene_transition(
+            &self.status.layers,
+            &next,
+            &next_elements,
+            next_shader.as_deref(),
+        ) {
+            self.render_scene();
+            return Reply::Error { message };
+        }
+        // Preserve screen sound only when its physical display remains in the new scene.
+        let sound_source = self.status.screen_sound_layer.as_ref().and_then(|id| {
+            self.status
+                .layers
+                .iter()
+                .find(|layer| &layer.id == id)
+                .map(crate::scenes::CaptureKey::of)
+        });
+        let new_sound = sound_source.and_then(|key| {
+            next.iter()
+                .find(|layer| {
+                    layer.source.kind == crate::layers::Kind::Screen
+                        && crate::scenes::CaptureKey::of(layer) == key
+                })
+                .map(|layer| layer.id.clone())
+        });
+        self.status.scenes = previous_scenes;
+        self.status.layers = next;
+        self.status.shader = next_shader;
+        self.status.active_scene = name;
+        self.counting.clear();
+        self.pipeline.layers_changed(&self.status.layers);
+        if self.status.screen_sound_layer != new_sound {
+            if self.pipeline.screen_audio(new_sound.as_deref()).is_err() {
+                let _ = self.pipeline.screen_audio(None);
+                self.status.screen_sound = false;
+                self.status.screen_sound_layer = None;
+            } else {
+                self.status.screen_sound_layer = new_sound;
+                if self.status.screen_sound_layer.is_none() {
+                    self.status.screen_sound = false;
+                }
+            }
+        }
+        // A scene can hide/show the same sound-supplying display without
+        // changing its layer ID; update the mixer gate in that case too.
+        let _ = self.sound();
+        let drawn = self.pipeline.show(&next_elements, &[], &next_order);
+        if let Err(message) = drawn {
+            // A renderer refusal cannot silently commit a scene whose picture
+            // still shows the outgoing scene. The macOS renderer never refuses
+            // this choice, but a failing pipeline must have an honest status.
+            let _ = self.pipeline.scene_transition(
+                &self.status.layers,
+                &previous.layers,
+                &previous
+                    .scenes
+                    .iter()
+                    .find(|scene| scene.name == previous.active_scene)
+                    .map(|scene| scene.elements.clone())
+                    .unwrap_or_default(),
+                previous.shader.as_deref(),
+            );
+            self.status = previous;
+            self.counting = previous_clock;
+            self.pipeline.layers_changed(&self.status.layers);
+            let _ = self
+                .pipeline
+                .screen_audio(self.status.screen_sound_layer.as_deref());
+            self.render_scene();
+            return Reply::Error { message };
+        }
+        Reply::Status(Box::new(self.reported()))
     }
 
     /// A moment passing, with nobody asking for anything.
@@ -732,6 +1085,13 @@ impl Engine {
     fn decide(&mut self, command: Command) -> Reply {
         match command {
             Command::Status => Reply::Status(Box::new(self.reported())),
+            Command::SceneCreate { name } => self.scene_create(name),
+            Command::SceneSwitch { name } => self.scene_switch(name),
+            Command::SceneDelete { name } => self.scene_delete(name),
+            Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),
+            Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
+            Command::AudioLayerVolume { id, volume } => self.audio_layer_volume(id, volume),
+            Command::AudioLayerMute { id, on } => self.audio_layer_mute(id, on),
             Command::Watching { on } => self.watch(on),
             Command::Present => self.present(),
             Command::Levels => self.levels(),
@@ -761,23 +1121,47 @@ impl Engine {
             Command::Monitor { on } => self.monitor(on),
             Command::StreamMusic { on } => self.stream_music(on),
             Command::ScreenSound { on } => self.screen_sound(on),
+            Command::LayerScreenSound { id, on } => self.layer_screen_sound(id, on),
+            Command::AppAudio { app } => self.app_audio(app),
+            Command::AppAudioVolume { level } => self.app_audio_volume(level),
             Command::Screen { display } => self.choose_screen(display),
             Command::Window { query } => self.choose_window(query),
             Command::Camera { device } => self.choose_camera(device),
+            Command::CameraPosition { at } => self.camera_position(at),
+            Command::CameraShape { shape } => self.camera_shape(shape),
+            Command::LayerCamera { id, device } => self.layer_camera(id, device),
+            Command::LayerScreen { id, display } => self.layer_screen(id, display),
+            Command::LayerWindow { id, query } => self.layer_window(id, query),
+            Command::LayerReplaceScreen { id, display } => self.layer_replace_screen(id, display),
+            Command::LayerReplaceWindow { id, query } => self.layer_replace_window(id, query),
+            Command::LayerReplaceCamera { id, device } => self.layer_replace_camera(id, device),
+            Command::LayerVisible { id, on } => self.layer_visible(id, on),
+            Command::LayerRemove { id } => self.layer_remove(id),
+            Command::LayerMove { id, index } => self.layer_move(id, index),
+            Command::LayerTransform { id, transform } => self.layer_transform(id, transform),
+            Command::LayerCrop { id, crop } => self.layer_crop(id, crop),
+            Command::LayerShape { id, shape } => self.layer_shape(id, shape),
+            Command::LayerMirror { id, on } => self.layer_mirror(id, on),
+            Command::LayerPosition { id, at } => self.layer_position(id, at),
+            Command::Shader { path } => self.shader(path),
+            Command::LayerShader { id, path } => self.layer_shader(id, path),
             Command::Mic { device } => self.choose_mic(device),
             Command::Share { on } => self.share(on),
             Command::Genre { name } => self.pick_genre(&name),
             Command::NextTrack => self.next_track(),
             Command::Music { on } => self.music(on),
-            Command::Card { which } => self.show(which),
-            Command::Countdown { seconds } => self.countdown(seconds),
-            Command::CardText { which, text } => self.card_text(which, text),
+            Command::SceneElementAdd { element } => self.scene_element_add(element),
+            Command::SceneElementSet { element } => self.scene_element_set(element),
+            Command::SceneElementRemove { id } => self.scene_element_remove(id),
+            Command::SceneTimerStart { id } => self.scene_timer(id, true),
+            Command::SceneTimerStop { id } => self.scene_timer(id, false),
             Command::HideEverything => self.hide_everything(),
             Command::Gate { patch } => self.gate(patch),
             Command::Denoise { on } => self.denoise(on),
             Command::Hear { apps } => self.hear(apps),
             Command::Clip { name } => self.play_clip(&name),
             Command::Shot { of } => self.shot(of),
+            Command::LayerShot { id } => self.layer_shot(id),
             Command::Arm { adapter, on } => self.arm(adapter, on),
             Command::Sandbox { adapter, on } => self.sandbox(adapter, on),
             Command::Retitle {
@@ -794,10 +1178,6 @@ impl Engine {
             Command::Categories { adapter, query } => self.search_categories(adapter, &query),
             Command::Grants => self.grants(),
             Command::Mirror { on } => self.mirror(on),
-            Command::Layout { patch } => self.layout(patch),
-            Command::SceneSave { name } => self.scene_save(name),
-            Command::SceneSwitch { name } => self.scene_switch(&name),
-            Command::SceneForget { name } => self.scene_forget(&name),
         }
     }
 
@@ -809,8 +1189,34 @@ impl Engine {
         let mut status = self.status.clone();
         status.version = env!("CARGO_PKG_VERSION").into();
         status.motor = self.motor.clone();
-        status.flowing = self.pipeline.flowing();
-        status.camera_flowing = self.pipeline.camera_flowing();
+        status.scenes = self.current_scenes();
+        status.scene_flowing = self.pipeline.flowing();
+        status.layer_flowing = status
+            .layers
+            .iter()
+            .map(|layer| (layer.id.clone(), self.pipeline.layer_flowing(&layer.id)))
+            .collect();
+        if !self.pipeline.shader_active() {
+            status.shader = None;
+        }
+        for layer in &mut status.layers {
+            if !self.pipeline.layer_shader_active(&layer.id) {
+                layer.shader = None;
+            }
+        }
+        if let Some(active) = status
+            .scenes
+            .iter_mut()
+            .find(|scene| scene.name == status.active_scene)
+        {
+            active.layers = status.layers.clone();
+            for element in &mut active.elements {
+                if !self.pipeline.layer_shader_active(&element.id) {
+                    element.shader = None;
+                }
+            }
+            active.shader = status.shader.clone();
+        }
         status.hearing = self.pipeline.hearing();
         status.mixing = self.pipeline.mixing();
         status.speakers = self.pipeline.speakers();
@@ -858,24 +1264,36 @@ impl Engine {
     /// guarantee is not one, and somebody pressing this is not thinking about
     /// how the stream reads.
     fn hide_everything(&mut self) -> Reply {
-        // The card first, so there is never a frame between the screen going
-        // and something being there to show.
-        let line = self.status.words.line(Card::BackInAMoment).to_string();
-        if let Err(why) = self.pipeline.show(Card::BackInAMoment, &line, None) {
-            return Reply::Error { message: why };
-        }
-        self.status.card = Some(Card::BackInAMoment);
-        self.blank_up = false;
+        self.counting.clear();
 
-        if let Err(why) = self.pipeline.camera(None) {
+        // An arbitrary shader may obscure even the emergency scene. The panic
+        // button must restore an unfiltered picture before it takes sources off.
+        if let Err(why) = self.pipeline.shader(None) {
             return Reply::Error { message: why };
         }
-        self.status.camera = None;
+        self.status.shader = None;
 
-        if let Err(why) = self.pipeline.capture(Behind::Nothing) {
-            return Reply::Error { message: why };
+        for layer in &self.status.layers {
+            self.pipeline.layer_remove(&layer.id);
         }
-        self.status.screen = None;
+        self.status.layers.clear();
+        if let Some(scene) = self
+            .status
+            .scenes
+            .iter_mut()
+            .find(|s| s.name == self.status.active_scene)
+        {
+            scene.layers.clear();
+            scene.elements.clear();
+            scene.order.clear();
+            scene.shader = None;
+        }
+        self.render_scene();
+        for layer in &self.status.audio_layers {
+            self.pipeline.audio_layer_remove(&layer.id);
+        }
+        self.status.audio_layers.clear();
+        self.pipeline.layers_changed(&[]);
 
         // Everything off, and that includes the sound. The music used to keep
         // playing here on the grounds that a live which goes silent looks
@@ -911,6 +1329,14 @@ impl Engine {
         // And the screen's sound: the button means nothing of this room
         // reaches the audience until somebody says so again.
         self.status.screen_sound = false;
+        self.status.screen_sound_layer = None;
+        if let Err(why) = self.pipeline.screen_audio(None) {
+            return Reply::Error { message: why };
+        }
+        if let Err(why) = self.pipeline.app_audio(None) {
+            return Reply::Error { message: why };
+        }
+        self.status.app_audio = None;
         // Muting is part of the button and has to reach the sound, not only
         // the status. This was missing once and it is the worst half to miss.
         self.sound()

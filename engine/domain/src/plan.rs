@@ -32,7 +32,10 @@ pub struct Planned {
 pub struct Plan {
     pub on_air: bool,
     pub recording: bool,
-    /// What is behind the picture: a screen, a window, or nothing.
+    /// The scene that goes out, by name.
+    pub scene: String,
+    /// What is in it, back to front: each layer as `id (kind name)`, or
+    /// "nothing shared" when the scene is empty.
     pub picture: String,
     pub camera: Option<String>,
     pub mirrored: bool,
@@ -41,7 +44,6 @@ pub struct Plan {
     pub music: Option<String>,
     pub music_to_stream: bool,
     pub screen_sound: bool,
-    pub card: Option<String>,
     pub destinations: Vec<Planned>,
     /// What stops the live before it starts. Empty means it would go.
     pub blockers: Vec<String>,
@@ -52,7 +54,7 @@ impl Plan {
     pub fn of(status: &Status) -> Self {
         let destinations: Vec<Planned> = status.destinations.iter().map(planned).collect();
         let mut blockers = Vec::new();
-        if status.flowing.frames == 0 {
+        if status.scene_flowing.frames == 0 {
             blockers.push("there is no picture to send yet".into());
         }
         if !destinations.iter().any(|d| d.armed) {
@@ -66,18 +68,19 @@ impl Plan {
         let mut plan = Self {
             on_air: status.on_air,
             recording: status.recording,
-            picture: status
-                .screen
-                .clone()
-                .unwrap_or_else(|| "nothing shared".into()),
-            camera: status.camera.clone(),
+            scene: status.active_scene.clone(),
+            picture: picture(status),
+            camera: status
+                .layers
+                .iter()
+                .find(|l| l.visible && l.source.kind == crate::layers::Kind::Camera)
+                .map(|l| l.source.name.clone()),
             mirrored: status.mirrored,
             mic: status.mic.clone(),
             muted: status.muted,
             music: status.music.clone(),
             music_to_stream: status.music_to_stream,
             screen_sound: status.screen_sound,
-            card: status.card.map(|card| format!("{card:?}")),
             destinations,
             blockers,
             fingerprint: 0,
@@ -99,12 +102,52 @@ impl Plan {
             &self.music,
             self.music_to_stream,
             self.screen_sound,
-            &self.card,
+            &self.scene,
             &self.destinations,
             &self.blockers,
         )
             .hash(&mut hasher);
         hasher.finish()
+    }
+}
+
+/// The active scene's layers and elements, back to front, the way a person
+/// reads them before confirming.
+fn picture(status: &Status) -> String {
+    let scene = status.scenes.iter().find(|s| s.name == status.active_scene);
+    // The status's layers are the active scene's, whether or not the scene
+    // in the list has caught up with them yet.
+    let mut ordered = scene
+        .cloned()
+        .unwrap_or_else(|| crate::scenes::defaults().remove(0));
+    ordered.layers = status.layers.clone();
+    let shown: Vec<String> = ordered
+        .ordered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            if let Some(layer) = status.layers.iter().find(|l| l.id == id) {
+                return layer.visible.then(|| {
+                    let kind = match layer.source.kind {
+                        crate::layers::Kind::Screen => "screen",
+                        crate::layers::Kind::Window => "window",
+                        crate::layers::Kind::Camera => "camera",
+                    };
+                    format!("{id} ({kind} {})", layer.source.name)
+                });
+            }
+            let element = scene?.elements.iter().find(|e| e.id == id)?;
+            element.visible.then(|| match &element.content {
+                crate::scenes::ElementContent::Text { text } => format!("{id} (text {text})"),
+                crate::scenes::ElementContent::Timer { seconds } => {
+                    format!("{id} (timer {seconds} s)")
+                }
+            })
+        })
+        .collect();
+    if shown.is_empty() {
+        "nothing shared".into()
+    } else {
+        shown.join(", ")
     }
 }
 
@@ -151,8 +194,8 @@ mod tests {
 
     fn ready() -> Status {
         Status {
-            screen: Some("VG2791R".into()),
-            flowing: Flowing {
+            layers: vec![crate::health::tests::screen_layer("VG2791R")],
+            scene_flowing: Flowing {
                 frames: 30,
                 ..Flowing::default()
             },
@@ -165,7 +208,8 @@ mod tests {
     fn a_plan_that_would_go_has_no_blockers_and_names_what_it_sends() {
         let plan = Plan::of(&ready());
         assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
-        assert_eq!(plan.picture, "VG2791R");
+        assert_eq!(plan.picture, "desk (screen VG2791R)");
+        assert_eq!(plan.scene, "default");
         assert_eq!(plan.destinations[0].title.as_deref(), Some("remux"));
     }
 
@@ -192,7 +236,7 @@ mod tests {
         let mut louder = ready();
         louder.hearing.level_db = -3.0;
         louder.viewers = Some(9);
-        louder.flowing.frames = 3_000;
+        louder.scene_flowing.frames = 3_000;
         assert_eq!(a.fingerprint, Plan::of(&louder).fingerprint);
     }
 }

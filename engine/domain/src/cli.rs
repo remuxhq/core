@@ -7,15 +7,40 @@
 //! The words are the ones the engine this replaces already answered to, because
 //! they are in people's fingers and in their shell history.
 
-use crate::card::Card;
+mod group;
+mod help;
+pub use group::normalize;
+pub use help::{guide, help, usage};
+
+/// A global output option, removed before interpreting positional arguments.
+/// It can precede the command or follow any of its arguments.
+pub fn output_mode(words: &[String]) -> (bool, Vec<String>) {
+    let json = words.iter().any(|word| word == "--json");
+    (
+        json,
+        words
+            .iter()
+            .filter(|word| *word != "--json")
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The same reply shape the socket uses, one complete JSON object per line.
+pub fn render_json(reply: &Reply) -> String {
+    crate::protocol::encode(reply)
+        .trim_end_matches('\n')
+        .to_string()
+}
+
 use crate::protocol::{Command, Devices, Framed, Grant, Named, Reply, Status};
 
 /// Read a command out of the words after the program's own name.
 ///
 /// The error is what a person reads when they get it wrong, so it says what
 /// was expected rather than that something was invalid.
-/// Whether the words ask to keep reading the chat (`chat -f`, `chat --follow`,
-/// `chat follow`), and the words with that taken out. Following is the
+/// Whether the words ask to keep reading the chat (`chat read -f`,
+/// `chat read --follow`, `chat read follow`), and the words with that taken out. Following is the
 /// shell's job, not the engine's: the command on the wire is `chat`, with
 /// `since` moving.
 pub fn follow(words: &[String]) -> (bool, Vec<String>) {
@@ -115,7 +140,7 @@ pub fn render_with(reply: &Reply, ink: Ink) -> String {
     }
 }
 
-/// What `chat -f` prints for messages that arrived after some were already
+/// What `chat read -f` prints for messages that arrived after some were already
 /// on the screen: the rule first. The rule goes between messages, and the
 /// message before these is the last one printed, so without it every batch
 /// that landed a second apart ran into the one before.
@@ -124,36 +149,54 @@ pub fn render_more(reply: &Reply, ink: Ink) -> String {
 }
 
 pub fn parse(words: &[String]) -> Result<Command, String> {
+    // An explicit genre is never a switch: even a genre named "off" is a
+    // genre. Keep this distinction before expanding grouped shell words.
+    if matches!(words.first().map(String::as_str), Some("music"))
+        && matches!(words.get(1).map(String::as_str), Some("genre"))
+    {
+        let _ = normalize(words)?;
+        return Ok(Command::Genre {
+            name: words[2..].join(" "),
+        });
+    }
+    let words = normalize(words)?;
+    parse_wire_words(&words)
+}
+
+// The wire vocabulary stays stable; only the shell grammar above changes.
+fn parse_wire_words(words: &[String]) -> Result<Command, String> {
     let (verb, rest) = words.split_first().ok_or_else(usage)?;
     let joined = rest.join(" ");
     match verb.as_str() {
-        "status" => Ok(Command::Status),
-        "levels" | "meters" => Ok(Command::Levels),
-        "watching" => Ok(Command::Watching {
-            on: !matches!(joined.as_str(), "off" | "false" | "0"),
-        }),
-        // `remux shot` is the scene, `remux shot camera` is the self-view.
-        "shot" => Ok(Command::Shot {
-            of: match joined.as_str() {
-                "" | "scene" => Framed::Scene,
-                "camera" | "cam" => Framed::Camera,
-                "screen" => Framed::Screen,
-                other => {
-                    return Err(format!(
-                        "a shot is of the scene, the camera or the screen, not {other}"
-                    ))
-                }
-            },
-        }),
-        "grants" | "permissions" => Ok(Command::Grants),
+        "status" => {
+            if rest.is_empty() {
+                Ok(Command::Status)
+            } else {
+                Err("status takes no arguments".into())
+            }
+        }
+        "scene-create" | "scene-switch" | "scene-delete" => match rest {
+            [name] if !name.is_empty() => Ok(match verb.as_str() {
+                "scene-create" => Command::SceneCreate { name: name.clone() },
+                "scene-switch" => Command::SceneSwitch { name: name.clone() },
+                _ => Command::SceneDelete { name: name.clone() },
+            }),
+            _ => Err("scene command needs exactly one name (quote names with spaces)".into()),
+        },
+        "audio-layer" => parse_audio_layer(rest),
+        "levels" => Ok(Command::Levels),
+        // The composed scene preview.
+        "shot" if rest.is_empty() => Ok(Command::Shot { of: Framed::Scene }),
+        "shot" => Err("scene shot takes no arguments; use scene layer shot <id>".into()),
+        "grants" => Ok(Command::Grants),
         "chat" => Ok(Command::Chat {
             since: 0,
             follow: false,
         }),
-        // `remux chat -f`: the same, then again every second for what is new,
+        // `remux chat read -f`: the same, then again every second for what is new,
         // the way `tail -f` reads a file. The flag is the shell's (`follow`),
         // the command on the wire is the same one.
-        // `remux hide 42`: that line of chat, off every face.
+        // `remux chat hide 42`: that line of chat, off every face.
         "hide" => {
             let seq = rest
                 .first()
@@ -167,6 +210,8 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         // does it only if that is still true. `remux live` alone asks a
         // person at a terminal, or is refused where there is nobody to ask.
         "plan" => Ok(Command::Plan),
+        // What the shell draws out of the status by itself.
+        "scenes" | "destinations" | "log" | "health" => Ok(Command::Status),
         "live" | "go-live" => match (rest.first().map(String::as_str), rest.get(1)) {
             (Some("--confirm"), Some(plan)) => Ok(Command::Live {
                 plan: plan
@@ -191,35 +236,59 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         }
         "window" => {
             if joined.is_empty() {
-                return Err("window needs part of a title, as in `remux window ghostty`".into());
+                return Err(
+                    "window needs part of a title, as in `remux scene layer add window editor ghostty`".into(),
+                );
             }
             Ok(Command::Window { query: joined })
         }
         "camera" => Ok(Command::Camera {
             device: off_or(&joined),
         }),
+        "layer" => parse_layer(rest),
+        "shader" => match rest {
+            [path] if path == "off" => Ok(Command::Shader { path: None }),
+            [path] if !path.is_empty() => Ok(Command::Shader {
+                path: Some(path.clone()),
+            }),
+            _ => Err("filter takes one .frag file or `off`".into()),
+        },
+        "camera-shape" => match rest {
+            [shape] if shape == "circle" => Ok(Command::CameraShape {
+                shape: crate::scene::CameraShape::Circle,
+            }),
+            [shape] if shape == "rectangle" => Ok(Command::CameraShape {
+                shape: crate::scene::CameraShape::Rectangle,
+            }),
+            _ => Err("camera-shape takes exactly `circle` or `rectangle`".into()),
+        },
+        "camera-position" => {
+            if rest.len() == 1 && rest[0] == "default" {
+                return Ok(Command::CameraPosition { at: None });
+            }
+            if rest.len() != 2 {
+                return Err(
+                    "camera-position takes x and y in 1920x1080 pixels, or `default`".into(),
+                );
+            }
+            let (width, height) = crate::scene::CAMERA_OUTPUT;
+            let point = |word: &str, limit: u32| -> Result<u32, String> {
+                let value = word
+                    .parse::<u32>()
+                    .map_err(|_| format!("{word} is not a non-negative pixel coordinate"))?;
+                (value < limit)
+                    .then_some(value)
+                    .ok_or_else(|| format!("{word} must be less than {limit}"))
+            };
+            Ok(Command::CameraPosition {
+                at: Some(crate::scene::CameraPosition {
+                    x: point(&rest[0], width)?,
+                    y: point(&rest[1], height)?,
+                }),
+            })
+        }
         "mic" => Ok(Command::Mic {
             device: off_or(&joined),
-        }),
-        // `remux scene save code`, `remux scene code`, `remux scene rm code`.
-        "scene" => match (rest.first().map(String::as_str), rest.get(1)) {
-            (Some("save") | Some("keep"), Some(name)) => {
-                Ok(Command::SceneSave { name: name.clone() })
-            }
-            (Some("rm") | Some("forget"), Some(name)) => {
-                Ok(Command::SceneForget { name: name.clone() })
-            }
-            (Some("save") | Some("keep") | Some("rm") | Some("forget"), None) => {
-                Err("scene save|rm takes the scene's name".into())
-            }
-            (Some(name), None) => Ok(Command::SceneSwitch {
-                name: name.to_string(),
-            }),
-            _ => Err("scene takes a name to switch to, or save|rm <name>".into()),
-        },
-        // `remux layout top-left 50% circle`, in any order, any subset.
-        "layout" => Ok(Command::Layout {
-            patch: layout_patch(rest)?,
         }),
         // `remux hear Spotify, Brave`: those apps' sound alone; `hear off`,
         // the whole screen's again.
@@ -255,11 +324,17 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         "screen-sound" => Ok(Command::ScreenSound {
             on: on_or(&joined)?,
         }),
+        "app-audio" => Ok(Command::AppAudio {
+            app: off_or(&joined),
+        }),
+        "app-audio-volume" => Ok(Command::AppAudioVolume {
+            level: percentage(&joined, "audio app-volume")?,
+        }),
         "music" => match joined.as_str() {
             "" | "on" | "off" => Ok(Command::Music {
                 on: on_or(&joined)?,
             }),
-            // `remux music jazz` is what a person means, and it is a genre.
+            // `remux music genre jazz` is what a person means, and it is a genre.
             name => Ok(Command::Genre { name: name.into() }),
         },
         "next" | "skip" => Ok(Command::NextTrack),
@@ -267,58 +342,31 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         "play" if joined.is_empty() => Err("play takes a clip's name or a file".into()),
         "play" => Ok(Command::Clip { name: joined }),
 
-        "vol" | "volume" => Ok(Command::Volume {
-            level: percentage(&joined, "volume")?,
+        "vol" => Ok(Command::Volume {
+            level: percentage(&joined, "audio vol")?,
         }),
-        "mvol" | "music-volume" => Ok(Command::MusicVolume {
-            level: percentage(&joined, "music-volume")?,
+        "mvol" => Ok(Command::MusicVolume {
+            level: percentage(&joined, "music vol")?,
         }),
         "duck" => {
             let db: f64 = joined
                 .parse()
-                .map_err(|_| "duck takes decibels, as in `remux duck 18`".to_string())?;
+                .map_err(|_| "duck takes decibels, as in `remux audio duck 18`".to_string())?;
             // Said as a positive number and meant as a step downward, which is
             // how the panel labels it and how anybody says it out loud.
             Ok(Command::Duck { db: -db.abs() })
         }
 
-        "card" => match joined.as_str() {
-            "" | "live" => Ok(Command::Card { which: Card::Live }),
-            "starting" | "starting-soon" => Ok(Command::Card {
-                which: Card::StartingSoon,
-            }),
-            "brb" | "back" | "back-in-a-moment" => Ok(Command::Card {
-                which: Card::BackInAMoment,
-            }),
-            other => Err(format!(
-                "{other} is not a card; there is live, starting and brb"
-            )),
-        },
-        // `remux words starting Back in five`: what the card says.
-        "words" | "card-text" => {
-            let which = match rest.first().map(String::as_str) {
-                Some("starting") => Card::StartingSoon,
-                Some("brb") | Some("back") => Card::BackInAMoment,
-                _ => return Err("words takes starting or brb, then the words".into()),
-            };
-            let text = rest[1..].join(" ");
-            if text.is_empty() {
-                return Err("words takes starting or brb, then the words".into());
-            }
-            Ok(Command::CardText { which, text })
-        }
-        "countdown" => Ok(Command::Countdown {
-            seconds: match joined.as_str() {
-                "" => None,
-                minutes => Some(
-                    minutes
-                        .parse::<u32>()
-                        .map_err(|_| "countdown takes minutes, as in `remux countdown 5`")?
-                        * 60,
-                ),
+        "scene-element" => parse_scene_element(rest),
+        "scene-timer" => match rest {
+            [action, id] if !id.is_empty() => match action.as_str() {
+                "start" => Ok(Command::SceneTimerStart { id: id.clone() }),
+                "stop" => Ok(Command::SceneTimerStop { id: id.clone() }),
+                _ => Err("scene timer takes start|stop <id>".into()),
             },
-        }),
-        "panic" | "cut" | "hide-everything" => Ok(Command::HideEverything),
+            _ => Err("scene timer takes start|stop <id>".into()),
+        },
+        "cut" => Ok(Command::HideEverything),
 
         "record" => match joined.as_str() {
             "" | "start" => Ok(Command::RecordStart),
@@ -327,9 +375,9 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         },
 
         // One threshold at a time, because that is how a person tunes a gate:
-        // `remux gate full 0.2`. The names are the ones the panel's sliders
+        // `remux audio gate full 0.2`. The names are the ones the panel's sliders
         // carry and the ones in `gate::GateParams`.
-        // `remux gate reset`: the seven defaults. `remux gate opens -30`: the
+        // `remux audio gate reset`: the seven defaults. `remux audio gate opens -30`: the
         // panel's words, in dB; `remux gate full 0.03`: the wire's, as they are.
         "gate" if joined == "reset" => Ok(Command::Gate {
             patch: serde_json::to_value(crate::gate::GateParams::default())
@@ -339,7 +387,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             let (name, value) = (rest.first(), rest.get(1));
             let (Some(name), Some(value)) = (name, value) else {
                 return Err(
-                    "gate takes a threshold and a number, as in `remux gate opens -30`.\n\
+                    "gate takes a threshold and a number, as in `remux audio gate opens -30`.\n\
                      in dB: opens, highs, closed, keys; in ms: hold_ms, attack_ms, hf_attack_ms;\n\
                      as the wire has them: hf, full, floor, keys_boost; or `gate reset`"
                         .into(),
@@ -376,7 +424,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             })
         }
 
-        // `remux title 2 Rust at midnight`: the id, then the words.
+        // `remux destination title 2 Rust at midnight`: the id, then the words.
         "title" | "describe" => {
             let adapter: i64 = rest
                 .first()
@@ -386,7 +434,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             let words = rest[1..].join(" ");
             if words.is_empty() {
                 return Err(format!(
-                    "{verb} needs the words, as in `remux {verb} 2 Rust at midnight`"
+                    "{verb} needs the words, as in `remux destination {verb} 2 Rust at midnight`"
                 ));
             }
             Ok(Command::Retitle {
@@ -395,8 +443,8 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
                 description: (verb == "describe").then_some(words),
             })
         }
-        // `remux announce 2`: tell that destination's platform the title now.
-        "announce" | "update" => {
+        // `remux destination announce 2`: tell that destination's platform the title now.
+        "announce" => {
             let adapter = rest
                 .first()
                 .ok_or("announce needs a destination id")?
@@ -404,7 +452,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a destination id is a number".to_string())?;
             Ok(Command::Announce { adapter })
         }
-        // `remux delete 42`: that line of chat, out of the platform's chat for everybody.
+        // `remux chat delete 42`: that line of chat, out of the platform's chat for everybody.
         "delete" => {
             let seq = rest
                 .first()
@@ -413,7 +461,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Delete { seq })
         }
-        // `remux category 2 509670 Science & Technology`: file that destination's live.
+        // `remux destination category 2 509670 Science & Technology`: file that destination's live.
         "category" => {
             let adapter = rest
                 .first()
@@ -430,7 +478,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             }
             Ok(Command::Categorize { adapter, id, name })
         }
-        // `remux categories 2 science`: where that destination's live can be filed.
+        // `remux destination categories 2 science`: where that destination's live can be filed.
         "categories" => {
             let adapter = rest
                 .first()
@@ -451,7 +499,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a destination id is a number".to_string())?;
             Ok(Command::Disconnect { adapter })
         }
-        // `remux sandbox 2` / `remux sandbox 2 off`: a rehearsal nobody is told about.
+        // `remux destination sandbox 2` / `remux destination sandbox 2 off`: a rehearsal nobody is told about.
         "sandbox" => {
             let adapter = rest
                 .first()
@@ -484,6 +532,178 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
     }
 }
 
+fn parse_scene_element(words: &[String]) -> Result<Command, String> {
+    use crate::scenes::{Element, ElementContent};
+    if let [action, id] = words {
+        if action == "remove" && !id.is_empty() {
+            return Ok(Command::SceneElementRemove { id: id.clone() });
+        }
+    }
+    let [action, kind, id, x, y, width, height, rest @ ..] = words else {
+        return Err("scene layer takes add|set text|timer <id> <x> <y> <width> <height> <words|seconds>, or remove <id>".into());
+    };
+    let number = |v: &str| {
+        v.parse::<u32>()
+            .map_err(|_| format!("{v} is not a non-negative number"))
+    };
+    let content = match kind.as_str() {
+        "text" if !rest.is_empty() => ElementContent::Text {
+            text: rest.join(" "),
+        },
+        "timer" if rest.len() == 1 => ElementContent::Timer {
+            seconds: number(&rest[0])?,
+        },
+        _ => return Err("element content takes text <words> or timer <seconds>".into()),
+    };
+    let element = Element {
+        id: id.clone(),
+        x: x.parse().map_err(|_| "x must be an integer")?,
+        y: y.parse().map_err(|_| "y must be an integer")?,
+        width: number(width)?,
+        height: number(height)?,
+        visible: true,
+        shader: None,
+        content,
+    };
+    if !element.valid() {
+        return Err("element viewport must fit inside 1920x1080 and ID must be printable".into());
+    }
+    match action.as_str() {
+        "add" => Ok(Command::SceneElementAdd { element }),
+        "set" => Ok(Command::SceneElementSet { element }),
+        _ => Err("scene layer takes add|set|remove".into()),
+    }
+}
+
+fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
+    use crate::audio_layers::Source;
+    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, remove <id>";
+    match words {
+        [add, kind, id, source @ ..] if add == "add" && !source.is_empty() => {
+            let said = source.join(" ");
+            let source = match kind.as_str() {
+                "mic" => Source::mic(said),
+                "app" => Source::app(said),
+                "screen" if source.len() == 1 => Source::screen(
+                    said.parse()
+                        .map_err(|_| "screen needs a display id from `remux devices`")?,
+                ),
+                _ => return Err(usage.into()),
+            };
+            crate::audio_layers::Layer::new(id.clone(), source.clone())?;
+            Ok(Command::AudioLayerAdd {
+                id: id.clone(),
+                source,
+            })
+        }
+        [remove, id] if remove == "remove" => Ok(Command::AudioLayerRemove { id: id.clone() }),
+        [volume, id, percent] if volume == "volume" => Ok(Command::AudioLayerVolume {
+            id: id.clone(),
+            volume: percentage(percent, "audio layer volume")?,
+        }),
+        [mute, id, on] if mute == "mute" => Ok(Command::AudioLayerMute {
+            id: id.clone(),
+            on: on_or(on)?,
+        }),
+        _ => Err(usage.into()),
+    }
+}
+
+fn parse_layer(words: &[String]) -> Result<Command, String> {
+    let id = |value: &str| -> Result<String, String> {
+        if !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            Ok(value.into())
+        } else {
+            Err("layer id must contain only letters, digits, - or _".into())
+        }
+    };
+    if matches!(words, [action, kind, ..] if matches!(action.as_str(), "add" | "set") && matches!(kind.as_str(), "text" | "timer"))
+    {
+        return parse_scene_element(words);
+    }
+    match words {
+        [mirror, name, on] if mirror == "mirror" => Ok(Command::LayerMirror { id: id(name)?, on: on_or(on)? }),
+        [sound, name, setting @ ..] if sound == "screen-sound" && setting.len() <= 1 => Ok(Command::LayerScreenSound {
+            id: id(name)?, on: on_or(&setting.join(" "))?,
+        }),
+        [set, kind, name, display] if set == "set" && kind == "screen" => Ok(Command::LayerReplaceScreen {
+            id: id(name)?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+        }),
+        [set, kind, name, query @ ..] if set == "set" && !query.is_empty() => {
+            let id = id(name)?;
+            let query = query.join(" ");
+            match kind.as_str() {
+                "camera" => Ok(Command::LayerReplaceCamera { id, device: query }),
+                "window" => Ok(Command::LayerReplaceWindow { id, query }),
+                _ => Err("layer set expects screen, camera or window".into()),
+            }
+        }
+        [add, kind, name, display] if add == "add" && kind == "screen" => Ok(Command::LayerScreen {
+            id: id(name)?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+        }),
+        [add, kind, name, query @ ..] if add == "add" && !query.is_empty() => {
+            let id = id(name)?;
+            let query = query.join(" ");
+            match kind.as_str() {
+                "camera" => Ok(Command::LayerCamera { id, device: query }),
+                "window" => Ok(Command::LayerWindow { id, query }),
+                _ => Err("layer add expects screen, camera or window".into()),
+            }
+        }
+        [crop, name, off] if crop == "crop" && off == "off" => Ok(Command::LayerCrop { id: id(name)?, crop: None }),
+        [crop, name, x, y, width, height] if crop == "crop" => {
+            let number = |word: &str| word.parse::<u32>().map_err(|_| format!("{word:?} is not a non-negative source pixel"));
+            Ok(Command::LayerCrop {
+                id: id(name)?,
+                crop: Some(crate::layers::Crop { x: number(x)?, y: number(y)?, width: number(width)?, height: number(height)? }),
+            })
+        }
+        [shape, name, value] if shape == "shape" => Ok(Command::LayerShape {
+            id: id(name)?,
+            shape: match value.as_str() {
+                "circle" => crate::scene::CameraShape::Circle,
+                "rectangle" => crate::scene::CameraShape::Rectangle,
+                _ => return Err("layer shape takes circle or rectangle".into()),
+            },
+        }),
+        [position, name, value] if position == "position" && value == "default" => Ok(Command::LayerPosition { id: id(name)?, at: None }),
+        [position, name, x, y] if position == "position" => {
+            let (wide, tall) = crate::scene::CAMERA_OUTPUT;
+            let point = |word: &str, limit: u32| -> Result<u32, String> {
+                let value = word.parse::<u32>().map_err(|_| format!("{word} is not a non-negative pixel coordinate"))?;
+                (value < limit).then_some(value).ok_or_else(|| format!("{word} must be less than {limit}"))
+            };
+            Ok(Command::LayerPosition { id: id(name)?, at: Some(crate::scene::CameraPosition { x: point(x, wide)?, y: point(y, tall)? }) })
+        }
+        [filter, name, path] if filter == "filter" => Ok(Command::LayerShader {
+            id: id(name)?, path: (path != "off").then(|| path.clone()),
+        }),
+        [shot, name] if shot == "shot" => Ok(Command::LayerShot { id: id(name)? }),
+        [hide, name] if hide == "hide" => Ok(Command::LayerVisible { id: id(name)?, on: false }),
+        [show, name] if show == "show" => Ok(Command::LayerVisible { id: id(name)?, on: true }),
+        [remove, name] if remove == "remove" => Ok(Command::LayerRemove { id: id(name)? }),
+        [move_, name, index] if move_ == "move" => Ok(Command::LayerMove {
+            id: id(name)?,
+            index: index.parse().map_err(|_| "layer index must be a non-negative number")?,
+        }),
+        [change, name, x, y, width, height, degrees] if change == "transform" => {
+            let number = |s: &str| s.parse().map_err(|_| format!("{s:?} is not a whole number"));
+            let transform = crate::layers::Transform {
+                x: number(x)?, y: number(y)?, width: width.parse().map_err(|_| "width must be a positive whole number")?, height: height.parse().map_err(|_| "height must be a positive whole number")?, degrees: number(degrees)?,
+            };
+            transform.validate()?;
+            Ok(Command::LayerTransform { id: id(name)?, transform })
+        }
+        _ => Err("layer: add|set screen|camera|window <id> <display-id|name>, filter <id> <file.effect|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
+    }
+}
+
 /// A device name, or nothing at all, which is how a camera is closed.
 fn off_or(said: &str) -> Option<String> {
     match said {
@@ -493,7 +713,7 @@ fn off_or(said: &str) -> Option<String> {
 }
 
 /// A switch. Saying nothing means turning it on, because that is what a person
-/// typing `remux mute` means.
+/// typing `remux audio mute` means.
 fn on_or(said: &str) -> Result<bool, String> {
     match said {
         "" | "on" | "true" | "yes" => Ok(true),
@@ -589,6 +809,7 @@ fn render_plan(plan: &crate::plan::Plan) -> String {
     if plan.on_air {
         lines.push("already on air".to_string());
     }
+    lines.push(format!("scene     {}", plan.scene));
     lines.push(format!("picture   {}", plan.picture));
     lines.push(format!(
         "camera    {}{}",
@@ -613,9 +834,6 @@ fn render_plan(plan: &crate::plan::Plan) -> String {
         "screen sound {}",
         if plan.screen_sound { "sent" } else { "off" }
     ));
-    if let Some(card) = &plan.card {
-        lines.push(format!("card      {card}"));
-    }
     if plan.recording {
         lines.push("recording".into());
     }
@@ -645,6 +863,26 @@ fn render_plan(plan: &crate::plan::Plan) -> String {
     lines.join("\n")
 }
 
+pub fn render_scene_list(status: &Status) -> String {
+    status
+        .scenes
+        .iter()
+        .map(|scene| {
+            format!(
+                "{}{} ({} layers)",
+                if scene.name == status.active_scene {
+                    "* "
+                } else {
+                    "  "
+                },
+                scene.name,
+                scene.ordered_ids().len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_status(status: &Status) -> String {
     let mut said = vec![if status.on_air {
         "on air".to_string()
@@ -654,20 +892,93 @@ fn render_status(status: &Status) -> String {
     if status.recording {
         said.push("recording".into());
     }
-    if let Some(card) = &status.card {
-        said.push(format!("card {card:?}"));
-    }
-    said.push(match &status.screen {
-        Some(screen) => format!("screen {screen}"),
-        None => "no screen".into(),
-    });
-    if let Some(camera) = &status.camera {
-        said.push(format!("camera {camera}"));
+    if let Some(shader) = &status.shader {
+        said.push(format!("filter {shader}"));
     }
     // Said only when it is on: it is the exception, and the one an
     // operator wants to be reminded of before a call comes in.
+    if status.layers.is_empty() {
+        said.push("no layers".into());
+    }
+    if let Some(scene) = status
+        .scenes
+        .iter()
+        .find(|scene| scene.name == status.active_scene)
+    {
+        for (index, element) in scene.elements.iter().enumerate() {
+            let content = match &element.content {
+                crate::scenes::ElementContent::Text { text } => format!("text {:?}", plain(text)),
+                crate::scenes::ElementContent::Timer { seconds } => format!("timer {seconds}s"),
+            };
+            said.push(format!(
+                "element {} at {},{} {}x{} (order {index}): {content}",
+                element.id, element.x, element.y, element.width, element.height
+            ));
+        }
+    }
+    for (index, layer) in status.layers.iter().enumerate() {
+        said.push(format!(
+            "layer {}: {:?} {} ({}x{} source) at {},{} {}x{} rotated {}° (order {index}){}{}{}{}",
+            layer.id,
+            layer.source.kind,
+            plain(&layer.source.name),
+            layer.source.width,
+            layer.source.height,
+            layer.transform.x,
+            layer.transform.y,
+            layer.transform.width,
+            layer.transform.height,
+            layer.transform.degrees,
+            layer.crop.map_or(String::new(), |crop| format!(
+                " crop {},{} {}x{}",
+                crop.x, crop.y, crop.width, crop.height
+            )),
+            layer
+                .shape
+                .map_or(String::new(), |shape| format!(" {shape:?}")),
+            if layer.visible { "" } else { " hidden" },
+            layer
+                .shader
+                .as_ref()
+                .map_or(String::new(), |path| format!(" filter {path}"))
+        ));
+    }
+    for layer in &status.audio_layers {
+        let source = match layer.source.kind {
+            crate::audio_layers::Kind::Mic => layer.source.device.as_deref().unwrap_or("?"),
+            crate::audio_layers::Kind::App => layer.source.name.as_deref().unwrap_or("?"),
+            crate::audio_layers::Kind::Screen => "display",
+        };
+        said.push(format!(
+            "audio layer {}: {:?} {} ({}%){}",
+            layer.id,
+            layer.source.kind,
+            plain(source),
+            (layer.volume * 100.0).round(),
+            if layer.muted { " muted" } else { "" }
+        ));
+    }
     if status.screen_sound {
-        said.push("screen sound out".into());
+        let audible = status.screen_sound_layer.as_deref().is_some_and(|id| {
+            status
+                .layers
+                .iter()
+                .any(|layer| layer.id == id && layer.visible)
+        });
+        said.push(
+            if audible {
+                "screen sound out"
+            } else {
+                "screen sound paused (hidden)"
+            }
+            .into(),
+        );
+    }
+    if let Some(app) = &status.app_audio {
+        said.push(format!(
+            "app audio {app} ({}%)",
+            (status.app_audio_volume * 100.0).round()
+        ));
     }
     match (&status.mic, status.muted) {
         (Some(mic), true) => said.push(format!("mic {mic} (muted)")),
@@ -678,7 +989,7 @@ fn render_status(status: &Status) -> String {
             None => format!("mic {mic}"),
         }),
         // Muted with nothing open still has to say so: somebody who typed
-        // `remux mute` and read back a line with no word for it in would
+        // `remux audio mute` and read back a line with no word for it in would
         // reasonably type it again.
         (None, true) => said.push("muted".into()),
         (None, false) => {}
@@ -692,8 +1003,13 @@ fn render_status(status: &Status) -> String {
     // What is actually coming out, which is the only part that can disagree
     // with everything above it.
     said.push(format!(
+        "scene {} ({} saved)",
+        status.active_scene,
+        status.scenes.len()
+    ));
+    said.push(format!(
         "{}x{} at {} frames",
-        status.flowing.width, status.flowing.height, status.flowing.frames
+        status.scene_flowing.width, status.scene_flowing.height, status.scene_flowing.frames
     ));
     said.join(", ")
 }
@@ -714,7 +1030,7 @@ fn render_devices(devices: &Devices) -> String {
     list("mics", &devices.mics);
     list("apps", &devices.apps);
     list("music", &devices.genres);
-    // The windows last and only counted: there are dozens, and `remux window`
+    // The windows last and only counted: there are dozens, and `remux scene layer add window`
     // takes part of a title rather than an id, so the list is not the way in.
     if !devices.windows.is_empty() {
         lines.push(format!(
@@ -724,68 +1040,6 @@ fn render_devices(devices: &Devices) -> String {
     }
     lines.join("\n")
 }
-
-pub fn usage() -> String {
-    "what it can do (add --json for a program):\n  \
-     status [-v], destinations, log [-f], levels [-f], devices, shot [camera|screen], grants\n  \
-     chat [-f], hide <n>, delete <n>\n  \
-     screen <id>, window <part of a title>, camera <name|off>, mic <name|off>\n  \
-     layout [tl|tr|bl|br] [<n>%] [rect|square|circle] [plain|sepia|mono|noir] [overlay|columns|bounce]\n  \
-     scene save <name>|<name>|rm <name>, scenes\n  \
-     mirror|share|mute|monitor|stream-music|screen-sound|denoise [on|off], hear <apps|off>\n  \
-     music [on|off|<genre>], next, vol <%>, mvol <%>, duck <dB>, play <clip|file>, clips\n  \
-     card [live|starting|brb], countdown [minutes], panic (everything off, sound included), shot --out <file.jpg>\n  \
-     gate [reset|opens|highs|closed|keys <dB>|hold_ms|attack_ms|hf_attack_ms <ms>]\n  \
-     words starting|brb <words>, schema\n  \
-     plan, live [--confirm <plan>|--yes], stop, record [start|stop]\n  \
-     destination add twitch|youtube|custom <name> [--url <rtmp>] [--key -|--key-file <f>]\n  \
-     destination rm <id|name>\n  \
-     history: every live on record, newest first (--json for the numbers)\n  \
-     health, wait on-air|off-air|picture|recording|not-recording|live <id|name> [--for <s>], guide\n  \
-     login [--url <web>] (a code typed on the web, once), logout\n  \
-     chat [-f], chat --url ws://host:port (a chat wire of your own; - forgets it)\n  \
-     config: what is in effect (~/.config/remux/config.toml), daemon start|stop|restart|status|log|path\n  \
-     bug [--open]: a report for an issue, keys redacted; --open fills GitHub's form for you to submit\n  \
-     arm|disarm <id>, sandbox <id> [on|off]\n  \
-     title <id> <words>, describe <id> <words>, announce <id>, disconnect <id>,\n  \
-     category <id> <category id> <name>, categories <id> <words>, quit"
-        .to_string()
-}
-
-/// How to drive the engine from a script. `remux guide`.
-pub const GUIDE: &str = "\
-remux, from a script
-
-  Every verb answers prose for a person and, with --json, one JSON value for a
-  program; `remux schema` prints the shapes. Exit codes: 0 done, 1 the engine
-  refused or is not there (the reason on stderr), 2 the words were wrong.
-
-  1. remux health           what stands in the way of a live, one line each
-  2. remux destinations     the rows: remux destination add custom main --url <rtmp> --key -,
-                            or remux login and the account's destinations (the web's)
-  3. remux screen <id>, remux camera <name>, remux mic <name>, remux title <id> <words>
-  4. remux plan --json      what go live would do, and a fingerprint
-  5. remux live --confirm <fingerprint>   on air only if nothing moved since the plan
-     (a person types `remux live` and answers y; --yes is for a person too)
-  6. remux wait on-air --for 20           then remux wait live main
-  7. remux chat -f --json (pushed, one JSON line each), remux log -f --json, remux levels -f --json
-  8. remux stop, remux history
-
-  With an account (remux login), the live goes to the web's relay, one stream out of
-  this machine, and the chat comes down the web's wire; without one, one ffmpeg per
-  destination, here, and the chat from a wire of your own (remux chat --url ws://...,
-  taken up at once, no restart; one JSON object per frame:
-  {\"line\":{id,platform,channel,from,body}} in, {\"delete\":{id,channel}} out; docs/wire.md).
-  `remux config` is what is in effect and where it came from: the environment, then
-  ~/.config/remux/config.toml, then the defaults. `remux daemon start` runs the engine
-  as a service of your session; `remux daemon status|log -f|stop` when something is off.
-  Something wrong: `remux bug` prints a report (versions, health, config, the last log
-  lines, keys redacted) to paste into an issue; `remux bug --open` opens GitHub's form
-  with it filled in. A person submits it, never a script.
-  A key is never typed on a command line: --key - reads stdin, --key-file a file.
-  A test live is a sandbox live: remux sandbox <id> on before arming a real platform.
-  Everything the engine knows is on `remux status --json`, once.
-";
 
 /// A stranger's words as text and nothing else, before the line reaches a
 /// terminal, where an escape sequence writes the clipboard or rewrites the
@@ -830,6 +1084,114 @@ fn plain(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn layer_commands_are_strict_and_round_trip() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            super::parse(&words("scene layer add window editor Ghostty Window")),
+            Ok(crate::protocol::Command::LayerWindow {
+                id: "editor".into(),
+                query: "Ghostty Window".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer add screen desktop 3")),
+            Ok(crate::protocol::Command::LayerScreen {
+                id: "desktop".into(),
+                display: 3
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer set window desktop Emacs Notes")),
+            Ok(crate::protocol::Command::LayerReplaceWindow {
+                id: "desktop".into(),
+                query: "Emacs Notes".into(),
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer set screen desktop 3")),
+            Ok(crate::protocol::Command::LayerReplaceScreen {
+                id: "desktop".into(),
+                display: 3
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer set camera host FaceTime")),
+            Ok(crate::protocol::Command::LayerReplaceCamera {
+                id: "host".into(),
+                device: "FaceTime".into()
+            })
+        );
+        assert!(super::parse(&words("scene layer set screen desktop nope")).is_err());
+        assert_eq!(
+            super::parse(&words("scene layer hide desktop")),
+            Ok(crate::protocol::Command::LayerVisible {
+                id: "desktop".into(),
+                on: false
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer show desktop")),
+            Ok(crate::protocol::Command::LayerVisible {
+                id: "desktop".into(),
+                on: true
+            })
+        );
+        assert!(super::parse(&words("scene layer add screen desktop three")).is_err());
+        assert!(super::parse(&words("scene layer add screen desktop 3 extra")).is_err());
+        assert_eq!(
+            super::parse(&words("scene layer shape face circle")),
+            Ok(crate::protocol::Command::LayerShape {
+                id: "face".into(),
+                shape: crate::scene::CameraShape::Circle
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer position face 300 200")),
+            Ok(crate::protocol::Command::LayerPosition {
+                id: "face".into(),
+                at: Some(crate::scene::CameraPosition { x: 300, y: 200 })
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer position face default")),
+            Ok(crate::protocol::Command::LayerPosition {
+                id: "face".into(),
+                at: None
+            })
+        );
+        assert!(super::parse(&words("scene layer shape face oval")).is_err());
+        assert!(super::parse(&words("scene layer position face 1920 0")).is_err());
+        assert_eq!(
+            super::parse(&words("scene layer move editor 0")),
+            Ok(crate::protocol::Command::LayerMove {
+                id: "editor".into(),
+                index: 0
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer crop editor 10 20 300 200")),
+            Ok(crate::protocol::Command::LayerCrop {
+                id: "editor".into(),
+                crop: Some(crate::layers::Crop {
+                    x: 10,
+                    y: 20,
+                    width: 300,
+                    height: 200
+                })
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer crop editor off")),
+            Ok(crate::protocol::Command::LayerCrop {
+                id: "editor".into(),
+                crop: None
+            })
+        );
+        assert!(super::parse(&words("scene layer crop editor -1 0 100 100")).is_err());
+        assert!(super::parse(&words("scene layer transform editor 10 20 0 270 90")).is_err());
+        assert!(super::parse(&words("scene layer add camera bad/id Cam")).is_err());
+    }
     #[test]
     fn the_chat_reads_one_message_at_a_time_with_a_rule_between() {
         use crate::protocol::{ChatLine, Reply};
@@ -942,16 +1304,20 @@ mod tests {
     #[test]
     fn chat_can_be_followed_and_the_flag_never_reaches_the_engine() {
         let w = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
-        assert_eq!(follow(&w("chat -f")), (true, w("chat")));
-        assert_eq!(follow(&w("chat --follow")), (true, w("chat")));
-        assert_eq!(follow(&w("chat")), (false, w("chat")));
+        for words in ["chat read -f", "chat read --follow", "chat read follow"] {
+            assert_eq!(follow(&normalize(&w(words)).unwrap()), (true, w("chat")));
+        }
+        assert_eq!(
+            follow(&normalize(&w("chat read")).unwrap()),
+            (false, w("chat"))
+        );
         assert_eq!(
             follow(&w("status -f")),
             (false, w("status -f")),
             "only the chat follows"
         );
         assert!(matches!(
-            parse(&w("chat")),
+            parse(&w("chat read")),
             Ok(Command::Chat {
                 since: 0,
                 follow: false
@@ -963,17 +1329,211 @@ mod tests {
 
     fn said(line: &str) -> Result<Command, String> {
         let words: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+        parse_wire_words(&words)
+    }
+
+    fn typed(line: &str) -> Result<Command, String> {
+        let words: Vec<String> = line.split_whitespace().map(str::to_string).collect();
         parse(&words)
+    }
+
+    #[test]
+    fn audio_layers_have_grouped_commands_and_distinct_ids() {
+        use crate::audio_layers::Source;
+        assert_eq!(
+            typed("audio layer add app chat Safari"),
+            Ok(Command::AudioLayerAdd {
+                id: "chat".into(),
+                source: Source::app("Safari".into()),
+            })
+        );
+        assert_eq!(
+            typed("audio layer add screen desktop 3"),
+            Ok(Command::AudioLayerAdd {
+                id: "desktop".into(),
+                source: Source::screen(3),
+            })
+        );
+        assert_eq!(
+            typed("audio layer volume chat 80"),
+            Ok(Command::AudioLayerVolume {
+                id: "chat".into(),
+                volume: 0.8
+            })
+        );
+        assert_eq!(
+            typed("audio layer mute chat on"),
+            Ok(Command::AudioLayerMute {
+                id: "chat".into(),
+                on: true
+            })
+        );
+        assert_eq!(
+            typed("audio layer remove chat"),
+            Ok(Command::AudioLayerRemove { id: "chat".into() })
+        );
+        assert!(typed("audio layer add screen desktop not-an-id").is_err());
+    }
+
+    #[test]
+    fn json_option_is_global_and_replies_keep_the_wire_shape() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        for text in [
+            "--json music genre off",
+            "music --json genre off",
+            "music genre off --json",
+        ] {
+            let (json, clean) = output_mode(&words(text));
+            assert!(json);
+            assert_eq!(parse(&clean), Ok(Command::Genre { name: "off".into() }));
+        }
+        let (json, clean) = output_mode(&words("chat read --follow --json"));
+        assert!(json);
+        assert_eq!(follow(&normalize(&clean).unwrap()), (true, words("chat")));
+        assert_eq!(output_mode(&words("status")), (false, words("status")));
+        for reply in [
+            Reply::Ok,
+            Reply::Error {
+                message: "refused".into(),
+            },
+            Reply::Status(Box::default()),
+            Reply::Devices(Devices::default()),
+            Reply::Chat {
+                reachable: false,
+                lines: vec![],
+            },
+            Reply::Shot {
+                jpeg: "aGVsbG8=".into(),
+                width: 2,
+                height: 3,
+            },
+        ] {
+            let encoded = render_json(&reply);
+            assert_eq!(crate::protocol::decode_reply(&encoded), Ok(reply));
+            assert!(!encoded.contains('\n'));
+        }
+    }
+
+    #[test]
+    fn grouped_commands_translate_to_the_same_wire_commands() {
+        for (grouped, old) in [
+            ("audio mic USB Microphone", "mic USB Microphone"),
+            ("audio mute off", "mute off"),
+            ("audio vol 80", "vol 80"),
+            ("audio gate full 0.2", "gate full 0.2"),
+            ("audio duck -18", "duck -18"),
+            ("audio monitor", "monitor"),
+            ("audio screen-sound on", "screen-sound on"),
+            ("audio app Safari", "app-audio Safari"),
+            ("audio app off", "app-audio off"),
+            ("audio app-volume 65", "app-audio-volume 65"),
+            ("audio levels", "levels"),
+            ("music play", "music on"),
+            ("music off", "music off"),
+            ("music genre lofi", "music lofi"),
+            ("music next", "next"),
+            ("music vol 30", "mvol 30"),
+            ("music stream off", "stream-music off"),
+            ("scene shot", "shot"),
+            ("destination arm 2", "arm 2"),
+            ("destination disarm 2", "disarm 2"),
+            (
+                "destination title 2 Rust at midnight",
+                "title 2 Rust at midnight",
+            ),
+            (
+                "destination describe 2 the native engine",
+                "describe 2 the native engine",
+            ),
+            ("destination announce 2", "announce 2"),
+            (
+                "destination category 2 509670 Science & Technology",
+                "category 2 509670 Science & Technology",
+            ),
+            ("destination categories 2 science", "categories 2 science"),
+            ("destination sandbox 2 off", "sandbox 2 off"),
+            ("destination disconnect 2", "disconnect 2"),
+            ("chat read", "chat"),
+            ("chat hide 42", "hide 42"),
+            ("chat delete 42", "delete 42"),
+        ] {
+            assert_eq!(typed(grouped), said(old), "{grouped}");
+        }
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let expanded = normalize(&words("chat read --follow")).unwrap();
+        assert_eq!(follow(&expanded), (true, words("chat")));
+        assert!(normalize(&words("chat -f")).is_err());
+        assert!(normalize(&words("music lofi")).is_err());
+        assert!(normalize(&words("destination nope"))
+            .unwrap_err()
+            .contains("destination"));
+        assert!(normalize(&words("audio")).is_err());
+        assert!(normalize(&words("music play extra")).is_err());
+        assert!(normalize(&words("music genre")).is_err());
+        assert!(normalize(&words("chat read nonsense")).is_err());
+        assert_eq!(
+            typed("music genre off"),
+            Ok(Command::Genre { name: "off".into() })
+        );
+    }
+
+    #[test]
+    fn flat_commands_and_old_aliases_are_not_public_commands() {
+        for words in [
+            "arm 2",
+            "disarm 2",
+            "title 2 words",
+            "hide 42",
+            "delete 42",
+            "screen 3",
+            "camera off",
+            "shot",
+            "mute",
+            "gate full 0.2",
+            "vol 80",
+            "mvol 30",
+            "next",
+            "stream-music off",
+            "sandbox 2",
+            "music",
+            "music lofi",
+            "chat",
+            "chat -f",
+            "present",
+            "watching",
+            "meters",
+            "sources",
+            "permissions",
+            "preview",
+            "skip",
+            "go-live",
+            "hide-everything",
+            "update 2",
+        ] {
+            let error = typed(words).expect_err(words);
+            assert!(
+                error.contains("not a command") || error.contains("Usage: remux"),
+                "{words}: {error}"
+            );
+        }
+        assert_eq!(typed("status"), Ok(Command::Status));
+        assert_eq!(typed("live"), Ok(Command::GoLive));
+        assert_eq!(
+            typed("chat read"),
+            Ok(Command::Chat {
+                since: 0,
+                follow: false
+            })
+        );
     }
 
     #[test]
     fn a_status_is_one_line_a_person_can_read() {
         let status = Status {
             on_air: true,
-            screen: Some("VG2791R".into()),
             mic: Some("HyperX DuoCast".into()),
             muted: true,
-            flowing: crate::protocol::Flowing {
+            scene_flowing: crate::protocol::Flowing {
                 width: 1920,
                 height: 1080,
                 frames: 900,
@@ -983,7 +1543,6 @@ mod tests {
         };
         let said = render(&Reply::Status(Box::new(status)));
         assert!(said.starts_with("on air, "), "{said}");
-        assert!(said.contains("screen VG2791R"), "{said}");
         assert!(said.contains("mic HyperX DuoCast (muted)"), "{said}");
         assert!(said.contains("1920x1080 at 900 frames"), "{said}");
         assert!(!said.contains('\n'), "one line: {said}");
@@ -1015,7 +1574,7 @@ mod tests {
     fn an_engine_with_nothing_plugged_in_says_that_rather_than_nothing() {
         let said = render(&Reply::Status(Box::default()));
         assert!(said.contains("off air"), "{said}");
-        assert!(said.contains("no screen"), "{said}");
+        assert!(said.contains("no layers"), "{said}");
     }
 
     #[test]
@@ -1044,11 +1603,11 @@ mod tests {
             ],
             cameras: vec![],
             mics: vec![],
+            apps: vec![],
             genres: vec![Named {
                 id: "lofi".into(),
                 name: "Lofi".into(),
             }],
-            apps: vec![],
         };
         let said = render(&Reply::Devices(devices));
         assert!(said.starts_with("screens:"), "{said}");
@@ -1080,7 +1639,7 @@ mod tests {
             "it lists them: {complaint}"
         );
         let missing = said("gate").expect_err("it needs both");
-        assert!(missing.contains("remux gate opens -30"), "{missing}");
+        assert!(missing.contains("remux audio gate opens -30"), "{missing}");
     }
 
     // The panel's heartbeat: one `present` from a shell armed the lease and
@@ -1092,12 +1651,8 @@ mod tests {
 
     #[test]
     fn a_shot_is_of_the_scene_unless_it_says_otherwise() {
-        assert_eq!(said("shot"), Ok(Command::Shot { of: Framed::Scene }));
-        assert_eq!(
-            said("shot camera"),
-            Ok(Command::Shot { of: Framed::Camera })
-        );
-        assert!(said("shot elbow").is_err());
+        assert_eq!(typed("scene shot"), Ok(Command::Shot { of: Framed::Scene }));
+        assert!(typed("scene shot camera").is_err());
     }
 
     #[test]
@@ -1107,9 +1662,8 @@ mod tests {
         assert_eq!(said("live"), Ok(Command::GoLive));
         assert_eq!(said("stop"), Ok(Command::Stop));
         assert_eq!(said("cut"), Ok(Command::HideEverything));
-        assert_eq!(said("panic"), Ok(Command::HideEverything));
         assert_eq!(said("levels"), Ok(Command::Levels));
-        assert_eq!(said("meters"), Ok(Command::Levels));
+        assert_eq!(typed("audio levels"), Ok(Command::Levels));
     }
 
     #[test]
@@ -1188,7 +1742,10 @@ mod tests {
         );
         assert!(said("sandbox 2 maybe").is_err());
         assert!(said("hide").unwrap_err().contains("number"));
-        assert_eq!(said("update 2"), Ok(Command::Announce { adapter: 2 }));
+        assert_eq!(
+            typed("destination announce 2"),
+            Ok(Command::Announce { adapter: 2 })
+        );
         assert!(said("title two words").is_err(), "and an id first");
     }
 
@@ -1202,8 +1759,75 @@ mod tests {
             Ok(Command::StreamMusic { on: false })
         );
         assert_eq!(said("screen-sound"), Ok(Command::ScreenSound { on: true }));
+        assert_eq!(
+            said("app-audio Brave Browser"),
+            Ok(Command::AppAudio {
+                app: Some("Brave Browser".into())
+            })
+        );
+        assert_eq!(said("app-audio off"), Ok(Command::AppAudio { app: None }));
     }
 
+    #[test]
+    fn scene_filter_is_one_file_or_off() {
+        assert_eq!(
+            typed("scene filter /tmp/invert.frag"),
+            Ok(Command::Shader {
+                path: Some("/tmp/invert.frag".into())
+            })
+        );
+        assert_eq!(
+            typed("scene filter off"),
+            Ok(Command::Shader { path: None })
+        );
+        for bad in [
+            "scene filter",
+            "scene filter a b",
+            "scene shader off",
+            "scene layer shader face off",
+        ] {
+            assert!(typed(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn camera_shape_requires_one_of_two_explicit_shapes() {
+        use crate::scene::CameraShape;
+        assert_eq!(
+            typed("scene layer shape face circle"),
+            Ok(Command::LayerShape {
+                id: "face".into(),
+                shape: CameraShape::Circle
+            })
+        );
+        assert_eq!(
+            typed("scene layer shape face rectangle"),
+            Ok(Command::LayerShape {
+                id: "face".into(),
+                shape: CameraShape::Rectangle
+            })
+        );
+        for bad in [
+            "scene layer shape",
+            "scene layer shape face oval",
+            "scene layer shape face circle rectangle",
+        ] {
+            assert!(typed(bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn camera_position_takes_two_scene_pixels_or_default() {
+        assert_eq!(
+            typed("scene layer mirror face on"),
+            Ok(Command::LayerMirror {
+                id: "face".into(),
+                on: true
+            })
+        );
+        assert!(typed("video camera-position 300 200").is_err());
+        assert!(typed("video screen 1").is_err());
+        assert!(typed("video layer add camera face c920").is_err());
+    }
     #[test]
     fn a_camera_is_closed_by_saying_off() {
         assert_eq!(
@@ -1254,33 +1878,38 @@ mod tests {
     }
 
     #[test]
-    fn the_countdown_is_said_in_minutes_and_carried_in_seconds() {
+    fn scene_elements_and_timers_have_scene_verbs() {
         assert_eq!(
-            said("countdown 5"),
-            Ok(Command::Countdown { seconds: Some(300) })
-        );
-        assert_eq!(said("countdown"), Ok(Command::Countdown { seconds: None }));
-    }
-
-    #[test]
-    fn the_cards_answer_to_what_people_call_them() {
-        assert_eq!(
-            said("card brb").expect("a card"),
-            Command::Card {
-                which: Card::BackInAMoment
-            }
+            typed("scene timer start clock"),
+            Ok(Command::SceneTimerStart { id: "clock".into() })
         );
         assert_eq!(
-            said("card starting").expect("a card"),
-            Command::Card {
-                which: Card::StartingSoon
-            }
+            typed("scene timer stop clock"),
+            Ok(Command::SceneTimerStop { id: "clock".into() })
         );
         assert_eq!(
-            said("card").expect("a card"),
-            Command::Card { which: Card::Live }
+            typed("scene layer remove title"),
+            Ok(Command::LayerRemove { id: "title".into() })
         );
-        assert!(said("card purple").is_err());
+        assert_eq!(
+            typed("scene layer add text title 20 30 500 90 Hello world"),
+            Ok(Command::SceneElementAdd {
+                element: crate::scenes::Element {
+                    id: "title".into(),
+                    x: 20,
+                    y: 30,
+                    width: 500,
+                    height: 90,
+                    visible: true,
+                    shader: None,
+                    content: crate::scenes::ElementContent::Text {
+                        text: "Hello world".into()
+                    }
+                }
+            })
+        );
+        assert!(typed("scene countdown 5").is_err());
+        assert!(typed("scene text BRB back soon").is_err());
     }
 
     #[test]
@@ -1302,6 +1931,21 @@ mod tests {
     }
 
     #[test]
+    fn standalone_help_is_local_and_explains_destination_ids() {
+        for word in ["help", "-h", "--help"] {
+            let text = help(&[word.into()])
+                .expect("a standalone help request")
+                .expect("known help");
+            assert!(text.contains("Usage: remux"), "{text}");
+            assert!(text.contains("arm"), "{text}");
+            assert!(text.contains("remux destination list"), "{text}");
+        }
+        assert!(help(&[]).is_none());
+        assert!(help(&["help".into(), "extra".into()]).unwrap().is_err());
+        assert!(help(&["status".into()]).is_none());
+    }
+
+    #[test]
     fn nothing_at_all_asks_what_it_can_do() {
         let complaint = parse(&[]).expect_err("nothing is not a command");
         assert!(complaint.contains("status"), "it lists them: {complaint}");
@@ -1312,8 +1956,8 @@ mod tests {
         let complaint = said("fly").expect_err("it cannot fly");
         assert!(complaint.starts_with("fly is not"), "{complaint}");
         assert!(
-            complaint.contains("countdown"),
-            "and then says what it can do"
+            complaint.contains("scene"),
+            "and then says which groups it can do"
         );
     }
 }
@@ -1335,9 +1979,7 @@ pub enum View {
     ShotTo(String),
     /// `gate` with nothing after it: the thresholds, in dB.
     Gate,
-    /// `layout` with nothing after it: where the camera sits.
-    Layout,
-    /// `scenes`: the kept scenes, the current one marked.
+    /// `scene list`: the scenes, the active one marked.
     Scenes,
     /// `schema`: the wire's JSON Schema, answered here without an engine.
     Schema,
@@ -1430,6 +2072,19 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         .cloned()
         .collect();
     let format = if json { Format::Json } else { Format::Prose };
+    // A genre is never a switch, even one named "off": it goes as itself.
+    if matches!(words.first().map(String::as_str), Some("music"))
+        && matches!(words.get(1).map(String::as_str), Some("genre"))
+    {
+        return Ok(Ask {
+            command: Some(parse(&words)?),
+            view: View::Reply,
+            format,
+            follow: false,
+        });
+    }
+    // The shell's grouped words, as the flat ones the engine answers.
+    let words = normalize(&words)?;
     let (follow, words) = follow(&words);
     let verbose = words.len() == 2 && words[0] == "status" && words[1] == "-v";
     let (follow, words) = if words.first().map(String::as_str) == Some("log") {
@@ -1600,7 +2255,14 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
             follow: false,
         });
     }
-    if words.first().map(String::as_str) == Some("shot") {
+    // `scene shot --out f.jpg`, `scene layer shot <id> --out f.jpg`: the
+    // picture written to a file by the shell.
+    let a_shot = match words.as_slice() {
+        [first, ..] if first == "shot" => true,
+        [first, second, ..] => first == "layer" && second == "shot",
+        _ => false,
+    };
+    if a_shot {
         if let Some(at) = words.iter().position(|w| w == "--out") {
             let file = words
                 .get(at + 1)
@@ -1609,7 +2271,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
             let mut rest = words.clone();
             rest.drain(at..at + 2);
             return Ok(Ask {
-                command: Some(parse(&rest)?),
+                command: Some(parse_wire_words(&rest)?),
                 view: View::ShotTo(file),
                 format,
                 follow,
@@ -1620,14 +2282,11 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         _ if verbose => (Command::Status, View::Verbose),
         Some("live") | Some("go-live") if words.len() == 1 => (Command::Plan, View::Confirm),
         Some("gate") if words.len() == 1 => (Command::Status, View::Gate),
-        Some("layout") if words.len() == 1 => (Command::Status, View::Layout),
-        Some("layout") => (parse(&words)?, View::Layout),
         Some("scenes") => (Command::Status, View::Scenes),
         Some("health") => (Command::Status, View::Health),
-        Some("scene") => (parse(&words)?, View::Scenes),
         Some("destinations") | Some("dests") => (Command::Status, View::Destinations),
         Some("log") => (Command::Status, View::Log),
-        Some("categories") => match parse(&words)? {
+        Some("categories") => match parse_wire_words(&words)? {
             Command::Categories { adapter, query } => (
                 Command::Categories {
                     adapter,
@@ -1637,7 +2296,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
             ),
             other => (other, View::Reply),
         },
-        _ => (parse(&words)?, View::Reply),
+        _ => (parse_wire_words(&words)?, View::Reply),
     };
     Ok(Ask {
         command: Some(command),
@@ -1645,67 +2304,6 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         format,
         follow,
     })
-}
-
-/// The camera's layout out of words: a corner, a width in percent, a shape;
-/// any of them, in any order.
-pub fn layout_patch(words: &[String]) -> Result<crate::scene::LayoutPatch, String> {
-    use crate::scene::{Corner, Filter, LayoutPatch, Mode, Shape};
-    let mut patch = LayoutPatch::default();
-    for word in words {
-        match word.as_str() {
-            "tl" | "top-left" => patch.corner = Some(Corner::TopLeft),
-            "tr" | "top-right" => patch.corner = Some(Corner::TopRight),
-            "bl" | "bottom-left" => patch.corner = Some(Corner::BottomLeft),
-            "br" | "bottom-right" => patch.corner = Some(Corner::BottomRight),
-            "rect" | "rectangle" => patch.shape = Some(Shape::Rectangle),
-            "square" => patch.shape = Some(Shape::Square),
-            "circle" | "round" => patch.shape = Some(Shape::Circle),
-            "plain" => patch.filter = Some(Filter::Plain),
-            "sepia" => patch.filter = Some(Filter::Sepia),
-            "mono" | "bw" => patch.filter = Some(Filter::Mono),
-            "noir" => patch.filter = Some(Filter::Noir),
-            "overlay" | "corner" => patch.mode = Some(Mode::Overlay),
-            "columns" | "column" | "side" => patch.mode = Some(Mode::Columns),
-            "bounce" | "dvd" => patch.mode = Some(Mode::Bounce),
-            other => {
-                let percent = other
-                    .strip_suffix('%')
-                    .and_then(|n| n.parse::<f64>().ok())
-                    .ok_or_else(|| {
-                        format!(
-                            "{other} is not a corner (tl, tr, bl, br), a width (25%), a shape (rect, square, circle), a look (plain, sepia, mono, noir) or a mode (overlay, columns, bounce)"
-                        )
-                    })?;
-                patch.share = Some(percent / 100.0);
-            }
-        }
-    }
-    if patch == LayoutPatch::default() {
-        return Err("layout takes a corner (tl, tr, bl, br), a width (25%), a shape (rect, square, circle) or a look (plain, sepia, mono, noir)".into());
-    }
-    Ok(patch)
-}
-
-/// A patch, said back: what the journal writes.
-pub fn layout_words(patch: &crate::scene::LayoutPatch) -> String {
-    let mut said = Vec::new();
-    if let Some(mode) = patch.mode {
-        said.push(format!("{mode:?}").to_lowercase());
-    }
-    if let Some(corner) = patch.corner {
-        said.push(format!("{corner:?}").to_lowercase());
-    }
-    if let Some(share) = patch.share {
-        said.push(format!("{:.0}%", share * 100.0));
-    }
-    if let Some(shape) = patch.shape {
-        said.push(format!("{shape:?}").to_lowercase());
-    }
-    if let Some(filter) = patch.filter {
-        said.push(format!("{filter:?}").to_lowercase());
-    }
-    said.join(" ")
 }
 
 /// What the shell answers by itself, when there is nothing to ask.
@@ -1720,7 +2318,7 @@ pub fn local(view: &View, format: Format) -> String {
                 names.join("\n")
             }
         }
-        View::Guide => GUIDE.to_string(),
+        View::Guide => help::GUIDE.to_string(),
         View::Config => crate::config::describe(),
         View::History => {
             let all = crate::history::read(&crate::history::path());
@@ -1781,12 +2379,11 @@ pub fn show(reply: &Reply, view: &View, format: Format, ink: Ink, now: i64) -> S
         (Format::Json, View::Log, Reply::Status(status)) => json(&status.log),
         (Format::Json, View::Categories { .. }, Reply::Status(status)) => json(&status.categories),
         (Format::Json, View::Gate, Reply::Status(status)) => json(&status.gate),
-        (Format::Json, View::Layout, Reply::Status(status)) => json(&status.layout),
-        (Format::Json, View::Scenes, Reply::Status(status)) => {
-            json(&serde_json::json!({ "scenes": status.scenes, "scene": status.scene }))
-        }
-        (Format::Prose, View::Scenes, Reply::Status(status)) => render_scenes(status),
-        (Format::Prose, View::Layout, Reply::Status(status)) => render_layout(&status.layout),
+        (Format::Json, View::Scenes, Reply::Status(status)) => json(&serde_json::json!({
+            "scenes": status.scenes,
+            "active_scene": status.active_scene
+        })),
+        (Format::Prose, View::Scenes, Reply::Status(status)) => render_scene_list(status),
         (Format::Prose, View::Gate, Reply::Status(status)) => render_gate(&status.gate),
         (Format::Json, _, reply) => json(reply),
         (Format::Prose, View::Destinations, Reply::Status(status)) => {
@@ -1858,44 +2455,6 @@ fn render_destinations(rows: &[crate::protocol::Destination]) -> String {
     lines.join("\n")
 }
 
-fn render_layout(l: &crate::scene::Layout) -> String {
-    format!(
-        "camera {}, {:.0}% wide, {}{}{}",
-        format!("{:?}", l.corner).to_lowercase(),
-        l.share * 100.0,
-        format!("{:?}", l.shape).to_lowercase(),
-        match l.filter {
-            crate::scene::Filter::Plain => String::new(),
-            look => format!(", {}", format!("{look:?}").to_lowercase()),
-        },
-        match l.mode {
-            crate::scene::Mode::Overlay => String::new(),
-            mode => format!(", {}", format!("{mode:?}").to_lowercase()),
-        }
-    )
-}
-
-fn render_scenes(status: &Status) -> String {
-    if status.scenes.is_empty() {
-        return "no scenes kept; remux scene save <name> keeps the setup of now".into();
-    }
-    status
-        .scenes
-        .iter()
-        .map(|name| {
-            format!(
-                "{} {name}",
-                if status.scene.as_deref() == Some(name) {
-                    "*"
-                } else {
-                    " "
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn render_gate(g: &crate::gate::GateParams) -> String {
     use crate::levels::decibels;
     format!(
@@ -1935,25 +2494,34 @@ fn render_verbose(status: &Status, now: i64) -> String {
             elapsed(status.recording_since, now)
         ));
     }
-    if let Some(card) = &status.card {
-        lines.push(format!("card {card:?}"));
+    lines.push(format!("scene {}", status.active_scene));
+    if status.layers.is_empty() {
+        lines.push("no layers".into());
     }
-    lines.push(match &status.screen {
-        Some(screen) => format!("screen {screen}"),
-        None => "no screen".into(),
-    });
+    for layer in &status.layers {
+        let t = layer.transform;
+        lines.push(format!(
+            "layer {} {} at {},{} {}x{}{}{}{}",
+            layer.id,
+            layer.source.name,
+            t.x,
+            t.y,
+            t.width,
+            t.height,
+            if t.degrees == 0 {
+                String::new()
+            } else {
+                format!(" {}°", t.degrees)
+            },
+            if layer.visible { "" } else { ", hidden" },
+            if layer.mirrored { ", mirrored" } else { "" }
+        ));
+    }
     if status.screen_sound {
         lines.push(match status.hearing_apps.as_slice() {
             [] => "screen sound out".into(),
             apps => format!("screen sound out: {}", apps.join(", ")),
         });
-    }
-    if let Some(camera) = &status.camera {
-        lines.push(format!(
-            "camera {camera}{}, {}",
-            if status.mirrored { ", mirrored" } else { "" },
-            render_layout(&status.layout)
-        ));
     }
     match &status.mic {
         Some(mic) => lines.push(format!(
@@ -2026,9 +2594,9 @@ fn render_verbose(status: &Status, now: i64) -> String {
         o.fps,
         o.video_kbps,
         o.audio_kbps,
-        status.flowing.width,
-        status.flowing.height,
-        status.flowing.frames
+        status.scene_flowing.width,
+        status.scene_flowing.height,
+        status.scene_flowing.frames
     ));
     lines.push(format!(
         "app {}{}",
@@ -2063,7 +2631,7 @@ mod reading {
         assert_eq!(ask.command, Some(Command::Status));
         assert_eq!(ask.format, Format::Json);
         assert_eq!(
-            read(&w("-j mute")).unwrap().command,
+            read(&w("-j audio mute")).unwrap().command,
             Some(Command::Mute { on: true })
         );
     }
@@ -2117,10 +2685,10 @@ mod reading {
         );
         assert_eq!(read(&w("logout")).unwrap().view, View::Logout);
         assert_eq!(
-            read(&w("chat --url ws://localhost:9999")).unwrap().view,
+            read(&w("chat url ws://localhost:9999")).unwrap().view,
             View::ChatKeep("ws://localhost:9999".into())
         );
-        assert!(read(&w("chat --url")).is_err());
+        assert!(read(&w("chat url")).is_err());
         assert_eq!(read(&w("config")).unwrap().view, View::Config);
         assert_eq!(
             read(&w("bug --open")).unwrap().view,
@@ -2142,9 +2710,15 @@ mod reading {
         let ask = read(&w("schema")).unwrap();
         assert_eq!((ask.command, &ask.view), (None, &View::Schema));
         assert!(local(&ask.view, Format::Prose).contains("\"command\""));
-        let shot = read(&w("shot camera --out /tmp/x.jpg")).unwrap();
+        let layer = read(&w("scene layer shot desk --out /tmp/y.jpg")).unwrap();
+        assert_eq!(layer.view, View::ShotTo("/tmp/y.jpg".into()));
+        assert_eq!(
+            layer.command,
+            Some(Command::LayerShot { id: "desk".into() })
+        );
+        let shot = read(&w("scene shot --out /tmp/x.jpg")).unwrap();
         assert_eq!(shot.view, View::ShotTo("/tmp/x.jpg".into()));
-        assert_eq!(shot.command, Some(Command::Shot { of: Framed::Camera }));
+        assert_eq!(shot.command, Some(Command::Shot { of: Framed::Scene }));
         assert_eq!(
             jpeg_bytes(&Reply::Shot {
                 jpeg: "AAEC".into(),
@@ -2163,23 +2737,29 @@ mod reading {
             Ok(Command::Live { plan: 42 })
         );
         assert_eq!(parse(&w("live --yes")), Ok(Command::GoLive));
-        assert_eq!(parse(&w("denoise")), Ok(Command::Denoise { on: true }));
         assert_eq!(
-            parse(&w("play clap")),
+            parse(&w("audio denoise")),
+            Ok(Command::Denoise { on: true })
+        );
+        assert_eq!(
+            parse(&w("audio clip clap")),
             Ok(Command::Clip {
                 name: "clap".into()
             })
         );
         assert_eq!(
-            parse(&w("hear Spotify, Brave")),
+            parse(&w("audio hear Spotify, Brave")),
             Ok(Command::Hear {
                 apps: vec!["Spotify".into(), "Brave".into()]
             })
         );
-        assert_eq!(parse(&w("hear off")), Ok(Command::Hear { apps: vec![] }));
-        assert!(parse(&w("hear")).is_err());
-        assert!(parse(&w("play")).is_err());
-        assert_eq!(read(&w("clips")).unwrap().view, View::Clips);
+        assert_eq!(
+            parse(&w("audio hear off")),
+            Ok(Command::Hear { apps: vec![] })
+        );
+        assert!(parse(&w("audio hear")).is_err());
+        assert!(parse(&w("audio clip")).is_err());
+        assert_eq!(read(&w("audio clips")).unwrap().view, View::Clips);
         assert!(parse(&w("live --confirm")).is_err());
         let asks = read(&w("live")).unwrap();
         assert_eq!(
@@ -2196,60 +2776,18 @@ mod reading {
     }
 
     #[test]
-    fn the_layout_is_said_in_any_order_and_read_back() {
-        use crate::scene::{Corner, Shape};
-        let Ok(Command::Layout { patch }) = parse(&w("layout circle 50% tl")) else {
-            panic!()
+    fn the_scene_list_marks_the_active_scene() {
+        assert_eq!(read(&w("scene list")).unwrap().view, View::Scenes);
+        let scene = |name: &str| crate::scenes::Scene {
+            name: name.into(),
+            layers: vec![],
+            order: vec![],
+            elements: vec![],
+            shader: None,
         };
-        assert_eq!(
-            (patch.corner, patch.share, patch.shape),
-            (Some(Corner::TopLeft), Some(0.5), Some(Shape::Circle))
-        );
-        assert!(parse(&w("layout sideways")).is_err());
-        assert!(parse(&w("layout")).is_err(), "nothing to change");
-        assert_eq!(read(&w("layout")).unwrap().view, View::Layout);
-        assert_eq!(
-            show(
-                &Reply::Status(Box::default()),
-                &View::Layout,
-                Format::Prose,
-                Ink::Plain,
-                0
-            ),
-            "camera bottomright, 25% wide, rectangle"
-        );
-        assert_eq!(layout_words(&patch), "topleft 50% circle");
-        let Ok(Command::Layout { patch }) = parse(&w("layout sepia")) else {
-            panic!()
-        };
-        assert_eq!(patch.filter, Some(crate::scene::Filter::Sepia));
-    }
-
-    #[test]
-    fn scenes_are_kept_switched_and_forgotten_by_name() {
-        assert_eq!(
-            parse(&w("scene save code")),
-            Ok(Command::SceneSave {
-                name: "code".into()
-            })
-        );
-        assert_eq!(
-            parse(&w("scene code")),
-            Ok(Command::SceneSwitch {
-                name: "code".into()
-            })
-        );
-        assert_eq!(
-            parse(&w("scene rm code")),
-            Ok(Command::SceneForget {
-                name: "code".into()
-            })
-        );
-        assert!(parse(&w("scene")).is_err());
-        assert_eq!(read(&w("scenes")).unwrap().view, View::Scenes);
         let status = Status {
-            scenes: vec!["code".into(), "talk".into()],
-            scene: Some("talk".into()),
+            scenes: vec![scene("code"), scene("talk")],
+            active_scene: "talk".into(),
             ..Status::default()
         };
         assert_eq!(
@@ -2260,31 +2798,24 @@ mod reading {
                 Ink::Plain,
                 0
             ),
-            "  code\n* talk"
+            "  code (0 layers)\n* talk (0 layers)"
         );
     }
 
     #[test]
     fn the_gate_speaks_the_panel_s_words_in_db_and_resets_whole() {
-        assert_eq!(read(&w("gate")).unwrap().view, View::Gate);
-        let Ok(Command::Gate { patch }) = parse(&w("gate opens -20")) else {
+        assert_eq!(read(&w("audio gate")).unwrap().view, View::Gate);
+        let Ok(Command::Gate { patch }) = parse(&w("audio gate opens -20")) else {
             panic!()
         };
         assert!(
             (patch["full"].as_f64().unwrap() - 0.1).abs() < 1e-9,
             "{patch}"
         );
-        let Ok(Command::Gate { patch }) = parse(&w("gate reset")) else {
+        let Ok(Command::Gate { patch }) = parse(&w("audio gate reset")) else {
             panic!()
         };
         assert_eq!(patch["hold_ms"], 450.0);
-        assert_eq!(
-            parse(&w("words brb Back in five")),
-            Ok(Command::CardText {
-                which: Card::BackInAMoment,
-                text: "Back in five".into()
-            })
-        );
         let shown = show(
             &Reply::Status(Box::default()),
             &View::Gate,
@@ -2297,7 +2828,10 @@ mod reading {
 
     #[test]
     fn destinations_log_and_verbose_read_the_status() {
-        assert_eq!(read(&w("destinations")).unwrap().view, View::Destinations);
+        assert_eq!(
+            read(&w("destination list")).unwrap().view,
+            View::Destinations
+        );
         assert_eq!(read(&w("status -v")).unwrap().view, View::Verbose);
         let log = read(&w("log -f")).unwrap();
         assert_eq!(

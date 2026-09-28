@@ -6,6 +6,65 @@ fn engine() -> Engine {
     Engine::new()
 }
 
+#[test]
+fn independent_audio_layers_are_addressed_by_id_and_remembered() {
+    use crate::audio_layers::Source;
+    let mut engine = engine();
+    for id in ["browser", "editor"] {
+        assert!(matches!(
+            engine.handle(Command::AudioLayerAdd {
+                id: id.into(),
+                source: Source::app("Safari".into()),
+            }),
+            Reply::Status(_)
+        ));
+    }
+    assert_eq!(engine.status().audio_layers.len(), 2);
+    assert!(matches!(
+        engine.handle(Command::AudioLayerVolume {
+            id: "editor".into(),
+            volume: 0.25
+        }),
+        Reply::Status(_)
+    ));
+    assert!(matches!(
+        engine.handle(Command::AudioLayerMute {
+            id: "browser".into(),
+            on: true
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(engine.status().audio_layers[0].volume, 1.0);
+    assert!(engine.status().audio_layers[0].muted);
+    assert_eq!(engine.status().audio_layers[1].volume, 0.25);
+    assert!(!engine.status().audio_layers[1].muted);
+    assert!(matches!(
+        engine.handle(Command::AudioLayerAdd {
+            id: "browser".into(),
+            source: Source::mic("mic".into()),
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::AudioLayerVolume {
+            id: "editor".into(),
+            volume: f64::NAN
+        }),
+        Reply::Error { .. }
+    ));
+    let setup = engine.remembered();
+    let mut restored = Engine::new();
+    restored.restore(&setup);
+    assert_eq!(restored.status().audio_layers, engine.status().audio_layers);
+    assert!(matches!(
+        engine.handle(Command::AudioLayerRemove {
+            id: "browser".into()
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(engine.status().audio_layers.len(), 1);
+}
+
 /// A machine with two monitors and three windows: enough shape for every
 /// decision the engine makes about sources. The built-in is display 1 and
 /// the monitor is display 3, an ordering a real machine produces and the
@@ -67,6 +126,239 @@ impl Sources for ThisMachine {
     }
 }
 
+#[test]
+fn camera_shape_and_position_belong_to_one_named_layer() {
+    let (mut engine, _, _) = machine_with_music();
+    assert!(crate::layers::camera(&engine.status().layers, None).is_err());
+    engine.handle(Command::LayerCamera {
+        id: "left".into(),
+        device: "HP".into(),
+    });
+    assert_eq!(
+        crate::layers::camera(&engine.status().layers, None)
+            .unwrap()
+            .id,
+        "left"
+    );
+    assert!(matches!(
+        engine.handle(Command::CameraShape {
+            shape: crate::scene::CameraShape::Circle
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(
+        engine.status().layers[0].shape,
+        Some(crate::scene::CameraShape::Circle)
+    );
+    engine.handle(Command::LayerCamera {
+        id: "right".into(),
+        device: "MacBook".into(),
+    });
+    assert!(crate::layers::camera(&engine.status().layers, None).is_err());
+    assert!(matches!(
+        engine.handle(Command::CameraShape {
+            shape: crate::scene::CameraShape::Rectangle
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::CameraPosition { at: None }),
+        Reply::Error { .. }
+    ));
+    let before = engine.status().layers[1].transform;
+    assert!(matches!(
+        engine.handle(Command::LayerShape {
+            id: "missing".into(),
+            shape: crate::scene::CameraShape::Circle
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::LayerPosition {
+            id: "missing".into(),
+            at: None
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::LayerShape {
+            id: "right".into(),
+            shape: crate::scene::CameraShape::Circle
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(
+        engine.status().layers[0].shape,
+        Some(crate::scene::CameraShape::Circle)
+    );
+    assert_eq!(
+        engine.status().layers[1].shape,
+        Some(crate::scene::CameraShape::Circle)
+    );
+    engine.handle(Command::LayerPosition {
+        id: "right".into(),
+        at: Some(crate::scene::CameraPosition { x: 1900, y: 1000 }),
+    });
+    assert_eq!(
+        engine.status().layers[1].transform.x,
+        (1920 - before.width) as i32
+    );
+    assert_eq!(
+        engine.status().layers[1].transform.y,
+        (1080 - before.height) as i32
+    );
+    assert_eq!(engine.status().layers[1].transform.width, before.width);
+    assert_eq!(engine.status().layers[0].transform.x, 0);
+    engine.handle(Command::LayerPosition {
+        id: "right".into(),
+        at: None,
+    });
+    assert_eq!(engine.status().layers[1].transform, before);
+    engine.handle(Command::LayerWindow {
+        id: "app".into(),
+        query: "tmux".into(),
+    });
+    assert!(matches!(
+        engine.handle(Command::LayerShape {
+            id: "app".into(),
+            shape: crate::scene::CameraShape::Circle
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status().layers[2].shape, None);
+}
+
+#[test]
+fn display_layers_have_no_reserved_id_or_order() {
+    let (mut engine, _, _) = machine_with_music();
+    assert!(matches!(
+        engine.handle(Command::LayerScreen {
+            id: "left".into(),
+            display: 99
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(engine.status().layers.is_empty());
+    assert!(matches!(
+        engine.handle(Command::LayerScreen {
+            id: "left".into(),
+            display: 3
+        }),
+        Reply::Status(_)
+    ));
+    assert!(matches!(
+        engine.handle(Command::LayerScreen {
+            id: "right".into(),
+            display: 1
+        }),
+        Reply::Status(_)
+    ));
+    assert_eq!(
+        engine.status().layers[0].source.kind,
+        crate::layers::Kind::Screen
+    );
+    assert_eq!(engine.status().layers[0].source.handle, "3");
+    assert_eq!(engine.status().layers[0].source.name, "VG2791R");
+    engine.handle(Command::LayerMove {
+        id: "right".into(),
+        index: 0,
+    });
+    assert_eq!(engine.status().layers[0].id, "right");
+    engine.handle(Command::LayerRemove { id: "left".into() });
+    assert_eq!(engine.status().layers[0].id, "right");
+}
+
+#[test]
+fn layers_are_ordered_ephemeral_and_failed_capture_does_not_appear() {
+    use crate::layers::{Kind, Transform};
+    let (mut engine, _, _) = machine_with_music();
+    engine.handle(Command::LayerCamera {
+        id: "face".into(),
+        device: "HP 430".into(),
+    });
+    engine.handle(Command::LayerWindow {
+        id: "code".into(),
+        query: "tmux".into(),
+    });
+    assert_eq!(engine.status().layers.len(), 2);
+    assert_eq!(engine.status().layers[1].source.kind, Kind::Window);
+    assert_eq!(engine.status().layers[1].source.handle, "10");
+    assert_eq!(
+        (
+            engine.status().layers[0].source.width,
+            engine.status().layers[0].source.height
+        ),
+        (1280, 720)
+    );
+    assert_eq!(
+        engine.status().layers[1].transform,
+        Transform::native((853, 479))
+    );
+    let transform = Transform {
+        x: 100,
+        y: 200,
+        width: 800,
+        height: 450,
+        degrees: 90,
+    };
+    engine.handle(Command::LayerTransform {
+        id: "face".into(),
+        transform,
+    });
+    engine.handle(Command::LayerMove {
+        id: "face".into(),
+        index: 1,
+    });
+    assert_eq!(engine.status().layers[1].transform, transform);
+    assert_eq!(engine.status().layers[1].id, "face");
+    let crop = crate::layers::Crop {
+        x: 10,
+        y: 20,
+        width: 600,
+        height: 400,
+    };
+    engine.handle(Command::LayerCrop {
+        id: "face".into(),
+        crop: Some(crop),
+    });
+    assert_eq!(engine.status().layers[1].crop, Some(crop));
+    assert!(matches!(
+        engine.handle(Command::LayerCrop {
+            id: "face".into(),
+            crop: Some(crate::layers::Crop { x: 1000, ..crop })
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status().layers[1].crop, Some(crop));
+    engine.handle(Command::LayerCrop {
+        id: "face".into(),
+        crop: None,
+    });
+    assert_eq!(engine.status().layers[1].crop, None);
+    assert!(matches!(
+        engine.handle(Command::LayerCamera {
+            id: "face".into(),
+            device: "HP".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::LayerMove {
+            id: "face".into(),
+            index: 5
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status().layers.len(), 2);
+    assert!(crate::remembered::write(&engine.remembered())
+        .unwrap()
+        .contains("face"));
+    engine.handle(Command::LayerRemove { id: "code".into() });
+    assert_eq!(engine.status().layers.len(), 1);
+    engine.handle(Command::HideEverything);
+    assert!(engine.status().layers.is_empty());
+}
+
 struct Refused;
 
 impl Sources for Refused {
@@ -75,19 +367,58 @@ impl Sources for Refused {
     }
 }
 
+fn unique_name(status: &Status, kinds: &[crate::layers::Kind]) -> Option<String> {
+    let mut found = status
+        .layers
+        .iter()
+        .filter(|l| kinds.contains(&l.source.kind));
+    let first = found.next()?;
+    found.next().is_none().then(|| first.source.name.clone())
+}
+
+fn screen_name(status: &Status) -> Option<String> {
+    unique_name(
+        status,
+        &[crate::layers::Kind::Screen, crate::layers::Kind::Window],
+    )
+}
+
+fn camera_name(status: &Status) -> Option<String> {
+    unique_name(status, &[crate::layers::Kind::Camera])
+}
+
 // Setting up is the part nobody wants to do twice.
 #[test]
 fn what_was_chosen_comes_back_after_a_restart() {
     let (mut engine, played, _) = machine_with_music();
+    engine.handle(Command::Camera {
+        device: Some("HP".into()),
+    });
     engine.handle(Command::Mic {
         device: Some("HyperX".into()),
     });
     engine.handle(Command::Mirror { on: true });
+    engine.handle(Command::CameraShape {
+        shape: crate::scene::CameraShape::Rectangle,
+    });
+    engine.handle(Command::CameraPosition {
+        at: Some(crate::scene::CameraPosition { x: 360, y: 180 }),
+    });
     engine.handle(Command::Volume { level: 1.5 });
     engine.handle(Command::Genre { name: "edm".into() });
-    engine.handle(Command::CardText {
-        which: Card::StartingSoon,
-        text: "back at nine".into(),
+    engine.handle(Command::SceneElementAdd {
+        element: Element {
+            id: "title".into(),
+            x: 200,
+            y: 200,
+            width: 600,
+            height: 100,
+            visible: true,
+            shader: None,
+            content: ElementContent::Text {
+                text: "back at nine".into(),
+            },
+        },
     });
     let setup = engine.remembered();
     // Never state: an engine that came up publishing because it was
@@ -101,8 +432,21 @@ fn what_was_chosen_comes_back_after_a_restart() {
     let now = next.status();
     assert_eq!(now.mic.as_deref(), Some("HyperX DuoCast"));
     assert!(now.mirrored);
+    assert_eq!(
+        now.layers[0].shape,
+        Some(crate::scene::CameraShape::Rectangle)
+    );
+    assert_eq!(
+        (now.layers[0].transform.x, now.layers[0].transform.y),
+        (360, 180)
+    );
     assert_eq!(now.faders.mic, 1.5);
-    assert_eq!(now.words.starting, "back at nine");
+    assert_eq!(
+        now.scenes[0].elements[0].content,
+        ElementContent::Text {
+            text: "back at nine".into()
+        }
+    );
     assert!(!now.on_air);
     // The genre came back as the shelf, not as music: nothing plays until
     // somebody turns it on, and then it is that shelf. An engine that came
@@ -135,15 +479,53 @@ fn what_was_chosen_comes_back_after_a_restart() {
 fn a_device_that_is_gone_does_not_take_the_rest_of_the_setup_with_it() {
     let (mut engine, _, _) = machine_with_music();
     let setup = crate::remembered::Remembered {
-        camera: Some("a camera nobody has".into()),
+        layers: vec![crate::layers::Layer {
+            id: "gone".into(),
+            source: crate::layers::Source {
+                kind: crate::layers::Kind::Camera,
+                handle: "missing".into(),
+                name: "a camera nobody has".into(),
+                width: 1280,
+                height: 720,
+            },
+            transform: crate::layers::Transform::native((1280, 720)),
+            visible: true,
+            crop: None,
+            shape: Some(crate::scene::CameraShape::Rectangle),
+            mirrored: false,
+            shader: None,
+        }],
         mic: Some("HyperX".into()),
         mirrored: true,
         ..Default::default()
     };
     engine.restore(&setup);
-    assert_eq!(engine.status().camera, None, "it must not invent one");
+    assert!(engine.status().layers.is_empty(), "it must not invent one");
     assert_eq!(engine.status().mic.as_deref(), Some("HyperX DuoCast"));
     assert!(engine.status().mirrored);
+}
+
+#[test]
+fn restart_restores_named_window_layers_without_legacy_fields() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    engine.handle(Command::LayerWindow {
+        id: "notes".into(),
+        query: "tmux".into(),
+    });
+    let saved = crate::remembered::write(&engine.remembered()).unwrap();
+    assert!(saved.contains("Ghostty — tmux a"));
+    assert!(!saved.contains("camera_position"));
+    assert!(!saved.contains("\"screen\""));
+    let mut next =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    next.restore(&crate::remembered::read(&saved));
+    assert_eq!(next.status().layers.len(), 1);
+    assert_eq!(next.status().layers[0].id, "notes");
+    assert_eq!(
+        next.status().layers[0].source.kind,
+        crate::layers::Kind::Window
+    );
 }
 
 #[test]
@@ -246,14 +628,10 @@ fn recording_survives_going_live_and_coming_back_off() {
 }
 
 #[test]
-fn the_live_card_is_the_absence_of_a_card() {
-    let mut engine = engine();
-    engine.handle(Command::Card {
-        which: Card::StartingSoon,
-    });
-    assert_eq!(engine.status().card, Some(Card::StartingSoon));
-    engine.handle(Command::Card { which: Card::Live });
-    assert_eq!(engine.status().card, None);
+fn fresh_engine_has_only_a_default_scene() {
+    let engine = engine();
+    assert_eq!(engine.status().scenes.len(), 1);
+    assert_eq!(engine.status().active_scene, "default");
 }
 
 // The panic button had a bug worth keeping a test for: it hid the picture
@@ -268,9 +646,8 @@ fn hiding_everything_mutes_you_too() {
         engine.status().muted,
         "hide everything means hide your voice too"
     );
-    assert_eq!(engine.status().card, Some(Card::BackInAMoment));
-    assert_eq!(engine.status().screen, None);
-    assert_eq!(engine.status().camera, None);
+    assert_eq!(engine.status().active_scene, "default");
+    assert!(engine.status().layers.is_empty());
     assert!(
         engine.status().on_air,
         "it is a break, not the end of the live"
@@ -360,7 +737,7 @@ fn a_screen_is_chosen_by_its_display_id_and_answers_with_its_name() {
     let Reply::Status(status) = engine.handle(Command::Screen { display: 3 }) else {
         panic!("choosing a screen answers with the new status")
     };
-    assert_eq!(status.screen, Some("VG2791R".into()));
+    assert_eq!(screen_name(&status), Some("VG2791R".into()));
 }
 
 // "no display 9" alone sends a person hunting. Saying what there is
@@ -376,7 +753,7 @@ fn asking_for_a_display_that_is_not_there_says_what_is() {
         message.contains("Built-in Retina Display and VG2791R"),
         "it should say what there is: {message}"
     );
-    assert_eq!(engine.status().screen, None, "and change nothing");
+    assert!(engine.status().layers.is_empty(), "and change nothing");
 }
 
 #[test]
@@ -387,7 +764,7 @@ fn a_window_is_chosen_by_part_of_its_title() {
     }) else {
         panic!("choosing a window answers with the new status")
     };
-    assert_eq!(status.screen, Some("Ghostty — tmux a".into()));
+    assert_eq!(screen_name(&status), Some("Ghostty — tmux a".into()));
 }
 
 // The CLI has always taken part of a name, and a browser window is titled
@@ -398,7 +775,10 @@ fn a_window_is_found_by_the_application_that_owns_it() {
     engine.handle(Command::Window {
         query: "brave".into(),
     });
-    assert_eq!(engine.status().screen, Some("Brave Browser — remux".into()));
+    assert_eq!(
+        screen_name(engine.status()),
+        Some("Brave Browser — remux".into())
+    );
 }
 
 #[test]
@@ -412,7 +792,7 @@ fn asking_for_a_window_that_is_not_there_changes_nothing() {
     };
     assert!(message.contains("photoshop"), "{message}");
     assert_eq!(
-        engine.status().screen,
+        screen_name(engine.status()),
         Some("VG2791R".into()),
         "a miss must not drop what was already chosen"
     );
@@ -425,15 +805,18 @@ fn choosing_one_source_replaces_the_other() {
     let mut engine = machine();
     engine.handle(Command::Screen { display: 1 });
     assert_eq!(
-        engine.status().screen,
+        screen_name(engine.status()),
         Some("Built-in Retina Display".into())
     );
     engine.handle(Command::Window {
         query: "notes".into(),
     });
-    assert_eq!(engine.status().screen, Some("TextEdit — notes".into()));
+    assert_eq!(
+        screen_name(engine.status()),
+        Some("TextEdit — notes".into())
+    );
     engine.handle(Command::Screen { display: 3 });
-    assert_eq!(engine.status().screen, Some("VG2791R".into()));
+    assert_eq!(screen_name(engine.status()), Some("VG2791R".into()));
 }
 
 #[test]
@@ -460,7 +843,7 @@ fn the_camera_and_the_microphone_are_separate_lists() {
         panic!("a camera named after a microphone is not a camera")
     };
     assert!(message.contains("MacBook Pro Camera"), "{message}");
-    assert_eq!(engine.status().camera, None);
+    assert!(engine.status().layers.is_empty());
 
     engine.handle(Command::Mic {
         device: Some("hyperx".into()),
@@ -474,13 +857,16 @@ fn a_camera_is_found_by_part_of_its_name_and_by_its_id() {
     engine.handle(Command::Camera {
         device: Some("webcam".into()),
     });
-    assert_eq!(engine.status().camera, Some("HP 430/435 FHD Webcam".into()));
+    assert_eq!(
+        camera_name(engine.status()),
+        Some("HP 430/435 FHD Webcam".into())
+    );
 
     engine.handle(Command::Camera {
         device: Some("6C707041".into()),
     });
     assert_eq!(
-        engine.status().camera,
+        camera_name(engine.status()),
         Some("MacBook Pro Camera".into()),
         "an id is the handle a saved preference holds"
     );
@@ -494,9 +880,9 @@ fn a_camera_can_be_turned_off_again() {
     engine.handle(Command::Camera {
         device: Some("webcam".into()),
     });
-    assert!(engine.status().camera.is_some());
+    assert!(camera_name(engine.status()).is_some());
     engine.handle(Command::Camera { device: None });
-    assert_eq!(engine.status().camera, None);
+    assert!(camera_name(engine.status()).is_none());
 }
 
 #[test]
@@ -518,6 +904,9 @@ fn asking_for_a_device_that_is_not_plugged_in_says_what_is() {
 /// A pipeline that writes down what it was told, so a test can ask whether
 /// the capture was actually pointed somewhere rather than only whether the
 /// status changed. The two disagreeing is the bug worth catching.
+#[path = "scene_tests.rs"]
+mod scene_tests;
+
 type Published = std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>;
 
 #[derive(Default)]
@@ -545,42 +934,175 @@ struct Wrote {
     /// Set by a test to say the track that was playing has run out.
     ran_out: std::sync::Arc<std::sync::Mutex<bool>>,
     refuse: Option<String>,
+    scene_events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Picture for Wrote {
-    fn capture(&mut self, behind: Behind) -> Result<(), String> {
-        if let Some(why) = &self.refuse {
-            return Err(why.clone());
+    fn scene_transition(
+        &mut self,
+        from: &[crate::layers::Layer],
+        to: &[crate::layers::Layer],
+        elements: &[Element],
+        shader: Option<&str>,
+    ) -> Result<(), String> {
+        let plan = crate::scenes::transition(from, to);
+        let mut events = self.scene_events.lock().unwrap();
+        let mut prepared = Vec::new();
+        for key in &plan.open {
+            events.push(format!("prepare {:?}:{}", key.kind, key.handle));
+            if let Some(reason) = &self.refuse {
+                if (!reason.starts_with("scene:") && !reason.starts_with("shader:"))
+                    || reason == &format!("scene:{}", key.handle)
+                {
+                    for source in prepared.iter().rev() {
+                        events.push(format!("rollback {source}"));
+                    }
+                    events.push("rollback prepared".into());
+                    return Err(reason.clone());
+                }
+            }
+            prepared.push(key.handle.clone());
         }
-        self.told.lock().expect("told").push(behind);
+        if let Some(reason) = &self.refuse {
+            if reason.starts_with("shader:")
+                && (shader == Some("bad.frag")
+                    || to.iter().any(|l| l.shader.as_deref() == Some("bad.frag"))
+                    || elements
+                        .iter()
+                        .any(|e| e.shader.as_deref() == Some("bad.frag")))
+            {
+                for source in prepared.iter().rev() {
+                    events.push(format!("rollback {source}"));
+                }
+                events.push("rollback prepared".into());
+                return Err(reason.clone());
+            }
+        }
+        events.push("commit layout".into());
+        for key in &plan.close {
+            events.push(format!("close {:?}:{}", key.kind, key.handle));
+        }
         Ok(())
     }
-    fn camera(&mut self, device: Option<&str>) -> Result<(), String> {
+    fn show(
+        &mut self,
+        elements: &[Element],
+        timers: &[(String, Duration)],
+        _order: &[String],
+    ) -> Result<(), String> {
         if let Some(why) = &self.refuse {
-            return Err(why.clone());
-        }
-        self.cameras
-            .lock()
-            .expect("cameras")
-            .push(device.map(str::to_string));
-        Ok(())
-    }
-    fn show(&mut self, card: Card, line: &str, counting: Option<Duration>) -> Result<(), String> {
-        if let Some(why) = &self.refuse {
-            return Err(why.clone());
+            if !why.starts_with("shader:") {
+                return Err(why.clone());
+            }
         }
         self.shown
             .lock()
             .expect("shown")
-            .push((card, line.to_string()));
-        *self.counting.lock().expect("counting") = counting;
+            .push((elements.to_vec(), timers.to_vec()));
+        *self.counting.lock().expect("counting") = timers.first().map(|(_, left)| *left);
         Ok(())
     }
     fn mirror(&mut self, on: bool) {
         *self.mirrored.lock().expect("mirrored") = on;
     }
+    fn layer_remove(&mut self, _id: &str) {
+        self.told.lock().unwrap().push(Behind::Nothing);
+    }
+    fn layer_replace(
+        &mut self,
+        old: &crate::layers::Layer,
+        new: &crate::layers::Layer,
+    ) -> Result<(u32, u32), crate::engine::LayerSwapError> {
+        if let Some(reason) = &self.refuse {
+            return Err(crate::engine::LayerSwapError {
+                reason: reason.clone(),
+                restored: reason != "rollback lost",
+            });
+        }
+        if old.source.kind == new.source.kind && old.source.handle == new.source.handle {
+            return Ok((old.source.width, old.source.height));
+        }
+        self.layer_remove(&old.id);
+        self.layer_add(new)
+            .map_err(|reason| crate::engine::LayerSwapError {
+                reason,
+                restored: false,
+            })
+    }
+    fn layer_add(&mut self, layer: &crate::layers::Layer) -> Result<(u32, u32), String> {
+        self.refuse.clone().map_or_else(
+            || {
+                match layer.source.kind {
+                    crate::layers::Kind::Screen => {
+                        self.told
+                            .lock()
+                            .unwrap()
+                            .push(Behind::Screen(crate::sources::DisplayId(
+                                layer.source.handle.parse().unwrap(),
+                            )))
+                    }
+                    crate::layers::Kind::Window => {
+                        self.told
+                            .lock()
+                            .unwrap()
+                            .push(Behind::Window(crate::sources::WindowId(
+                                layer.source.handle.parse().unwrap(),
+                            )))
+                    }
+                    crate::layers::Kind::Camera => self
+                        .cameras
+                        .lock()
+                        .unwrap()
+                        .push(Some(layer.source.handle.clone())),
+                }
+                Ok(match layer.source.kind {
+                    crate::layers::Kind::Camera => (1280, 720),
+                    crate::layers::Kind::Window => (853, 479),
+                    crate::layers::Kind::Screen => (1920, 1080),
+                })
+            },
+            Err,
+        )
+    }
+    fn shader_active(&self) -> bool {
+        self.refuse.as_deref() != Some("runtime:global")
+    }
+    fn layer_shader_active(&self, id: &str) -> bool {
+        self.refuse.as_deref() != Some("runtime:layer") || id != "disabled"
+    }
+    fn element_shader(&mut self, _element: &Element, path: Option<&str>) -> Result<(), String> {
+        if path == Some("bad.frag") {
+            Err("invalid shader".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn layer_shader(
+        &mut self,
+        _layer: &crate::layers::Layer,
+        path: Option<&str>,
+    ) -> Result<(), String> {
+        if path == Some("bad.frag") {
+            Err("invalid shader".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn shader(&mut self, path: Option<&str>) -> Result<(), String> {
+        if path == Some("bad.frag") {
+            return Err("invalid shader".into());
+        }
+        if let Some(why) = &self.refuse {
+            return Err(why.clone());
+        }
+        let _ = path;
+        Ok(())
+    }
     fn previewing(&mut self, on: bool) {
         *self.previewed.lock().expect("previewed") = Some(on);
+    }
+    fn layer_shot(&mut self, _id: &str) -> Option<(Vec<u8>, u32, u32)> {
+        Some((vec![0xff, 0xd8, 0xff], 480, 270))
     }
     fn shot(&mut self, of: Framed) -> Option<(Vec<u8>, u32, u32)> {
         // Three bytes that are not a JPEG: what this proves is the path,
@@ -594,7 +1116,10 @@ impl Picture for Wrote {
         }
     }
     fn stop(&mut self) {}
-    fn camera_flowing(&self) -> Flowing {
+    fn layer_flowing(&self, id: &str) -> Flowing {
+        if id.is_empty() {
+            return Flowing::default();
+        }
         Flowing {
             captured: 3,
             frames: 3,
@@ -621,6 +1146,9 @@ impl Picture for Wrote {
 }
 
 impl Sound for Wrote {
+    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
+        Ok(app.map(str::to_string))
+    }
     fn music_ended(&mut self) -> bool {
         // Exactly once, like the real one: asking twice must not skip a
         // track, which is the bug this shape exists to make impossible.
@@ -646,17 +1174,15 @@ impl Sound for Wrote {
             .push(track.map(|t| t.title.clone()));
         Ok(())
     }
-    fn levels(
-        &mut self,
-        mic: f64,
-        music: f64,
-        duck: f64,
-        muted: bool,
-        to_stream: bool,
-        screen_sound: bool,
-    ) -> Result<(), String> {
-        *self.levels.lock().expect("levels") =
-            Some((mic, music, duck, muted, to_stream, screen_sound));
+    fn levels(&mut self, levels: SoundLevels) -> Result<(), String> {
+        *self.levels.lock().expect("levels") = Some((
+            levels.mic,
+            levels.music,
+            levels.duck_db,
+            levels.muted,
+            levels.music_to_stream,
+            levels.screen_sound,
+        ));
         Ok(())
     }
     fn monitor(&mut self, on: bool) -> Result<(), String> {
@@ -685,6 +1211,7 @@ impl Sound for Wrote {
             music_peak_db: -26.0,
             music_out_db: -20.0,
             music_out_peak_db: -18.0,
+            app_db: -60.0,
             ducked_db: 0.0,
             playing: true,
             monitor_db: -60.0,
@@ -706,6 +1233,8 @@ impl Sound for Wrote {
             dropped: 0,
             screen_samples: 0,
             screen_complaint: None,
+            app_samples: 0,
+            app_complaint: None,
             complaint: None,
         }
     }
@@ -777,6 +1306,7 @@ fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
         previewed: Default::default(),
         ran_out: Default::default(),
         refuse,
+        scene_events: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -787,69 +1317,6 @@ fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
 }
 
 const DESTINATION: &str = "rtmp://hub/scene?user=remux&pass=not-a-real-key";
-
-// A scene is the setup of now under a name, and a switch puts it back whole:
-// what is behind the picture, the camera's corner, the mirror; kept across
-// restarts by the words that chose the window, not its id.
-#[test]
-fn a_scene_keeps_the_setup_and_a_switch_puts_it_back() {
-    use crate::scene::{Corner, LayoutPatch};
-    let (mut one, _) = publishing_engine(None);
-    one.handle(Command::Screen { display: 1 });
-    one.handle(Command::Layout {
-        patch: LayoutPatch {
-            corner: Some(Corner::TopLeft),
-            ..LayoutPatch::default()
-        },
-    });
-    one.handle(Command::Mirror { on: true });
-    assert!(matches!(
-        one.handle(Command::SceneSave {
-            name: "code".into()
-        }),
-        Reply::Status(_)
-    ));
-    one.handle(Command::Layout {
-        patch: LayoutPatch {
-            corner: Some(Corner::BottomRight),
-            ..LayoutPatch::default()
-        },
-    });
-    one.handle(Command::Mirror { on: false });
-    one.handle(Command::Share { on: false });
-    let put_back = one.handle(Command::SceneSwitch {
-        name: "code".into(),
-    });
-    assert!(matches!(put_back, Reply::Status(_)), "{put_back:?}");
-    assert_eq!(one.status().layout.corner, Corner::TopLeft);
-    assert!(one.status().mirrored);
-    assert!(
-        one.status().screen.is_some(),
-        "the screen is back behind the picture"
-    );
-    assert_eq!(one.status().scene.as_deref(), Some("code"));
-    assert_eq!(one.status().scenes, vec!["code".to_string()]);
-    assert!(matches!(
-        one.handle(Command::SceneSwitch {
-            name: "nope".into()
-        }),
-        Reply::Error { .. }
-    ));
-    let mut fresh = engine();
-    fresh.restore(&one.remembered());
-    assert_eq!(
-        fresh.status().scenes,
-        vec!["code".to_string()],
-        "a restart keeps the scenes"
-    );
-    assert!(matches!(
-        one.handle(Command::SceneForget {
-            name: "code".into()
-        }),
-        Reply::Status(_)
-    ));
-    assert!(one.status().scenes.is_empty());
-}
 
 // The screen's sound can be one application's: the name as the system
 // lists it, matched loosely, the switch turned on with it, and a name that
@@ -959,31 +1426,6 @@ fn a_clip_nobody_has_is_refused_by_name_and_the_folder_is_named() {
         message.contains("no-such-clip") && message.contains("clips"),
         "{message}"
     );
-}
-
-// The camera's layout is the engine's, read back by every face, kept across
-// restarts, and drawn by the pipeline whatever is behind the picture.
-#[test]
-fn the_layout_is_held_remembered_and_handed_to_the_picture() {
-    use crate::scene::{Corner, LayoutPatch, Shape};
-    let mut one = engine();
-    let reply = one.handle(Command::Layout {
-        patch: LayoutPatch {
-            corner: Some(Corner::TopLeft),
-            shape: Some(Shape::Circle),
-            ..LayoutPatch::default()
-        },
-    });
-    assert!(matches!(reply, Reply::Status(_)));
-    let layout = one.status().layout;
-    assert_eq!(
-        (layout.corner, layout.shape, layout.share),
-        (Corner::TopLeft, Shape::Circle, 0.25)
-    );
-    assert_eq!(one.remembered().layout, layout);
-    let mut fresh = engine();
-    fresh.restore(&one.remembered());
-    assert_eq!(fresh.status().layout, layout, "a restart keeps the corner");
 }
 
 // A plan is confirmed by its fingerprint: the live goes on what was printed
@@ -1166,6 +1608,175 @@ fn going_live_with_no_picture_is_refused_at_once() {
 }
 
 #[test]
+fn camera_position_changes_the_pipeline_mid_live_and_can_be_restored() {
+    use crate::scene::CameraPosition;
+    let pipeline = Wrote::default();
+    let mut engine = Engine::with_sources(Box::new(ThisMachine))
+        .with_pipeline(Box::new(pipeline))
+        .with_destination(Some(DESTINATION.into()));
+    engine.handle(Command::Window {
+        query: "remux".into(),
+    });
+    engine.handle(Command::Camera {
+        device: Some("HP".into()),
+    });
+    assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+    let at = CameraPosition { x: 300, y: 200 };
+    let Reply::Status(after) = engine.handle(Command::CameraPosition { at: Some(at) }) else {
+        panic!("status")
+    };
+    let face = after
+        .layers
+        .iter()
+        .find(|l| l.source.kind == crate::layers::Kind::Camera)
+        .unwrap();
+    assert_eq!((face.transform.x, face.transform.y), (300, 200));
+    assert!(after.on_air, "moving the camera must not stop the stream");
+    assert_eq!(
+        engine
+            .remembered()
+            .layers
+            .iter()
+            .find(|l| l.id == face.id)
+            .unwrap()
+            .transform,
+        face.transform
+    );
+    for bad in [
+        CameraPosition { x: 1920, y: 0 },
+        CameraPosition { x: 0, y: 1080 },
+    ] {
+        assert!(matches!(
+            engine.handle(Command::CameraPosition { at: Some(bad) }),
+            Reply::Error { .. }
+        ));
+        let face = engine
+            .status()
+            .layers
+            .iter()
+            .find(|l| l.source.kind == crate::layers::Kind::Camera)
+            .unwrap();
+        assert_eq!(
+            (face.transform.x, face.transform.y),
+            (300, 200),
+            "invalid wire command must not change the picture"
+        );
+    }
+    engine.handle(Command::CameraPosition { at: None });
+    let face = engine
+        .status()
+        .layers
+        .iter()
+        .find(|l| l.source.kind == crate::layers::Kind::Camera)
+        .unwrap();
+    assert_eq!((face.transform.x, face.transform.y), (0, 0));
+    assert!(engine.status().on_air);
+}
+
+#[test]
+fn changing_camera_shape_on_air_keeps_position_and_publication() {
+    use crate::scene::{CameraPosition, CameraShape};
+    let published: Published = Default::default();
+    let pipeline = Wrote {
+        published: published.clone(),
+        ..Default::default()
+    };
+    let mut engine = Engine::with_sources(Box::new(ThisMachine))
+        .with_pipeline(Box::new(pipeline))
+        .with_destination(Some(DESTINATION.into()));
+    engine.handle(Command::Window {
+        query: "remux".into(),
+    });
+    engine.handle(Command::Camera {
+        device: Some("HP".into()),
+    });
+    assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+    let at = CameraPosition { x: 300, y: 200 };
+    engine.handle(Command::CameraPosition { at: Some(at) });
+    let Reply::Status(rectangle) = engine.handle(Command::CameraShape {
+        shape: CameraShape::Rectangle,
+    }) else {
+        panic!("status")
+    };
+    let face = rectangle
+        .layers
+        .iter()
+        .find(|l| l.source.kind == crate::layers::Kind::Camera)
+        .unwrap();
+    assert_eq!(face.shape, Some(CameraShape::Rectangle));
+    assert_eq!((face.transform.x, face.transform.y), (300, 200));
+    assert!(rectangle.on_air);
+    assert_eq!(
+        engine
+            .remembered()
+            .layers
+            .iter()
+            .find(|l| l.id == face.id)
+            .unwrap()
+            .shape,
+        Some(CameraShape::Rectangle)
+    );
+    let Reply::Status(circle) = engine.handle(Command::CameraShape {
+        shape: CameraShape::Circle,
+    }) else {
+        panic!("status")
+    };
+    let face = circle
+        .layers
+        .iter()
+        .find(|l| l.source.kind == crate::layers::Kind::Camera)
+        .unwrap();
+    assert_eq!(face.shape, Some(CameraShape::Circle));
+    assert_eq!((face.transform.x, face.transform.y), (300, 200));
+    assert!(circle.on_air);
+    assert_eq!(
+        published.lock().unwrap().len(),
+        1,
+        "shape changes do not restart publication"
+    );
+}
+
+#[test]
+fn a_shader_changes_the_scene_without_restarting_live_and_refusal_keeps_the_last_one() {
+    let (mut engine, published) = publishing_engine(None);
+    engine.handle(Command::Window {
+        query: "remux".into(),
+    });
+    assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+    let path = "/tmp/invert.frag".to_string();
+    let Reply::Status(status) = engine.handle(Command::Shader {
+        path: Some(path.clone()),
+    }) else {
+        panic!("shader selection answers with a status");
+    };
+    assert_eq!(status.shader.as_deref(), Some(path.as_str()));
+    assert!(status.on_air);
+    assert_eq!(published.lock().unwrap().len(), 1);
+    let Reply::Status(status) = engine.handle(Command::Shader { path: None }) else {
+        panic!("shader off answers with a status");
+    };
+    assert_eq!(status.shader, None);
+    assert!(status.on_air);
+    assert_eq!(published.lock().unwrap().len(), 1);
+    engine.handle(Command::Shader {
+        path: Some("/tmp/unsafe.frag".into()),
+    });
+    engine.handle(Command::HideEverything);
+    assert_eq!(
+        engine.status().shader,
+        None,
+        "panic removes even a shader that obscures the emergency card"
+    );
+
+    let (mut refusing, _) = publishing_engine(Some("compiler refused".into()));
+    let Reply::Error { message } = refusing.handle(Command::Shader { path: Some(path) }) else {
+        panic!("a broken shader must not be accepted");
+    };
+    assert_eq!(message, "compiler refused");
+    assert_eq!(refusing.status().shader, None);
+}
+
+#[test]
 fn the_self_view_flips_and_the_status_can_be_read_back() {
     let (mut engine, _) = publishing_engine(None);
     assert!(!engine.status().mirrored, "a camera starts unflipped");
@@ -1197,6 +1808,7 @@ fn flipping_reaches_the_picture_and_not_only_the_status() {
         previewed: Default::default(),
         ran_out: Default::default(),
         refuse: None,
+        scene_events: Default::default(),
     };
     let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
     engine.handle(Command::Mirror { on: true });
@@ -1248,18 +1860,24 @@ fn the_faders_start_where_the_engine_starts_them() {
 }
 
 #[test]
-fn a_panel_can_read_back_what_the_cards_were_told_to_say() {
+fn a_panel_can_read_back_scene_elements() {
     let (mut engine, _) = publishing_engine(None);
-    engine.handle(Command::CardText {
-        which: Card::StartingSoon,
-        text: "Chegando já".into(),
+    let element = Element {
+        id: "label".into(),
+        x: 20,
+        y: 30,
+        width: 300,
+        height: 90,
+        visible: true,
+        shader: None,
+        content: ElementContent::Text {
+            text: "Chegando já".into(),
+        },
+    };
+    engine.handle(Command::SceneElementAdd {
+        element: element.clone(),
     });
-    assert_eq!(engine.status().words.starting, "Chegando já");
-    assert_eq!(
-        engine.status().words.back,
-        crate::card::BACK_IN_A_MOMENT,
-        "the one that was not changed still says what it said"
-    );
+    assert_eq!(engine.status().scenes[0].elements, [element]);
 }
 
 #[test]
@@ -1282,6 +1900,7 @@ fn the_gate_is_tuned_a_slider_at_a_time_and_answers_with_the_whole_set() {
         previewed: Default::default(),
         ran_out: Default::default(),
         refuse: None,
+        scene_events: Default::default(),
     };
     let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
 
@@ -1959,6 +2578,7 @@ fn machine_with_pipeline() -> (Engine, std::sync::Arc<std::sync::Mutex<Vec<Behin
     let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pipeline = Wrote {
         told: told.clone(),
+        scene_events: Default::default(),
         cameras: Default::default(),
         mics: Default::default(),
         played: Default::default(),
@@ -2018,7 +2638,12 @@ fn a_swap_while_on_air_still_reaches_the_capture() {
         query: "notes".into(),
     });
     assert_eq!(
-        *told.lock().expect("told"),
+        told.lock()
+            .expect("told")
+            .iter()
+            .copied()
+            .filter(|source| *source != Behind::Nothing)
+            .collect::<Vec<_>>(),
         vec![
             Behind::Screen(DisplayId(1)),
             Behind::Screen(DisplayId(3)),
@@ -2038,7 +2663,7 @@ fn sharing_nothing_points_the_capture_at_nothing() {
     let Reply::Status(status) = engine.handle(Command::Share { on: false }) else {
         panic!("the share switch answers a status")
     };
-    assert_eq!(status.screen, None);
+    assert!(status.layers.is_empty());
     assert_eq!(
         told.lock().expect("told").last(),
         Some(&Behind::Nothing),
@@ -2067,15 +2692,26 @@ fn a_capture_that_refuses_leaves_the_status_alone() {
         previewed: Default::default(),
         ran_out: Default::default(),
         refuse: Some("macOS refused: screen recording".into()),
+        scene_events: Default::default(),
     };
     let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(refusing));
     let Reply::Error { message } = engine.handle(Command::Screen { display: 3 }) else {
         panic!("a refused capture is an error")
     };
     assert!(message.contains("refused"), "{message}");
-    assert_eq!(
-        engine.status().screen,
-        None,
+    let Reply::Error { message } = engine.handle(Command::LayerWindow {
+        id: "editor".into(),
+        query: "tmux".into(),
+    }) else {
+        panic!("a refused overlay is an error")
+    };
+    assert!(message.contains("refused"));
+    assert!(
+        engine.status().layers.is_empty(),
+        "a failed capture is not in Status"
+    );
+    assert!(
+        engine.status().layers.is_empty(),
         "the status must not claim a capture that never started"
     );
 }
@@ -2097,10 +2733,366 @@ fn what_is_flowing_is_measured_not_assumed() {
 }
 
 /// Every card the engine put up, in order, as the fake pipeline saw them.
-type Shown = std::sync::Arc<std::sync::Mutex<Vec<(Card, String)>>>;
+type Shown = std::sync::Arc<std::sync::Mutex<Vec<(Vec<Element>, Vec<(String, Duration)>)>>>;
 
 /// Where the faders were last put: microphone, music, duck, muted.
 type Faders = std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64, bool, bool, bool)>>>;
+
+#[test]
+fn hiding_keeps_capture_preview_layout_and_id_and_pauses_screen_sound() {
+    let pipeline = Wrote::default();
+    let captured = pipeline.told.clone();
+    let levels = pipeline.levels.clone();
+    let shown = pipeline.shown.clone();
+    let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
+    engine.handle(Command::LayerScreen {
+        id: "desk".into(),
+        display: 1,
+    });
+    let original = engine.status().layers[0].clone();
+    engine.handle(Command::LayerScreenSound {
+        id: "desk".into(),
+        on: true,
+    });
+    assert!(levels.lock().unwrap().unwrap().5);
+
+    let Reply::Status(hidden) = engine.handle(Command::LayerVisible {
+        id: "desk".into(),
+        on: false,
+    }) else {
+        panic!("hide")
+    };
+    assert_eq!(hidden.layers[0].id, original.id);
+    assert_eq!(hidden.layers[0].source, original.source);
+    assert_eq!(hidden.layers[0].transform, original.transform);
+    assert!(!hidden.layers[0].visible);
+    assert_eq!(
+        hidden.layer_flowing["desk"].captured, 3,
+        "capture continues while hidden"
+    );
+    assert!(matches!(
+        engine.handle(Command::LayerShot { id: "desk".into() }),
+        Reply::Shot { .. }
+    ));
+    assert!(hidden.screen_sound && hidden.screen_sound_layer.as_deref() == Some("desk"));
+    let said = crate::cli::render(&Reply::Status(hidden.clone()));
+    assert!(
+        said.contains("hidden") && said.contains("screen sound paused"),
+        "{said}"
+    );
+    assert!(
+        !levels.lock().unwrap().unwrap().5,
+        "hidden display audio must leave the mix"
+    );
+    assert_eq!(engine.status().active_scene, "default");
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        1,
+        "hide must not stop or reopen capture"
+    );
+    let saved = crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+    assert!(!saved.layers[0].visible);
+    let mut restored =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    restored.restore(&saved);
+    assert_eq!(restored.status().layers[0].id, "desk");
+    assert!(!restored.status().layers[0].visible);
+
+    engine.handle(Command::LayerVisible {
+        id: "desk".into(),
+        on: true,
+    });
+    assert!(engine.status().layers[0].visible);
+    assert!(
+        levels.lock().unwrap().unwrap().5,
+        "show resumes requested audio"
+    );
+    assert_eq!(engine.status().active_scene, "default");
+    assert_eq!(captured.lock().unwrap().len(), 1);
+    let before = elements_shown(&shown).len();
+    engine.handle(Command::LayerVisible {
+        id: "desk".into(),
+        on: true,
+    });
+    assert_eq!(
+        elements_shown(&shown).len(),
+        before,
+        "showing an already visible layer does nothing"
+    );
+}
+
+#[test]
+fn ordinary_visual_verbs_reuse_one_layer_without_a_reserved_id() {
+    let pipeline = Wrote::default();
+    let told = pipeline.told.clone();
+    let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
+    let Reply::Status(first) = engine.handle(Command::Window {
+        query: "tmux".into(),
+    }) else {
+        panic!("window")
+    };
+    let id = first.layers[0].id.clone();
+    assert!(id.starts_with("source-") && !id.contains("legacy"));
+    engine.handle(Command::LayerCamera {
+        id: "face".into(),
+        device: "HP".into(),
+    });
+    let transform = crate::layers::Transform {
+        x: 80,
+        y: 50,
+        width: 600,
+        height: 300,
+        degrees: 15,
+    };
+    engine.handle(Command::LayerTransform {
+        id: id.clone(),
+        transform,
+    });
+    let crop = crate::layers::Crop {
+        x: 20,
+        y: 30,
+        width: 400,
+        height: 200,
+    };
+    engine.handle(Command::LayerCrop {
+        id: id.clone(),
+        crop: Some(crop),
+    });
+    let Reply::Status(switched) = engine.handle(Command::Screen { display: 3 }) else {
+        panic!("screen")
+    };
+    assert_eq!(
+        switched
+            .layers
+            .iter()
+            .map(|layer| layer.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![id.as_str(), "face"]
+    );
+    assert_eq!(switched.layers[0].transform, transform);
+    assert_eq!(switched.layers[0].crop, Some(crop));
+    assert_eq!(switched.layers[0].source.name, "VG2791R");
+    assert_eq!(switched.layers[0].source.kind, crate::layers::Kind::Screen);
+    // The fake records the stop before the new source opens, not two captures
+    // with different generated IDs overlapping even briefly.
+    assert_eq!(
+        *told.lock().unwrap(),
+        vec![
+            Behind::Window(WindowId(10)),
+            Behind::Nothing,
+            Behind::Screen(DisplayId(3))
+        ]
+    );
+    let Reply::Status(same) = engine.handle(Command::Screen { display: 3 }) else {
+        panic!("same source")
+    };
+    assert_eq!(same.layers[0].id, id);
+    assert_eq!(
+        told.lock().unwrap().len(),
+        3,
+        "same source must not restart capture"
+    );
+}
+
+#[test]
+fn a_swap_resets_an_invalid_crop_and_only_disables_audio_for_a_window() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    engine.handle(Command::LayerScreen {
+        id: "desk".into(),
+        display: 1,
+    });
+    engine.handle(Command::LayerCrop {
+        id: "desk".into(),
+        crop: Some(crate::layers::Crop {
+            x: 1500,
+            y: 0,
+            width: 300,
+            height: 200,
+        }),
+    });
+    engine.handle(Command::LayerScreenSound {
+        id: "desk".into(),
+        on: true,
+    });
+    let Reply::Status(display) = engine.handle(Command::LayerReplaceScreen {
+        id: "desk".into(),
+        display: 3,
+    }) else {
+        panic!("display swap")
+    };
+    assert!(display.screen_sound);
+    assert_eq!(display.screen_sound_layer.as_deref(), Some("desk"));
+    let Reply::Status(window) = engine.handle(Command::Window {
+        query: "notes".into(),
+    }) else {
+        panic!("window swap")
+    };
+    assert_eq!(window.layers[0].id, "desk");
+    assert_eq!(window.layers[0].source.kind, crate::layers::Kind::Window);
+    assert_eq!(window.layers[0].crop, None);
+    assert!(!window.screen_sound);
+    assert_eq!(window.screen_sound_layer, None);
+    assert!(matches!(
+        engine.handle(Command::LayerReplaceCamera {
+            id: "desk".into(),
+            device: "HP".into()
+        }),
+        Reply::Error { .. }
+    ));
+}
+
+#[test]
+fn failed_swap_keeps_the_id_or_explicitly_drops_an_unrecoverable_capture() {
+    let mut engine = Engine::with_sources(Box::new(ThisMachine));
+    engine.handle(Command::Screen { display: 1 });
+    let original = engine.status().layers[0].clone();
+    let mut engine = engine.with_pipeline(Box::new(Wrote {
+        refuse: Some("new source refused".into()),
+        ..Default::default()
+    }));
+    assert!(matches!(
+        engine.handle(Command::Window {
+            query: "notes".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status().layers, vec![original.clone()]);
+    // A missing target is validated before the pipeline sees any swap.
+    assert!(matches!(
+        engine.handle(Command::Window {
+            query: "missing-window".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert_eq!(engine.status().layers, vec![original.clone()]);
+
+    let mut engine = engine.with_pipeline(Box::new(Wrote {
+        refuse: Some("rollback lost".into()),
+        ..Default::default()
+    }));
+    assert!(matches!(
+        engine.handle(Command::Window {
+            query: "notes".into()
+        }),
+        Reply::Error { .. }
+    ));
+    assert!(
+        engine.status().layers.is_empty(),
+        "a lost capture must not remain in Status"
+    );
+}
+
+#[test]
+fn a_camera_alias_reuses_the_unique_camera_but_refuses_two() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    engine.handle(Command::LayerCamera {
+        id: "host".into(),
+        device: "HP".into(),
+    });
+    let Reply::Status(switched) = engine.handle(Command::Camera {
+        device: Some("MacBook".into()),
+    }) else {
+        panic!("camera swap")
+    };
+    assert_eq!(switched.layers[0].id, "host");
+    assert_eq!(switched.layers[0].source.name, "MacBook Pro Camera");
+    engine.handle(Command::LayerCamera {
+        id: "guest".into(),
+        device: "HP".into(),
+    });
+    assert!(
+        matches!(engine.handle(Command::Camera { device: Some("HP".into()) }), Reply::Error { message } if message.contains("layer ID"))
+    );
+}
+
+#[test]
+fn old_source_verbs_refuse_ambiguous_layers() {
+    let mut engine =
+        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
+    for id in ["left", "right"] {
+        assert!(matches!(
+            engine.handle(Command::LayerScreen {
+                id: id.into(),
+                display: 1
+            }),
+            Reply::Status(_)
+        ));
+    }
+    assert!(
+        matches!(engine.handle(Command::Screen { display: 3 }), Reply::Error { message } if message.contains("layer ID"))
+    );
+    assert!(
+        matches!(engine.handle(Command::Window { query: "missing".into() }), Reply::Error { message } if message.contains("layer ID"))
+    );
+    assert!(
+        matches!(engine.handle(Command::Share { on: false }), Reply::Error { message } if message.contains("layer ID"))
+    );
+    assert_eq!(engine.status().layers.len(), 2);
+    assert!(
+        matches!(engine.handle(Command::Shot { of: Framed::Screen }), Reply::Error { message } if message.contains("layer-shot"))
+    );
+    assert!(matches!(
+        engine.handle(Command::LayerShot { id: "right".into() }),
+        Reply::Shot { .. }
+    ));
+    assert!(matches!(
+        engine.handle(Command::LayerShot {
+            id: "missing".into()
+        }),
+        Reply::Error { .. }
+    ));
+    let Reply::Status(status) = engine.handle(Command::Status) else {
+        panic!("status")
+    };
+    assert_eq!(
+        status
+            .layer_flowing
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["left", "right"]
+    );
+    for id in ["first", "second"] {
+        engine.handle(Command::LayerCamera {
+            id: id.into(),
+            device: "HP".into(),
+        });
+    }
+    assert!(
+        matches!(engine.handle(Command::Camera { device: None }), Reply::Error { message } if message.contains("layer ID"))
+    );
+}
+
+#[test]
+fn screen_sound_requires_one_display_and_switches_without_summing() {
+    let pipeline = Wrote::default();
+    let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
+    let error = engine.handle(Command::ScreenSound { on: true });
+    assert!(matches!(error, Reply::Error { .. }));
+    for id in ["left", "right"] {
+        engine.handle(Command::LayerScreen {
+            id: id.into(),
+            display: 1,
+        });
+    }
+    let error = engine.handle(Command::ScreenSound { on: true });
+    assert!(matches!(error, Reply::Error { .. }));
+    engine.handle(Command::LayerScreenSound {
+        id: "left".into(),
+        on: true,
+    });
+    assert_eq!(engine.status().screen_sound_layer.as_deref(), Some("left"));
+    engine.handle(Command::LayerScreenSound {
+        id: "right".into(),
+        on: true,
+    });
+    assert_eq!(engine.status().screen_sound_layer.as_deref(), Some("right"));
+    engine.handle(Command::LayerRemove { id: "right".into() });
+    assert!(!engine.status().screen_sound);
+    assert_eq!(engine.status().screen_sound_layer, None);
+}
 
 // What the Mac plays stays off the air until somebody says so, reaches the
 // mixer the moment they do, and the panic button takes it back: nothing of
@@ -2117,6 +3109,10 @@ fn the_screens_sound_is_off_the_air_until_asked_and_the_panic_button_takes_it_ba
         !engine.status().screen_sound,
         "the screen is chosen, its sound is not"
     );
+    engine.handle(Command::LayerScreen {
+        id: "display".into(),
+        display: 1,
+    });
 
     let Reply::Status(sent) = engine.handle(Command::ScreenSound { on: true }) else {
         panic!("a switch every face reads answers with a status")
@@ -2136,12 +3132,53 @@ fn the_screens_sound_is_off_the_air_until_asked_and_the_panic_button_takes_it_ba
     assert_eq!(levels.lock().expect("levels").map(|l| l.5), Some(false));
 }
 
-fn cards_shown(log: &Shown) -> Vec<(Card, String)> {
+#[test]
+fn application_audio_is_independent_and_panic_closes_it() {
+    let pipeline = Wrote::default();
+    let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
+    assert_eq!(engine.status().app_audio, None);
+    let Reply::Status(selected) = engine.handle(Command::AppAudio {
+        app: Some("Safari".into()),
+    }) else {
+        panic!("application audio must answer with status");
+    };
+    assert_eq!(selected.app_audio.as_deref(), Some("Safari"));
+    assert!(!selected.screen_sound);
+    engine.handle(Command::LayerScreen {
+        id: "display".into(),
+        display: 1,
+    });
+    engine.handle(Command::ScreenSound { on: true });
+    engine.handle(Command::AppAudioVolume { level: 0.3 });
+    assert_eq!(engine.status().app_audio_volume, 0.3);
+    assert!(engine.status().screen_sound);
+    engine.handle(Command::AppAudio { app: None });
+    assert_eq!(engine.status().app_audio, None);
+    assert!(
+        engine.status().screen_sound,
+        "turning off the app leaves screen sound on"
+    );
+    engine.handle(Command::AppAudio {
+        app: Some("Safari".into()),
+    });
+    engine.handle(Command::HideEverything);
+    assert_eq!(engine.status().app_audio, None);
+    assert!(!engine.status().screen_sound);
+}
+
+/// Each `show` the pipeline was given: the elements and the running timers.
+type Showings = Vec<(Vec<Element>, Vec<(String, Duration)>)>;
+
+fn elements_shown(log: &Shown) -> Showings {
     log.lock().expect("shown").clone()
 }
 
-fn machine_watching_cards() -> (Engine, Shown) {
+/// What the pipeline was last told a running timer had left.
+type Counting = std::sync::Arc<std::sync::Mutex<Option<Duration>>>;
+
+fn machine_watching_elements() -> (Engine, Shown, Counting) {
     let shown: Shown = Default::default();
+    let counting: Counting = Default::default();
     let pipeline = Wrote {
         told: Default::default(),
         cameras: Default::default(),
@@ -2149,181 +3186,7 @@ fn machine_watching_cards() -> (Engine, Shown) {
         played: Default::default(),
         levels: Default::default(),
         shown: shown.clone(),
-        counting: Default::default(),
-        published: Default::default(),
-        recorded: Default::default(),
-        mirrored: Default::default(),
-        gated: Default::default(),
-        heard_here: Default::default(),
-        speaker_calls: Default::default(),
-        previewed: Default::default(),
-        ran_out: Default::default(),
-        refuse: None,
-    };
-    (
-        Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline)),
-        shown,
-    )
-}
-
-#[test]
-fn a_card_reaches_the_picture_with_the_words_on_it() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Card {
-        which: Card::StartingSoon,
-    });
-    assert_eq!(
-        cards_shown(&shown),
-        vec![(Card::StartingSoon, "Starting soon".into())]
-    );
-    assert_eq!(engine.status().card, Some(Card::StartingSoon));
-}
-
-#[test]
-fn changing_the_words_changes_a_card_that_is_already_up() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Card {
-        which: Card::StartingSoon,
-    });
-    engine.handle(Command::CardText {
-        which: Card::StartingSoon,
-        text: "Chegando já".into(),
-    });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::StartingSoon, "Chegando já".into())),
-        "a card already up must change at once, not the next time it is pressed"
-    );
-}
-
-#[test]
-fn changing_the_words_of_a_card_that_is_down_does_not_put_it_up() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::CardText {
-        which: Card::BackInAMoment,
-        text: "Já volto".into(),
-    });
-    assert!(
-        cards_shown(&shown).is_empty(),
-        "nothing should have been shown"
-    );
-    assert_eq!(engine.status().card, None);
-}
-
-#[test]
-fn the_engines_own_line_about_itself_is_not_the_operators_to_change() {
-    let (mut engine, _) = machine_watching_cards();
-    assert!(matches!(
-        engine.handle(Command::CardText {
-            which: Card::NothingShared,
-            text: "whatever".into()
-        }),
-        Reply::Error { .. }
-    ));
-}
-
-// A viewer looking at a frozen frame cannot tell a deliberate blank from a
-// stream that died, so the engine says which it is.
-#[test]
-fn turning_the_screen_off_puts_up_the_engines_own_card() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Screen { display: 3 });
-    engine.handle(Command::Share { on: false });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::NothingShared, "No content shared".into()))
-    );
-}
-
-// The status says what the operator chose. A client drawing "Back in a
-// moment" as selected because the screen happens to be off would be lying.
-#[test]
-fn the_engines_own_card_is_not_reported_as_the_operators_choice() {
-    let (mut engine, _) = machine_watching_cards();
-    engine.handle(Command::Share { on: false });
-    assert_eq!(engine.status().card, None);
-}
-
-#[test]
-fn choosing_a_source_again_takes_the_engines_card_down() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Share { on: false });
-    engine.handle(Command::Screen { display: 3 });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::Live, String::new())),
-        "the engine takes its own card down when there is a picture again"
-    );
-}
-
-// An operator who asked for "Back in a moment" gets it, screen or no
-// screen. Theirs outranks the engine's.
-#[test]
-fn an_operators_card_outranks_the_engines() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Card {
-        which: Card::BackInAMoment,
-    });
-    engine.handle(Command::Share { on: false });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::BackInAMoment, "Back in a moment".into())),
-        "turning the screen off must not replace the card they chose"
-    );
-    assert_eq!(engine.status().card, Some(Card::BackInAMoment));
-}
-
-// The moment they press "Live" thinking the show is starting is the worst
-// possible moment for the picture to go empty, and the only sign would be
-// a viewer saying it froze.
-#[test]
-fn taking_a_card_down_with_nothing_behind_the_picture_leaves_the_blank_up() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Card {
-        which: Card::StartingSoon,
-    });
-    engine.handle(Command::Card { which: Card::Live });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::NothingShared, "No content shared".into())),
-        "with no screen chosen, taking the card down must not leave the picture empty"
-    );
-    assert_eq!(
-        engine.status().card,
-        None,
-        "and it is still not their choice"
-    );
-}
-
-#[test]
-fn taking_a_card_down_with_a_screen_behind_it_shows_the_screen() {
-    let (mut engine, shown) = machine_watching_cards();
-    engine.handle(Command::Screen { display: 3 });
-    engine.handle(Command::Card {
-        which: Card::BackInAMoment,
-    });
-    engine.handle(Command::Card { which: Card::Live });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::Live, String::new())),
-        "there is a screen to go back to"
-    );
-}
-
-fn machine_watching_the_clock() -> (
-    Engine,
-    Shown,
-    std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
-) {
-    let shown: Shown = Default::default();
-    let counting: std::sync::Arc<std::sync::Mutex<Option<Duration>>> = Default::default();
-    let pipeline = Wrote {
-        told: Default::default(),
-        cameras: Default::default(),
-        mics: Default::default(),
-        played: Default::default(),
-        levels: Default::default(),
-        shown: shown.clone(),
+        scene_events: Default::default(),
         counting: counting.clone(),
         published: Default::default(),
         recorded: Default::default(),
@@ -2344,104 +3207,15 @@ fn machine_watching_the_clock() -> (
     )
 }
 
-// Nobody presses "start the countdown" wanting to stay on the picture they
-// are already showing.
 #[test]
-fn starting_the_countdown_puts_the_starting_card_up() {
-    let (mut engine, shown, counting) = machine_watching_the_clock();
-    engine.handle(Command::Countdown { seconds: None });
-    assert_eq!(engine.status().card, Some(Card::StartingSoon));
-    assert_eq!(
-        cards_shown(&shown).last().map(|(card, _)| *card),
-        Some(Card::StartingSoon)
-    );
-    assert_eq!(
-        *counting.lock().expect("counting"),
-        Some(Duration::from_secs(DEFAULT_COUNTDOWN_SECONDS as u64))
-    );
-}
-
-#[test]
-fn the_countdown_is_as_long_as_the_operator_says() {
-    let (mut engine, _, counting) = machine_watching_the_clock();
-    engine.handle(Command::Countdown { seconds: Some(45) });
-    assert_eq!(
-        *counting.lock().expect("counting"),
-        Some(Duration::from_secs(45))
-    );
-}
-
-// The countdown belongs to the starting card. Putting another card up, or
-// taking it down, stops the clock rather than leaving it running behind
-// something else.
-#[test]
-fn another_card_stops_the_clock() {
-    let (mut engine, _, counting) = machine_watching_the_clock();
-    engine.handle(Command::Countdown { seconds: Some(60) });
-    engine.handle(Command::Card {
-        which: Card::BackInAMoment,
-    });
-    assert_eq!(*counting.lock().expect("counting"), None);
-}
-
-#[test]
-fn the_countdown_carries_the_operators_own_words() {
-    let (mut engine, shown, _) = machine_watching_the_clock();
-    engine.handle(Command::CardText {
-        which: Card::StartingSoon,
-        text: "Começa já".into(),
-    });
-    engine.handle(Command::Countdown { seconds: Some(30) });
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::StartingSoon, "Começa já".into())),
-        "the clock is added by the picture; the words are the operator's"
-    );
-}
-
-// Four things at once, and it is one button because it is pressed in the
-// moment somebody walks into the room.
-#[test]
-fn hiding_everything_reaches_the_picture_and_not_only_the_status() {
-    let (mut engine, shown, _) = machine_watching_the_clock();
-    engine.handle(Command::Screen { display: 3 });
-    engine.handle(Command::Camera {
-        device: Some("webcam".into()),
-    });
-    engine.handle(Command::GoLive);
-
-    engine.handle(Command::HideEverything);
-
-    assert_eq!(
-        cards_shown(&shown).last(),
-        Some(&(Card::BackInAMoment, "Back in a moment".into())),
-        "the card has to actually be drawn, not only recorded"
-    );
-    let status = engine.status();
-    assert!(
-        status.muted,
-        "hiding everything means hiding your voice too"
-    );
-    assert_eq!(status.camera, None);
-    assert_eq!(status.screen, None);
-    assert_eq!(status.card, Some(Card::BackInAMoment));
-    assert!(status.on_air, "it is a break, not the end of the live");
-}
-
-// The card goes up before the screen goes away, so there is never a frame
-// with nothing to show in it.
-#[test]
-fn the_card_is_up_before_the_screen_is_gone() {
-    let (mut engine, shown, _) = machine_watching_the_clock();
+fn panic_clears_scene_and_stops_media() {
+    let (mut engine, shown, _) = machine_watching_elements();
     engine.handle(Command::Screen { display: 3 });
     engine.handle(Command::HideEverything);
-    let cards = cards_shown(&shown);
-    assert_eq!(
-        cards.len(),
-        1,
-        "exactly one card, and no blank slipping in behind it: {cards:?}"
-    );
-    assert_eq!(cards[0].0, Card::BackInAMoment);
+    assert_eq!(engine.status().active_scene, "default");
+    assert!(elements_shown(&shown).last().is_some());
+    assert!(engine.status().layers.is_empty());
+    assert!(engine.status().muted);
 }
 
 /// A music folder: three genres,
@@ -2493,6 +3267,7 @@ fn machine_with_music() -> (Engine, Played, RanOut) {
         previewed: Default::default(),
         ran_out: ran_out.clone(),
         refuse: None,
+        scene_events: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -2575,13 +3350,8 @@ fn the_panic_button_leaves_nothing_running() {
     engine.handle(Command::HideEverything);
 
     let now = engine.status();
-    assert_eq!(
-        now.card,
-        Some(Card::BackInAMoment),
-        "the card goes up first"
-    );
-    assert_eq!(now.camera, None, "the camera is off");
-    assert_eq!(now.screen, None, "the screen is off");
+    assert_eq!(now.active_scene, "default");
+    assert!(now.layers.is_empty(), "the sources are off");
     assert!(now.muted, "the microphone is muted");
     assert_eq!(
         now.mic, None,
@@ -2746,32 +3516,6 @@ fn a_genre_that_refuses_to_play_opens_no_speakers() {
 
 // Rewording a card re-shows it only when it is the one up: rewording the
 // other one must not put anything back on the picture.
-#[test]
-fn rewording_the_card_that_is_not_up_changes_nothing_on_the_picture() {
-    let shown: Shown = Default::default();
-    let pipeline = Wrote {
-        shown: shown.clone(),
-        ..Default::default()
-    };
-    let mut engine = Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
-    engine.handle(Command::Card {
-        which: Card::StartingSoon,
-    });
-    let before = shown.lock().expect("shown").len();
-    let reply = engine.handle(Command::CardText {
-        which: Card::BackInAMoment,
-        text: "back in five".into(),
-    });
-    assert!(matches!(reply, Reply::Status(_)));
-    assert_eq!(
-        shown.lock().expect("shown").len(),
-        before,
-        "nothing was re-shown"
-    );
-    assert_eq!(engine.status().card, Some(Card::StartingSoon));
-    assert_eq!(engine.status().words.back, "back in five");
-}
-
 // An engine with no app behind it has no server to name and nothing to
 // announce, and its log carries no notice from anybody.
 #[test]

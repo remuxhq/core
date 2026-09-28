@@ -2,11 +2,30 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub struct SoundLevels {
+    pub mic: f64,
+    pub music: f64,
+    pub duck_db: f64,
+    pub muted: bool,
+    pub music_to_stream: bool,
+    pub screen_sound: bool,
+    pub app_audio_volume: f64,
+}
+
 /// The sound's half of the media path: the microphone, the music, the mixer
 /// and the speakers. See [`crate::engine::Pipeline`] for why it is a port.
 pub trait Sound: Send {
+    fn audio_layer_add(&mut self, _layer: &crate::audio_layers::Layer) -> Result<(), String> {
+        Ok(())
+    }
+    fn audio_layer_remove(&mut self, _id: &str) {}
+    fn audio_layer_levels(&mut self, _id: &str, _volume: f64, _muted: bool) {}
     /// Open a microphone by id, or close the one that is open.
     fn mic(&mut self, device: Option<&str>) -> Result<(), String>;
+    /// Start or stop a dedicated app capture; a failed start leaves the previous one intact.
+    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String>;
+
     /// Play a track, or stop. The engine decides *which* track; this makes the
     /// sound. Stopping is `None` rather than a separate verb because there is
     /// only ever one music track playing and it is either that one or none.
@@ -14,15 +33,7 @@ pub trait Sound: Send {
     /// Where the faders are, and whether the music and the screen's sound are
     /// in the mix that leaves. Sent whenever one moves, rather than read by
     /// the mixer, so that a fader nobody touched costs nothing.
-    fn levels(
-        &mut self,
-        mic: f64,
-        music: f64,
-        duck_db: f64,
-        muted: bool,
-        music_to_stream: bool,
-        screen_sound: bool,
-    ) -> Result<(), String>;
+    fn levels(&mut self, levels: SoundLevels) -> Result<(), String>;
     /// Where the gate's thresholds are now. The whole set, not the patch: the
     /// engine is what holds them, so the machine is told the answer rather
     /// than being asked to work it out.
@@ -118,9 +129,6 @@ impl Engine {
         self.sound()
     }
 
-    /// Whether what the computer plays reaches the audience. Its own switch, off
-    /// by default: the screen is chosen, what happens to be sounding on it
-    /// is not, until somebody says so.
     /// `remux play clap`: the file the name means, once, over everything.
     pub(super) fn play_clip(&mut self, name: &str) -> Reply {
         let root = crate::clips::root();
@@ -148,8 +156,80 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 
+    /// A dedicated audio capture independent of the screen sound.
+    pub(super) fn app_audio(&mut self, app: Option<String>) -> Reply {
+        if app
+            .as_ref()
+            .is_some_and(|name| name.len() > 256 || name.chars().any(char::is_control))
+        {
+            return Reply::Error {
+                message: "invalid application name".into(),
+            };
+        }
+        match self.pipeline.app_audio(app.as_deref()) {
+            Ok(selected) => {
+                self.status.app_audio = selected;
+                Reply::Status(Box::new(self.reported()))
+            }
+            Err(message) => Reply::Error { message },
+        }
+    }
+
+    pub(super) fn app_audio_volume(&mut self, level: f64) -> Reply {
+        if !level.is_finite() {
+            return Reply::Error {
+                message: "app audio volume must be finite".into(),
+            };
+        }
+        self.status.app_audio_volume = level.clamp(0.0, 1.0);
+        self.sound()
+    }
+
+    /// The old switch has no implicit choice when several displays are present.
     pub(super) fn screen_sound(&mut self, on: bool) -> Reply {
+        if !on {
+            if let Err(message) = self.pipeline.screen_audio(None) {
+                return Reply::Error { message };
+            }
+            self.status.screen_sound = false;
+            self.status.screen_sound_layer = None;
+            return self.sound();
+        }
+        let mut screens = self
+            .status
+            .layers
+            .iter()
+            .filter(|layer| layer.source.kind == crate::layers::Kind::Screen);
+        let Some(first) = screens.next() else {
+            return Reply::Error {
+                message: "no display layer; add one before enabling screen sound".into(),
+            };
+        };
+        if screens.next().is_some() {
+            return Reply::Error {
+                message: "more than one display layer; specify its ID with layer screen-sound"
+                    .into(),
+            };
+        }
+        self.layer_screen_sound(first.id.clone(), true)
+    }
+
+    pub(super) fn layer_screen_sound(&mut self, id: String, on: bool) -> Reply {
+        if !self
+            .status
+            .layers
+            .iter()
+            .any(|layer| layer.id == id && layer.source.kind == crate::layers::Kind::Screen)
+        {
+            return Reply::Error {
+                message: format!("no display layer {id:?}"),
+            };
+        }
+        if let Err(message) = self.pipeline.screen_audio(on.then_some(id.as_str())) {
+            return Reply::Error { message };
+        }
         self.status.screen_sound = on;
+        self.status.screen_sound_layer = on.then_some(id);
         self.sound()
     }
 
@@ -290,14 +370,21 @@ impl Engine {
     /// Pushed rather than pulled: a fader nobody touched should cost nothing,
     /// and the mixer runs a hundred times a second.
     pub(super) fn sound(&mut self) -> Reply {
-        match self.pipeline.levels(
-            self.status.faders.mic,
-            self.status.faders.music,
-            self.status.faders.duck_db,
-            self.status.muted,
-            self.status.music_to_stream,
-            self.status.screen_sound,
-        ) {
+        match self.pipeline.levels(SoundLevels {
+            mic: self.status.faders.mic,
+            music: self.status.faders.music,
+            duck_db: self.status.faders.duck_db,
+            muted: self.status.muted,
+            music_to_stream: self.status.music_to_stream,
+            screen_sound: self.status.screen_sound
+                && self.status.screen_sound_layer.as_deref().is_some_and(|id| {
+                    self.status
+                        .layers
+                        .iter()
+                        .any(|layer| layer.id == id && layer.visible)
+                }),
+            app_audio_volume: self.status.app_audio_volume,
+        }) {
             Ok(()) => Reply::Status(Box::new(self.reported())),
             Err(why) => Reply::Error { message: why },
         }

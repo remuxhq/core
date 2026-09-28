@@ -31,7 +31,7 @@ pub struct Window {
 
 /// The window a person meant by typing part of a name.
 ///
-/// `remux window <part of a title>` promises to swap the capture with no
+/// `remux video window <part of a title>` promises to swap the capture with no
 /// dialog, so this has to answer the same way every time. Two rules, in
 /// order: an exact title wins, because someone who typed the whole thing meant
 /// that one; otherwise the first match in the capturer's own order, which is

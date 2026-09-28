@@ -25,7 +25,8 @@ pub struct Grants {
 
 pub fn of(status: &Status, grants: &Grants) -> Health {
     let mut trouble = Vec::new();
-    let grant = |name: &str, grant: Grant| match grant {
+    let grant = |name: &str, grant: Grant| {
+        match grant {
         Grant::Refused => Some(format!(
             "{name}: refused; System Settings, Privacy & Security, {name} for remux"
         )),
@@ -33,27 +34,34 @@ pub fn of(status: &Status, grants: &Grants) -> Health {
         // lists the asker in System Settings, the person turns it on there,
         // and the process has to start again to see it.
         Grant::NotAsked if name == "screen recording" => Some(format!(
-            "{name}: not granted yet; remux screen <id> asks once, then System Settings, \
+            "{name}: not granted yet; remux scene layer add screen <id> <display> asks once, then System Settings, \
              Privacy & Security, Screen Recording, remuxd on, then remux daemon restart"
         )),
         Grant::NotAsked => Some(format!("{name}: not granted yet; the first use asks")),
         Grant::Granted => None,
+    }
     };
     trouble.extend(grant("screen recording", grants.screen));
     trouble.extend(grant("microphone", grants.microphone));
-    if status.camera.is_some() {
+    if status
+        .layers
+        .iter()
+        .any(|l| l.source.kind == crate::layers::Kind::Camera)
+    {
         trouble.extend(grant("camera", grants.camera));
     }
-    if status.screen.is_none() {
-        trouble.push("no picture: remux screen <id> or remux window <words>".into());
-    } else if status.flowing.frames == 0 {
+    if !status.layers.iter().any(|l| l.visible) {
+        trouble.push(
+            "no picture: remux scene layer add screen <id> <display> or window <id> <words>".into(),
+        );
+    } else if status.scene_flowing.frames == 0 {
         trouble.push("the capture is not delivering frames".into());
     }
     if let (Some(mic), Some(why)) = (&status.mic, &status.hearing.complaint) {
         trouble.push(format!("mic {mic}: {why}"));
     }
     if !status.destinations.iter().any(|d| d.armed && d.connected) {
-        trouble.push("no destination armed and connected: remux destinations".into());
+        trouble.push("no destination armed and connected: remux destination list".into());
     }
     for row in status.destinations.iter().filter(|d| d.armed) {
         if let Some(why) = &row.trouble {
@@ -69,14 +77,33 @@ pub fn of(status: &Status, grants: &Grants) -> Health {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocol::Destination;
+
+    pub(crate) fn screen_layer(name: &str) -> crate::layers::Layer {
+        crate::layers::Layer {
+            id: "desk".into(),
+            source: crate::layers::Source {
+                kind: crate::layers::Kind::Screen,
+                handle: "1".into(),
+                name: name.into(),
+                width: 1920,
+                height: 1080,
+            },
+            transform: crate::layers::Transform::native((1920, 1080)),
+            visible: true,
+            crop: None,
+            shape: None,
+            mirrored: false,
+            shader: None,
+        }
+    }
 
     fn ready() -> (Status, Grants) {
         let mut status = Status {
             version: "0.1.0".into(),
-            screen: Some("VG2791R".into()),
+            layers: vec![screen_layer("VG2791R")],
             destinations: vec![Destination {
                 id: 1,
                 name: "tw".into(),
@@ -86,7 +113,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        status.flowing.frames = 30;
+        status.scene_flowing.frames = 30;
         (
             status,
             Grants {
@@ -110,7 +137,7 @@ mod tests {
             }
         );
         let mut status = status;
-        status.screen = None;
+        status.layers.clear();
         status.destinations[0].armed = false;
         let mut grants = grants;
         grants.screen = Grant::Refused;
@@ -125,7 +152,10 @@ mod tests {
     #[test]
     fn a_camera_chosen_needs_its_grant_and_a_refusal_is_on_its_row() {
         let (mut status, grants) = ready();
-        status.camera = Some("FaceTime".into());
+        let mut face = screen_layer("FaceTime");
+        face.id = "face".into();
+        face.source.kind = crate::layers::Kind::Camera;
+        status.layers.push(face);
         status.destinations[0].trouble = Some("youtube said 403".into());
         let said = of(&status, &grants);
         assert_eq!(
