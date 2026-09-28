@@ -17,6 +17,13 @@ on:
 permissions:
   contents: write
 
+# One run that can publish at a time, so two never race to the same tag. A run
+# that cannot publish (ci red, a pull request) takes a group of its own and never
+# evicts one waiting to.
+concurrency:
+  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && 'release' || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   # The notes are the record of why a release is what it is, and nothing
   # generates a why: the version engine/cli/Cargo.toml says, without
