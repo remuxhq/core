@@ -25,80 +25,8 @@
 //! so accumulating in `f32` here would drift away from the studio's numbers
 //! and the ported tests would stop meaning the same thing.
 
-/// How long each detector has to agree before the gate believes it.
-#[derive(
-    Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-pub struct GateParams {
-    /// ≈ -55 dB on the >3 kHz band: keyboard clicks from behind the mic.
-    pub hf: f64,
-    /// ≈ -20 dBFS full band: your voice, close and on-axis, gain low.
-    pub full: f64,
-    /// A closed gate sits at ≈ -40 dB: the room is gone, but it is not a vacuum.
-    pub floor: f64,
-    /// Stays open between syllables and words.
-    pub hold_ms: f64,
-    /// The full band must persist this long, so an impulse does not count.
-    pub attack_ms: f64,
-    /// The highs must persist this long. A key press does.
-    pub hf_attack_ms: f64,
-    /// ≈ +6 dB when the gate opened on highs only: a keyboard, with no voice.
-    pub keys_boost: f64,
-}
-
-impl Default for GateParams {
-    fn default() -> Self {
-        Self {
-            hf: 0.0018,
-            full: 0.1,
-            floor: 0.01,
-            hold_ms: 450.0,
-            attack_ms: 50.0,
-            hf_attack_ms: 12.0,
-            keys_boost: 2.0,
-        }
-    }
-}
-
-/// What the gate decided for this block.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GateFrame {
-    pub gain: f64,
-    pub open: bool,
-    /// Whether the full band opened it: a voice, not a keyboard. The duck
-    /// follows this and never `open`, or typing chops the music.
-    pub voice: bool,
-}
-
-/// What the two detectors are hearing, for the meter that says where to put
-/// the thresholds. A gate is set by eye, against your room and your voice.
-#[derive(
-    Default,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
-pub struct GateLevels {
-    pub full: f64,
-    pub hf: f64,
-}
-
-/// A change to some of the parameters. Every field optional on purpose: the
-/// panel sends what the person touched, not the whole set.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct GatePatch {
-    pub hf: Option<f64>,
-    pub full: Option<f64>,
-    pub floor: Option<f64>,
-    pub hold_ms: Option<f64>,
-    pub attack_ms: Option<f64>,
-    pub hf_attack_ms: Option<f64>,
-    pub keys_boost: Option<f64>,
-}
+pub use remuxd_domain::sound::mixer::gate::{GateFrame, GateLevels, GateParams, GatePatch};
+use remuxd_domain::sound::mixer::{Filter, GateFilter};
 
 pub const BLOCK: usize = 128;
 
@@ -414,14 +342,15 @@ impl Gate {
     pub fn retune(&mut self, params: GateParams) {
         self.gated.retune(params);
     }
+}
 
-    /// The last whole block's decision and levels, for a face's meter.
-    pub fn heard(&self) -> Option<(GateFrame, GateLevels)> {
+impl GateFilter for Gate {
+    fn heard(&self) -> Option<(GateFrame, GateLevels)> {
         self.heard
     }
 }
 
-impl crate::Filter for Gate {
+impl Filter for Gate {
     fn process(&mut self, samples: &mut [f32]) {
         for block in self.gated.push(samples) {
             self.heard = Some((block.frame, block.levels));
@@ -436,6 +365,12 @@ impl crate::Filter for Gate {
     fn latency_frames(&self) -> usize {
         BLOCK + self.gated.lookahead_frames
     }
+}
+
+/// The remux gate as the domain's `MakeGate`: what the daemon injects into a
+/// motor, which makes one per microphone at the host's rate and channels.
+pub fn make(sample_rate: f64, channels: usize, params: GateParams) -> Box<dyn GateFilter> {
+    Box::new(Gate::new(sample_rate, channels, params))
 }
 
 /// Lookahead. The audio path is delayed and the detector is not, so the gate
@@ -468,7 +403,6 @@ impl DelayLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Filter;
 
     const SR: f64 = 48_000.0;
 

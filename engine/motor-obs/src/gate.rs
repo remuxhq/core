@@ -1,21 +1,22 @@
-//! `remux_gate`: the mixer's gate (`remux-mixer`) as a libobs audio filter on
-//! the microphone, hosted under the mixer's `Filter` contract.
+//! `remux_gate`: the gate this motor is given (a `MakeGate`, remux-mixer's in
+//! the daemon) as a libobs audio filter on the microphone, hosted under the
+//! domain's `Filter` contract.
 //!
 //! libobs's own noise gate has an open and a close threshold, a hold and an
 //! attack, and nothing else. The domain's gate also hears the highs apart (a
 //! key press from behind the microphone), lifts a keyboard with no voice by
 //! the keys boost, closes to a floor rather than to silence, and looks 60 ms
 //! ahead so a word from silence keeps its first syllable. So the motor hosts
-//! the remux gate, the one every motor runs, and the settings every face
-//! shows are the ones that act.
+//! the gate it is given, the one every motor runs, and the settings every
+//! face shows are the ones that act.
 
 use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use libobs as sys;
-use remux_mixer::gate::{Gate, GateLevels, GateParams};
-use remux_mixer::Filter as _;
+use remuxd_domain::sound::mixer::gate::{GateLevels, GateParams};
+use remuxd_domain::sound::mixer::{GateFilter, MakeGate};
 
 pub const GATE: &str = "remux_gate";
 
@@ -29,6 +30,14 @@ const KEYS: [&std::ffi::CStr; 7] = [
     c"hf_attack_ms",
     c"keys_boost",
 ];
+
+/// The gate this motor was given, once, before any microphone opens.
+static MAKE: OnceLock<MakeGate> = OnceLock::new();
+
+/// Keep the gate a motor is given. One motor per process: a second is ignored.
+pub fn host(make: MakeGate) {
+    let _ = MAKE.set(make);
+}
 
 /// What the last block decided, for the status. One microphone, one gate.
 static OPEN: AtomicBool = AtomicBool::new(false);
@@ -50,8 +59,11 @@ pub fn heard() -> (bool, GateLevels) {
 /// the lookahead. The microphone's sync offset takes it back, so the voice
 /// is not later against the lips.
 pub fn latency_ns() -> i64 {
+    let Some(make) = MAKE.get() else {
+        return 0;
+    };
     let rate = sample_rate();
-    let frames = Gate::new(rate, channels().max(1), GateParams::default()).latency_frames();
+    let frames = make(rate, channels().max(1), GateParams::default()).latency_frames();
     (frames as f64 / rate * 1e9) as i64
 }
 
@@ -124,7 +136,7 @@ pub fn register() {
 }
 
 struct Hosted {
-    gate: Gate,
+    gate: Box<dyn GateFilter>,
     channels: usize,
     interleaved: Vec<f32>,
 }
@@ -137,9 +149,13 @@ unsafe extern "C" fn create(
     settings: *mut sys::obs_data_t,
     _: *mut sys::obs_source_t,
 ) -> *mut c_void {
+    // No gate given, no filter: libobs leaves the microphone as it is.
+    let Some(make) = MAKE.get() else {
+        return std::ptr::null_mut();
+    };
     let channels = channels().max(1);
     Box::into_raw(Box::new(Hosted {
-        gate: Gate::new(sample_rate(), channels, params(settings)),
+        gate: make(sample_rate(), channels, params(settings)),
         channels,
         interleaved: Vec::new(),
     }))

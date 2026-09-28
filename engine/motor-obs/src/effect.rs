@@ -1,7 +1,8 @@
 //! The two kinds of source this motor adds to libobs.
 //!
-//! `remux_filter`: an operator's WGSL filter (the `remux-shader` crate, the contract both
-//! motors share), written out as an OBS effect, on a layer's source or on the
+//! `remux_filter`: an operator's WGSL filter (the contract both motors share),
+//! compiled by the `ShaderCompiler` this motor is given (remux-shader's, in the
+//! daemon) into an OBS effect, on a layer's source or on the
 //! scene. It fills two uniforms every frame: `time`, seconds since the motor
 //! started drawing, and `resolution`, the size in pixels of what it filters.
 //!
@@ -15,6 +16,7 @@ use std::time::Instant;
 
 use crate::c;
 use libobs as sys;
+use remuxd_domain::picture::shader::ShaderCompiler;
 
 pub const FILTER: &str = "remux_filter";
 pub const ELEMENT: &str = "remux_element";
@@ -67,10 +69,22 @@ pub fn register() {
     });
 }
 
+/// The compiler this motor was given, once, before any filter is built.
+static COMPILER: OnceLock<Box<dyn ShaderCompiler>> = OnceLock::new();
+
+/// Keep the compiler a motor is given. One motor per process: a second is
+/// ignored.
+pub fn host(compiler: Box<dyn ShaderCompiler>) {
+    let _ = COMPILER.set(compiler);
+}
+
 /// The effect a WGSL filter file is written out as, built in the graphics
 /// context the caller is in, with the reason when it does not build.
 unsafe fn build(path: &str) -> Result<*mut sys::gs_effect_t, String> {
-    let written = remux_shader::load(path)?;
+    let compiler = COMPILER
+        .get()
+        .ok_or_else(|| "this motor was given no shader compiler".to_string())?;
+    let written = compiler.compile(path)?;
     let mut error: *mut c_char = std::ptr::null_mut();
     let effect = sys::gs_effect_create(c(&written).as_ptr(), c(path).as_ptr(), &mut error);
     let said = if error.is_null() {

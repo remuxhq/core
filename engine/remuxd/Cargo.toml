@@ -10,7 +10,7 @@ description = "The remux engine: captures, mixes, encodes, publishes and records
 # The libobs motor is the one this daemon ships with; another motor's binary
 # depends on this crate with `default-features = false` and brings its own.
 default = ["obs"]
-obs = ["dep:motor-obs"]
+obs = ["dep:motor-obs", "dep:remux-shader", "dep:remux-mixer"]
 
 [[bin]]
 name = "remuxd"
@@ -21,6 +21,10 @@ remuxd-domain = { path = "../domain" }
 remux-wire = { path = "../wire" }
 # The libobs motor links against the OBS on this machine.
 motor-obs = { path = "../motor-obs", optional = true }
+# The filters the libobs motor hosts: this binary is the one place that knows
+# both the motor and the adapters, and injects the adapters into it.
+remux-shader = { path = "../shader", optional = true }
+remux-mixer = { path = "../mixer", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

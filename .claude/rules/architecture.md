@@ -34,12 +34,15 @@ the panic button.
 The domain's modules sit under the context they serve, so a building block is found
 where its verbs are:
 
-- `picture/`: scene, layers, scenes, sources, camera, preview, timer. Its filters are
-  `remux-shader`, a crate of its own for the WGSL parser.
-- `sound/`: audio_layers, music, clips; `sound/mixer/` is audio filtering as the
-  domain tunes it (levels, and the gate from `remux-mixer`, the crate of audio filters
-  every motor hosts under its `Filter` contract, the way `remux-shader` holds the
-  picture's).
+- `picture/`: scene, layers, scenes, sources, camera, preview, timer, and `shader`,
+  the port filters are compiled through (`ShaderCompiler`) and the WGSL contract.
+- `sound/`: audio_layers, music, clips, and `mixer/`: the `Filter` contract, the gate's
+  side of it (`GateFilter`, `MakeGate`, its settings and levels), and the meters.
+
+Filters are ports like the others: the domain owns the contract and never runs a
+filter. The adapters (`remux-shader` over naga, `remux-mixer` with the gate) depend on
+the domain, and the daemon's `main.rs` injects them into the motor. Nothing else knows
+an adapter, which `make remuxd.seam` checks for the domain and the CLI.
 - `air/`: destinations (the file, `~/.config/remux/destinations.json`, and `Local`,
   the `Watching` over it), plan, recording, history, journal.
 - `app/`: wire (`docs/wire.md`), chat (the feed every face reads), session, login.

@@ -26,7 +26,8 @@ bridge of your own; `uninstall.sh` takes everything out. [remux.live](https://re
 
 - `engine/`: `remuxd`, the daemon on a unix socket; `domain/` decides, `motor-obs/` is
   the machine (libobs), `wire/` the HTTP the daemon and the CLI share; `shader/` and
-  `mixer/` are the picture's and the sound's filters, each a contract any motor hosts.
+  `mixer/` are the picture's and the sound's filters, adapters the daemon injects into
+  the motor.
 - `engine/cli/`: `remux`, the words (`words.rs`: what was typed, and the prose back), the socket and the service.
 - `byo/`: a relay (mediamtx, one ffmpeg per platform) and a chat bridge (Twitch IRC,
   YouTube) of your own; `docs/byo.md` is the walk-through, `docs/wire.md` the chat

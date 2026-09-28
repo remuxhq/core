@@ -1,7 +1,82 @@
-//! The gate as the domain sees it: the mixer's gate (`remux_mixer::gate`),
-//! and the boundary where a socket message becomes a change to it.
+//! The gate as the domain sees it: its settings, what it decided and what it
+//! hears (on the status every face reads), and the boundary where a socket
+//! message becomes a change to it. The gate itself is an adapter a motor is
+//! given (`remux-mixer`'s), made through [`super::MakeGate`].
 
-pub use remux_mixer::gate::*;
+/// How long each detector has to agree before the gate believes it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct GateParams {
+    /// ≈ -55 dB on the >3 kHz band: keyboard clicks from behind the mic.
+    pub hf: f64,
+    /// ≈ -20 dBFS full band: your voice, close and on-axis, gain low.
+    pub full: f64,
+    /// A closed gate sits at ≈ -40 dB: the room is gone, but it is not a vacuum.
+    pub floor: f64,
+    /// Stays open between syllables and words.
+    pub hold_ms: f64,
+    /// The full band must persist this long, so an impulse does not count.
+    pub attack_ms: f64,
+    /// The highs must persist this long. A key press does.
+    pub hf_attack_ms: f64,
+    /// ≈ +6 dB when the gate opened on highs only: a keyboard, with no voice.
+    pub keys_boost: f64,
+}
+
+impl Default for GateParams {
+    fn default() -> Self {
+        Self {
+            hf: 0.0018,
+            full: 0.1,
+            floor: 0.01,
+            hold_ms: 450.0,
+            attack_ms: 50.0,
+            hf_attack_ms: 12.0,
+            keys_boost: 2.0,
+        }
+    }
+}
+
+/// What the gate decided for this block.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GateFrame {
+    pub gain: f64,
+    pub open: bool,
+    /// Whether the full band opened it: a voice, not a keyboard. The duck
+    /// follows this and never `open`, or typing chops the music.
+    pub voice: bool,
+}
+
+/// What the two detectors are hearing, for the meter that says where to put
+/// the thresholds. A gate is set by eye, against your room and your voice.
+#[derive(
+    Default,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+pub struct GateLevels {
+    pub full: f64,
+    pub hf: f64,
+}
+
+/// A change to some of the parameters. Every field optional on purpose: the
+/// panel sends what the person touched, not the whole set.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GatePatch {
+    pub hf: Option<f64>,
+    pub full: Option<f64>,
+    pub floor: Option<f64>,
+    pub hold_ms: Option<f64>,
+    pub attack_ms: Option<f64>,
+    pub hf_attack_ms: Option<f64>,
+    pub keys_boost: Option<f64>,
+}
 
 /// The boundary with whatever is driving us: a socket message is untrusted, so
 /// only the numeric gate keys survive it.

@@ -12,7 +12,11 @@ fn main() {
     }
     remuxd::boot::boot(
         || {
-            let (started, sources, pipeline) = motor_obs::Motor::start()?;
+            // The composition root: the adapters, injected into the motor.
+            let (started, sources, pipeline) = motor_obs::Motor::start(motor_obs::Filters {
+                shader: Box::new(remux_shader::Naga),
+                gate: Box::new(remux_mixer::gate::make),
+            })?;
             // Kept for the life of the process: dropping it shuts libobs down.
             std::mem::forget(started);
             Ok(remuxd::boot::Motor {
