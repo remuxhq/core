@@ -522,8 +522,12 @@ impl ObsPipeline {
     }
 
     /// One source rendered alone, for a shot of one layer or one element.
-    fn snap(&mut self, source: *mut sys::obs_source_t) -> Option<(Vec<u8>, u32, u32)> {
-        self.ring()?.snap(source)
+    fn snap(
+        &mut self,
+        source: *mut sys::obs_source_t,
+        mirrored: bool,
+    ) -> Option<(Vec<u8>, u32, u32)> {
+        self.ring()?.snap(source, mirrored)
     }
 }
 
@@ -644,13 +648,18 @@ impl Picture for ObsPipeline {
     }
 
     fn layer_shot(&mut self, id: &str) -> Option<(Vec<u8>, u32, u32)> {
-        let source = self
-            .drawn()
-            .layers
-            .iter()
-            .find(|d| d.layer.id == id)
-            .map(|d| d.source)?;
-        self.snap(source)
+        let (source, mirrored) =
+            self.drawn()
+                .layers
+                .iter()
+                .find(|d| d.layer.id == id)
+                .map(|d| {
+                    (
+                        d.source,
+                        d.layer.source.kind == Kind::Camera && d.layer.mirrored,
+                    )
+                })?;
+        self.snap(source, mirrored)
     }
 
     fn element_shot(
@@ -671,7 +680,7 @@ impl Picture for ObsPipeline {
                 set_filter(source, &mut filter, Some(&path), Some(made));
             }
         }
-        let shot = self.snap(source);
+        let shot = self.snap(source, false);
         set_filter(source, &mut filter, None, None);
         // SAFETY: ours, made above.
         unsafe { sys::obs_source_release(source) };

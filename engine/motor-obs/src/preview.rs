@@ -175,7 +175,13 @@ impl Ring {
 
     /// One source alone, once: rendered on the next frame, at most a second
     /// away, and handed back as a JPEG of its own shape.
-    pub fn snap(&mut self, source: *mut sys::obs_source_t) -> Option<(Vec<u8>, u32, u32)> {
+    /// One source rendered alone, turned left to right when `mirrored`: the
+    /// shot of a mirrored camera is the camera as the scene shows it.
+    pub fn snap(
+        &mut self,
+        source: *mut sys::obs_source_t,
+        mirrored: bool,
+    ) -> Option<(Vec<u8>, u32, u32)> {
         let (w, h) = unsafe {
             (
                 sys::obs_source_get_width(source),
@@ -219,7 +225,10 @@ impl Ring {
             *s = None;
         }
         self.render(was_on);
-        let taken = taken?;
+        let mut taken = taken?;
+        if mirrored {
+            mirror(&mut taken, width as usize);
+        }
         let mut out = Vec::new();
         jpeg_encoder::Encoder::new(&mut out, 80)
             .encode(
@@ -443,5 +452,32 @@ impl Drop for Ring {
         unsafe {
             libc::munmap(self.base.cast(), self.said.size());
         }
+    }
+}
+
+/// BGRA rows turned left to right, in place.
+fn mirror(pixels: &mut [u8], width: usize) {
+    for row in pixels.chunks_exact_mut(width * 4) {
+        for x in 0..width / 2 {
+            let (a, b) = (x * 4, (width - 1 - x) * 4);
+            for c in 0..4 {
+                row.swap(a + c, b + c);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_mirrored_shot_is_turned_left_to_right() {
+        let mut pixels = vec![
+            1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6,
+        ];
+        super::mirror(&mut pixels, 3);
+        assert_eq!(
+            pixels,
+            vec![3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4]
+        );
     }
 }
