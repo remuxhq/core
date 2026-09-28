@@ -627,23 +627,30 @@ impl Picture for ObsPipeline {
     }
 
     fn shot(&mut self, of: Framed) -> Option<(Vec<u8>, u32, u32)> {
+        // The ring first: one made here is pointed at the camera and the
+        // screen too, or it renders neither until the next ask.
+        self.ring()?;
         self.point_rings();
-        let ring = self.ring()?;
-        let ready = match of {
-            Framed::Scene => ring.shot().is_some(),
-            Framed::Camera => ring.shot_alone(true).is_some(),
-            Framed::Screen => ring.shot_alone(false).is_some(),
-        };
-        if !ready {
-            ring.watch(true);
-            ring.render(true);
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        let ring = self.preview.as_ref()?;
-        match of {
+        let ring = self.preview.as_deref_mut()?;
+        let taken = |ring: &crate::preview::Ring| match of {
             Framed::Scene => ring.shot(),
             Framed::Camera => ring.shot_alone(true),
             Framed::Screen => ring.shot_alone(false),
+        };
+        if let Some(shot) = taken(ring) {
+            return Some(shot);
+        }
+        // A ring just woken takes a few renders to hold a picture: a camera
+        // added a moment ago measured about half a second here.
+        ring.watch(true);
+        ring.render(true);
+        let until = Instant::now() + Duration::from_secs(1);
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+            let shot = taken(self.preview.as_ref()?);
+            if shot.is_some() || Instant::now() >= until {
+                return shot;
+            }
         }
     }
 
