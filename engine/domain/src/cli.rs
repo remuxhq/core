@@ -175,9 +175,10 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 Err("status takes no arguments".into())
             }
         }
-        "scene-create" | "scene-switch" | "scene-delete" => match rest {
+        "scene-create" | "scene-duplicate" | "scene-switch" | "scene-delete" => match rest {
             [name] if !name.is_empty() => Ok(match verb.as_str() {
                 "scene-create" => Command::SceneCreate { name: name.clone() },
+                "scene-duplicate" => Command::SceneDuplicate { name: name.clone() },
                 "scene-switch" => Command::SceneSwitch { name: name.clone() },
                 _ => Command::SceneDelete { name: name.clone() },
             }),

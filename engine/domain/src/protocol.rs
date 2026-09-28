@@ -25,7 +25,14 @@ pub const CHAT_LINES: usize = 1000;
 pub enum Command {
     // ---- what is going on -------------------------------------------------
     Status,
+    /// A new scene with nothing in it, switched to: its layers are added
+    /// there. On the air the picture is empty until they are.
     SceneCreate {
+        name: String,
+    },
+    /// A copy of the active scene (its layers, elements, order and filter),
+    /// made active: the picture that goes out does not change.
+    SceneDuplicate {
         name: String,
     },
     SceneSwitch {

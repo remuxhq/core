@@ -292,7 +292,14 @@ const SCENE: &[Action] = &[
         target: "scene-create",
         prefix: &[],
         args: "<name>",
-        summary: "Copy the current layers and elements into a new scene.",
+        summary: "Make a new, empty scene and switch to it.",
+    },
+    Action {
+        name: "duplicate",
+        target: "scene-duplicate",
+        prefix: &[],
+        args: "<name>",
+        summary: "Copy the active scene, its layers and elements, and switch to the copy.",
     },
     Action {
         name: "switch",

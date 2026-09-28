@@ -165,7 +165,7 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
         Reply::Error { .. }
     ));
     assert_eq!(engine.status().scenes[0].elements.len(), 1);
-    engine.handle(Command::SceneCreate {
+    engine.handle(Command::SceneDuplicate {
         name: "next".into(),
     });
     assert!(matches!(
@@ -209,7 +209,7 @@ fn generated_shader_is_atomic_persistent_and_validated_on_switch() {
         id: "title".into(),
         path: None,
     });
-    restored.handle(Command::SceneCreate { name: "bad".into() });
+    restored.handle(Command::SceneDuplicate { name: "bad".into() });
     restored
         .status
         .scenes
@@ -271,7 +271,7 @@ fn timers_are_transient_per_scene_and_never_switch_automatically() {
     assert!(!crate::remembered::write(&saved)
         .unwrap()
         .contains("deadline"));
-    engine.handle(Command::SceneCreate {
+    engine.handle(Command::SceneDuplicate {
         name: "other".into(),
     });
     assert!(engine.counting.is_empty());
@@ -514,7 +514,7 @@ fn shader_commands_and_scene_choices_round_trip() {
     engine.handle(Command::Shader {
         path: Some("global.frag".into()),
     });
-    engine.handle(Command::SceneCreate {
+    engine.handle(Command::SceneDuplicate {
         name: "second".into(),
     });
     engine.handle(Command::LayerShader {
@@ -699,6 +699,12 @@ fn scene_cli_parses_names_and_shows_list() {
         })
     );
     assert_eq!(
+        crate::cli::parse(&words(&["scene", "duplicate", "Close Up"])),
+        Ok(Command::SceneDuplicate {
+            name: "Close Up".into()
+        })
+    );
+    assert_eq!(
         crate::cli::parse(&words(&["scene", "switch", "Close Up"])),
         Ok(Command::SceneSwitch {
             name: "Close Up".into()
@@ -722,7 +728,7 @@ fn scene_cli_parses_names_and_shows_list() {
 fn clone_edit_delete_and_retain_inactive_layouts() {
     let mut engine = Engine::new();
     assert!(matches!(
-        engine.handle(Command::SceneCreate {
+        engine.handle(Command::SceneDuplicate {
             name: "second".into()
         }),
         Reply::Status(_)
@@ -746,4 +752,59 @@ fn clone_edit_delete_and_retain_inactive_layouts() {
         Reply::Status(_)
     ));
     assert_eq!(engine.remembered().scenes.len(), 1);
+}
+
+#[test]
+fn a_created_scene_is_empty_and_switched_to_and_a_duplicate_is_the_active_one() {
+    let mut engine = Engine::with_sources(Box::new(super::ThisMachine))
+        .with_pipeline(Box::new(super::Wrote::default()));
+    engine.handle(Command::LayerCamera {
+        id: "face".into(),
+        device: "MacBook Pro Camera".into(),
+    });
+    engine.handle(Command::SceneElementAdd {
+        element: Element {
+            id: "title".into(),
+            x: 10,
+            y: 10,
+            width: 300,
+            height: 90,
+            visible: true,
+            shader: None,
+            content: ElementContent::Text { text: "Hi".into() },
+        },
+    });
+    let Reply::Status(copied) = engine.handle(Command::SceneDuplicate {
+        name: "copy".into(),
+    }) else {
+        panic!("a duplicate answers with the status")
+    };
+    assert_eq!(copied.active_scene, "copy");
+    assert_eq!(copied.layers.len(), 1, "the capture carries on");
+    let copy = copied.scenes.iter().find(|s| s.name == "copy").unwrap();
+    assert_eq!(copy.ordered_ids(), ["face", "title"]);
+
+    let Reply::Status(empty) = engine.handle(Command::SceneCreate {
+        name: "blank".into(),
+    }) else {
+        panic!("a create answers with the status")
+    };
+    assert_eq!(empty.active_scene, "blank");
+    assert!(empty.layers.is_empty(), "nothing from the scene before");
+    let blank = empty.scenes.iter().find(|s| s.name == "blank").unwrap();
+    assert!(blank.elements.is_empty() && blank.shader.is_none());
+    let copy = empty.scenes.iter().find(|s| s.name == "copy").unwrap();
+    assert_eq!(copy.layers.len(), 1, "the scene left keeps its layers");
+
+    for taken in ["blank", "copy", "default"] {
+        assert!(matches!(
+            engine.handle(Command::SceneCreate { name: taken.into() }),
+            Reply::Error { .. }
+        ));
+        assert!(matches!(
+            engine.handle(Command::SceneDuplicate { name: taken.into() }),
+            Reply::Error { .. }
+        ));
+    }
+    assert_eq!(engine.status().active_scene, "blank");
 }

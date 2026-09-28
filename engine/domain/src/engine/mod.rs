@@ -883,16 +883,44 @@ impl Engine {
         scenes
     }
 
-    fn scene_create(&mut self, name: String) -> Reply {
+    /// Whether a new scene may be called this.
+    fn a_new_scene_name(&self, name: &str) -> Result<(), String> {
         if name.is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
-            return Reply::Error {
-                message: "scene name must be 1–80 printable characters".into(),
-            };
+            return Err("scene name must be 1–80 printable characters".into());
         }
         if self.status.scenes.iter().any(|scene| scene.name == name) {
-            return Reply::Error {
-                message: format!("scene {name:?} already exists"),
-            };
+            return Err(format!("scene {name:?} already exists"));
+        }
+        Ok(())
+    }
+
+    /// An empty scene, switched to so its layers can be added: the layer verbs
+    /// edit the active scene. The switch is the ordinary one, so the captures
+    /// the empty scene does not use are closed, and one that refuses leaves
+    /// no scene behind.
+    fn scene_create(&mut self, name: String) -> Reply {
+        if let Err(message) = self.a_new_scene_name(&name) {
+            return Reply::Error { message };
+        }
+        self.status.scenes.push(crate::scenes::Scene {
+            name: name.clone(),
+            layers: vec![],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        let switched = self.scene_switch(name.clone());
+        if matches!(switched, Reply::Error { .. }) {
+            self.status.scenes.retain(|scene| scene.name != name);
+        }
+        switched
+    }
+
+    /// The active scene under another name, made active: its captures are the
+    /// ones running, so nothing on the air moves.
+    fn scene_duplicate(&mut self, name: String) -> Reply {
+        if let Err(message) = self.a_new_scene_name(&name) {
+            return Reply::Error { message };
         }
         let saved = self.remembered();
         self.status.shader = saved
@@ -1122,6 +1150,7 @@ impl Engine {
         match command {
             Command::Status => Reply::Status(Box::new(self.reported())),
             Command::SceneCreate { name } => self.scene_create(name),
+            Command::SceneDuplicate { name } => self.scene_duplicate(name),
             Command::SceneSwitch { name } => self.scene_switch(name),
             Command::SceneDelete { name } => self.scene_delete(name),
             Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),

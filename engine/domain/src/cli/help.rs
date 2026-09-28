@@ -13,7 +13,8 @@ struct Topic {
 // routes are public shell commands.
 const TOPICS: &[Topic] = &[
     Topic { names: &["status"], args: "", summary: "Show the current live, sources and output.", note: "" },
-    Topic { names: &["scene-create"], args: "<name>", summary: "Copy the current layers and visual elements into a new active scene.", note: "Use `remux scene create <name>`; then edit its layers with `remux scene layer`. Quote names with spaces. The current capture layout and visual elements are copied." },
+    Topic { names: &["scene-create"], args: "<name>", summary: "Make a new, empty scene and switch to it.", note: "Then add its layers with `remux scene layer`. Quote names with spaces. On the air the picture is empty until layers are added; to start from what is showing, use `remux scene duplicate <name>`." },
+    Topic { names: &["scene-duplicate"], args: "<name>", summary: "Copy the active scene under a new name and switch to the copy.", note: "Its layers, elements, order and filter are copied, and the captures stay open: nothing on the air changes. Quote names with spaces." },
     Topic { names: &["scene-switch"], args: "<name>", summary: "Switch to a saved scene without stopping the live.", note: "New sources are prepared first; shared physical captures stay open even when their layer IDs differ. Use `remux scene list` to see names." },
     Topic { names: &["scene-delete"], args: "<name>", summary: "Delete an inactive scene.", note: "The active scene cannot be deleted; switch first." },
     Topic { names: &["levels"], args: "", summary: "Read microphone, mix and music levels in dB.", note: "" },
@@ -144,8 +145,15 @@ Use remux audio screen-sound on for a unique display, or remux scene layer
 screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
 one app's sound alone; remux audio app Spotify captures it on its own fader.
 
-Named scenes: remux scene list; remux scene create 'Camera only';
-remux scene switch 'Camera only'; remux scene delete 'Camera only'.
+Named scenes: remux scene list; remux scene create 'Camera only' starts an
+empty scene and switches to it (on the air, nothing shows until its layers are
+added); remux scene duplicate 'Camera only' copies the active scene and switches
+to the copy, with nothing on the air changing. remux scene switch 'Camera only';
+remux scene delete 'Camera only'.
+Build the scenes before going live: off the air a switch shows nobody anything.
+remux live sends the active scene, so switch to the opening one first; remux plan
+names it. A switch closes the captures the next scene does not use and opens its
+own, so a camera coming back takes a moment for its first frame.
 Switching prepares new sources and filters before committing and retains
 shared physical captures. remux scene status --json reports saved layouts.
 
@@ -279,7 +287,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 59, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 60, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
@@ -341,7 +349,11 @@ mod tests {
         let text = help(&["help".into(), "scene".into(), "create".into()])
             .unwrap()
             .unwrap();
-        assert!(text.contains("elements are copied"));
+        assert!(text.contains("empty scene"));
+        let copy = help(&["help".into(), "scene".into(), "duplicate".into()])
+            .unwrap()
+            .unwrap();
+        assert!(copy.contains("elements, order and filter are copied"));
         assert!(!GUIDE.contains("Built-in"));
         assert!(GUIDE.contains("remux scene timer"));
         assert!(!GUIDE.contains("shader, card"));
@@ -352,6 +364,8 @@ mod tests {
         let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
         let text = guide(&words("guide")).unwrap().unwrap();
         for needle in [
+            "Build the scenes before going live",
+            "switch to the opening one first",
             "remux status --json",
             "under destinations",
             "remux live",

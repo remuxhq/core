@@ -47,6 +47,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
     let named = |device: &Option<String>| device.clone().unwrap_or_else(|| "none".into());
     Some(match command {
         Command::SceneCreate { name } => format!("scene {name} created"),
+        Command::SceneDuplicate { name } => format!("scene {name} duplicated from the active one"),
         Command::SceneSwitch { name } => format!("scene switched to {name}"),
         Command::SceneDelete { name } => format!("scene {name} deleted"),
         Command::AudioLayerAdd { id, .. } => format!("audio layer {id} added"),
@@ -168,9 +169,10 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
 /// The name a failure is reported under, which is the word somebody typed.
 fn verb(command: &Command) -> &'static str {
     match command {
-        Command::SceneCreate { .. } | Command::SceneSwitch { .. } | Command::SceneDelete { .. } => {
-            "scene"
-        }
+        Command::SceneCreate { .. }
+        | Command::SceneDuplicate { .. }
+        | Command::SceneSwitch { .. }
+        | Command::SceneDelete { .. } => "scene",
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
         | Command::AudioLayerVolume { .. }
