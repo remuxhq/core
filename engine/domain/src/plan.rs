@@ -58,7 +58,7 @@ impl Plan {
         if status.scene_flowing.frames == 0 {
             blockers.push("there is no picture to send yet".into());
         } else if picture == NOTHING {
-            blockers.push("the scene is empty: nothing would be shared".into());
+            blockers.push(EMPTY.into());
         }
         if !destinations.iter().any(|d| d.armed) {
             blockers.push("no destination is armed".into());
@@ -116,6 +116,15 @@ impl Plan {
 
 /// What the picture reads when the scene has nothing visible in it.
 const NOTHING: &str = "nothing shared";
+
+/// Why a scene with nothing visible does not go live.
+pub const EMPTY: &str = "the scene is empty: nothing would be shared";
+
+/// Whether the active scene has nothing visible in it: both motors draw it
+/// at the full rate, so its frames cannot say so.
+pub fn empty(status: &Status) -> bool {
+    picture(status) == NOTHING
+}
 
 /// The active scene's layers and elements, back to front, the way a person
 /// reads them before confirming.

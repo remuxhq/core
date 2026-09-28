@@ -88,6 +88,13 @@ impl Engine {
                 message: "there is no picture to send yet".into(),
             };
         }
+        // And a picture of nothing is black on the air: the plan's blocker,
+        // kept here too for a face that goes live without a plan.
+        if crate::plan::empty(&self.reported()) {
+            return Reply::Error {
+                message: crate::plan::EMPTY.into(),
+            };
+        }
         // The platforms first, all of them or none: a live carrying
         // yesterday's title is worse than one that did not start.
         if let Err(message) = self.watching.announce_armed() {

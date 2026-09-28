@@ -652,6 +652,24 @@ fn an_engine_that_captures_nothing_cannot_go_live() {
     assert!(!engine.status().on_air);
 }
 
+// Both motors draw an empty scene at the full rate, so frames cannot keep
+// black off the air: going live refuses what the plan says would stop it.
+#[test]
+fn an_empty_scene_cannot_go_live_though_it_has_frames() {
+    let (mut engine, published) = publishing_engine(None);
+    engine.handle(Command::Screen { display: 1 });
+    let id = engine.status().layers[0].id.clone();
+    engine.handle(Command::LayerVisible { id, on: false });
+    assert_eq!(
+        engine.handle(Command::GoLive),
+        Reply::Error {
+            message: "the scene is empty: nothing would be shared".into()
+        }
+    );
+    assert!(!engine.status().on_air);
+    assert!(published.lock().expect("published").is_empty());
+}
+
 #[test]
 fn recording_needs_no_destination_so_it_does_not_touch_the_air() {
     let (mut engine, _) = publishing_engine(None);
