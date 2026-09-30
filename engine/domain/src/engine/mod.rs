@@ -436,6 +436,19 @@ fn only_reads(command: &Command) -> bool {
     )
 }
 
+/// Whether a command changes a destination's row: armed, rehearsed,
+/// retitled, recategorized. With an account the row changes when the server
+/// says so, on the wire; with none, here, in the file.
+fn moves_a_row(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Arm { .. }
+            | Command::Sandbox { .. }
+            | Command::Retitle { .. }
+            | Command::Categorize { .. }
+    )
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1167,7 +1180,8 @@ impl Engine {
         // What the app said out loud, into the log: a platform that refused
         // a title names itself here, where the sheet and the info window read.
         for notice in self.watching.notices() {
-            self.journal.note(now(), notice);
+            self.journal.note(now(), notice.clone());
+            self.keep([crate::app::events::Event::Notice { text: notice }]);
         }
         self.air_lapsed();
         self.sample_the_live();
@@ -1198,9 +1212,19 @@ impl Engine {
     pub fn handle(&mut self, command: Command) -> Reply {
         self.seen();
         let reads = only_reads(&command);
+        // The rows, around the few verbs that change one. Only those: with no
+        // account they are a file on disk, read whole.
+        let rows = moves_a_row(&command).then(|| self.watching.destinations());
         let reply = self.decide(command.clone());
         if let Some(line) = crate::air::journal::said(&command, &reply) {
             self.journal.note(now(), line);
+        }
+        if let Some(refused) = crate::app::events::refused(&command, &reply) {
+            self.keep([refused]);
+        }
+        if let Some(before) = rows {
+            let after = self.watching.destinations();
+            self.keep(crate::app::events::rows_between(&before, &after));
         }
         if !reads {
             self.notice();
@@ -1219,6 +1243,8 @@ impl Engine {
             muted: self.status.muted,
             music: self.status.music.clone(),
             app: self.watching.reachable(),
+            sending: self.pipeline.publishing().into_iter().collect(),
+            troubles: self.pipeline.troubles().into_iter().collect(),
         }
     }
 
@@ -2690,17 +2716,6 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_command_changed_nothing_and_says_nothing() {
-        let events = followed();
-        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
-        assert!(matches!(
-            engine.handle(Command::GoLive),
-            Reply::Error { .. }
-        ));
-        assert_eq!(said(&events), vec![]);
-    }
-
-    #[test]
     fn what_changes_with_nobody_asking_is_an_event_on_the_tick() {
         use crate::app::events::Event;
         let events = followed();
@@ -2755,6 +2770,8 @@ mod tests {
     struct Counted {
         up: std::sync::Arc<std::sync::atomic::AtomicBool>,
         asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        rows: std::sync::Arc<std::sync::Mutex<Vec<Destination>>>,
+        said: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl Watching for Counted {
@@ -2764,13 +2781,21 @@ mod tests {
             self.up.load(Ordering::SeqCst)
         }
         fn destinations(&self) -> Vec<Destination> {
-            Vec::new()
+            self.rows.lock().expect("rows").clone()
         }
         fn viewers(&self) -> Option<u32> {
             None
         }
-        fn arm(&self, _: i64, _: bool) -> Result<(), String> {
+        fn arm(&self, adapter: i64, on: bool) -> Result<(), String> {
+            for row in self.rows.lock().expect("rows").iter_mut() {
+                if row.id == adapter {
+                    row.armed = on;
+                }
+            }
             Ok(())
+        }
+        fn notices(&mut self) -> Vec<String> {
+            std::mem::take(&mut *self.said.lock().expect("said"))
         }
         fn sandbox(&self, _: i64, _: bool) -> Result<(), String> {
             Ok(())
@@ -2878,15 +2903,99 @@ mod tests {
 
     #[test]
     fn a_line_the_engine_no_longer_has_is_not_taken_down() {
+        use crate::app::events::Event;
         let events = followed();
         let (feed, seq) = a_room_with("spam");
         let mut engine = engine()
             .with_chat(feed)
             .with_events(std::sync::Arc::clone(&events));
-        assert!(matches!(
-            engine.handle(Command::Delete { seq: seq + 40 }),
-            Reply::Error { .. }
-        ));
-        assert_eq!(said(&events), vec![]);
+        let Reply::Error { message } = engine.handle(Command::Delete { seq: seq + 40 }) else {
+            panic!("no such line, so no")
+        };
+        assert_eq!(
+            said(&events),
+            vec![Event::Refused {
+                verb: "delete".into(),
+                message
+            }],
+            "the refusal, and no line taken down"
+        );
+    }
+
+    #[test]
+    fn a_refused_command_is_an_event_saying_why() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        let Reply::Error { message } = engine.handle(Command::GoLive) else {
+            panic!("nothing to send, so no")
+        };
+        assert_eq!(
+            said(&events),
+            vec![Event::Refused {
+                verb: "go-live".into(),
+                message
+            }]
+        );
+    }
+
+    #[test]
+    fn what_a_server_said_out_loud_is_an_event_on_the_tick() {
+        use crate::app::events::Event;
+        let events = followed();
+        let app = Counted::default();
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        app.said
+            .lock()
+            .expect("said")
+            .push("Twitch refused the title".into());
+        engine.tick();
+        assert_eq!(
+            said(&events),
+            vec![Event::Notice {
+                text: "Twitch refused the title".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn arming_a_destination_is_an_event() {
+        use crate::app::events::Event;
+        let events = followed();
+        let app = Counted::default();
+        app.rows.lock().expect("rows").push(Destination {
+            id: 2,
+            name: "twitch".into(),
+            platform: "twitch".into(),
+            status: "off".into(),
+            armed: false,
+            sandbox: false,
+            connected: true,
+            account: None,
+            category: None,
+            category_id: None,
+            viewers: None,
+            viewers_peak: None,
+            trouble: None,
+            title: None,
+            description: None,
+            channel: None,
+        });
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        assert_eq!(
+            engine.handle(Command::Arm {
+                adapter: 2,
+                on: true
+            }),
+            Reply::Ok
+        );
+        assert_eq!(
+            said(&events),
+            vec![Event::DestinationArmed { id: 2, on: true }]
+        );
     }
 }

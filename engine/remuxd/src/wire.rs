@@ -94,7 +94,17 @@ impl Shared {
                 }
                 self.ring();
             }
-            Down::Destinations(rows) => *self.destinations.lock().expect("destinations") = rows,
+            Down::Destinations(rows) => {
+                let moved = {
+                    let mut kept = self.destinations.lock().expect("destinations");
+                    let moved = remuxd_domain::app::events::rows_between(&kept, &rows);
+                    *kept = rows;
+                    moved
+                };
+                if !moved.is_empty() {
+                    self.events.tell(moved);
+                }
+            }
             Down::Viewers(watchers) => {
                 if let (true, Some(total)) = (watchers.answered, watchers.total) {
                     self.viewers.store(total, Ordering::Relaxed);
@@ -450,6 +460,43 @@ mod tests {
             began.elapsed() < Duration::from_secs(5),
             "woken by its patience, after {:?}",
             began.elapsed()
+        );
+    }
+
+    fn row(id: i64, armed: bool) -> Destination {
+        Destination {
+            id,
+            name: "twitch".into(),
+            platform: "twitch".into(),
+            status: "off".into(),
+            armed,
+            sandbox: false,
+            connected: true,
+            account: None,
+            category: None,
+            category_id: None,
+            viewers: None,
+            viewers_peak: None,
+            trouble: None,
+            title: None,
+            description: None,
+            channel: None,
+        }
+    }
+
+    // With an account the server owns the rows: armed from the site, from
+    // another machine, or by this engine asking, the change is the list it
+    // sends down, and only the rows that moved are said.
+    #[test]
+    fn a_row_the_server_changed_is_an_event_and_the_first_list_is_not() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Destinations(vec![row(2, false), row(6, true)]));
+        assert_eq!(followed.after(0, Duration::ZERO).events, vec![]);
+        shared.fold(Down::Destinations(vec![row(2, true), row(6, true)]));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter().map(|e| &e.event).collect::<Vec<_>>(),
+            [&Event::DestinationArmed { id: 2, on: true }]
         );
     }
 }

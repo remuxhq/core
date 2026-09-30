@@ -38,6 +38,46 @@ pub enum Event {
     AppReachable {
         on: bool,
     },
+    /// One destination's stream is out, on its own door.
+    DestinationLive {
+        id: i64,
+    },
+    /// One destination's stream ended: `why` is what its ffmpeg said when it
+    /// fell over, `None` when somebody stopped it. The live may go on
+    /// elsewhere; `live-ended` is when the last one ends.
+    DestinationEnded {
+        id: i64,
+        why: Option<String>,
+    },
+    /// Armed for the next live, or left out of it.
+    DestinationArmed {
+        id: i64,
+        on: bool,
+    },
+    /// A rehearsal with no audience, or the real thing again.
+    DestinationSandbox {
+        id: i64,
+        on: bool,
+    },
+    DestinationRetitled {
+        id: i64,
+        title: Option<String>,
+        description: Option<String>,
+    },
+    DestinationCategorized {
+        id: i64,
+        category: Option<String>,
+    },
+    /// A command the engine said no to: `verb` as the wire names it
+    /// (`go-live`), `message` as the reply said it.
+    Refused {
+        verb: String,
+        message: String,
+    },
+    /// What a server said out loud: a platform that refused a title.
+    Notice {
+        text: String,
+    },
     /// Somebody said something. `line` is the chat's own number, what
     /// `remux chat hide` and `remux chat delete` take. Text from strangers:
     /// a face strips it before a terminal and never runs it.
@@ -203,6 +243,10 @@ pub struct Snapshot {
     pub muted: bool,
     pub music: Option<String>,
     pub app: bool,
+    /// The destinations whose stream is out right now.
+    pub sending: std::collections::BTreeSet<i64>,
+    /// What each door's ffmpeg last complained about.
+    pub troubles: std::collections::BTreeMap<i64, String>,
 }
 
 impl From<&Status> for Snapshot {
@@ -214,6 +258,17 @@ impl From<&Status> for Snapshot {
             muted: status.muted,
             music: status.music.clone(),
             app: status.app,
+            sending: status
+                .destinations
+                .iter()
+                .filter(|row| row.status == "live")
+                .map(|row| row.id)
+                .collect(),
+            troubles: status
+                .destinations
+                .iter()
+                .filter_map(|row| Some((row.id, row.trouble.clone()?)))
+                .collect(),
         }
     }
 }
@@ -237,6 +292,15 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
             Event::RecordStopped
         });
     }
+    for &id in after.sending.difference(&before.sending) {
+        events.push(Event::DestinationLive { id });
+    }
+    for &id in before.sending.difference(&after.sending) {
+        events.push(Event::DestinationEnded {
+            id,
+            why: after.troubles.get(&id).cloned(),
+        });
+    }
     if before.active_scene != after.active_scene {
         events.push(Event::SceneSwitched {
             name: after.active_scene.clone(),
@@ -254,6 +318,69 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
         events.push(Event::AppReachable { on: after.app });
     }
     events
+}
+
+/// What changed in the rows both lists hold: armed, rehearsed, retitled,
+/// recategorized. A row only one of them has says nothing: the first list a
+/// wire hands over is every row at once, and armed rows in it were armed
+/// before anybody was following.
+#[must_use]
+pub fn rows_between(
+    before: &[crate::protocol::Destination],
+    after: &[crate::protocol::Destination],
+) -> Vec<Event> {
+    let mut events = Vec::new();
+    for now in after {
+        let Some(was) = before.iter().find(|row| row.id == now.id) else {
+            continue;
+        };
+        let id = now.id;
+        if was.armed != now.armed {
+            events.push(Event::DestinationArmed { id, on: now.armed });
+        }
+        if was.sandbox != now.sandbox {
+            events.push(Event::DestinationSandbox {
+                id,
+                on: now.sandbox,
+            });
+        }
+        if (&was.title, &was.description) != (&now.title, &now.description) {
+            events.push(Event::DestinationRetitled {
+                id,
+                title: now.title.clone(),
+                description: now.description.clone(),
+            });
+        }
+        if was.category != now.category {
+            events.push(Event::DestinationCategorized {
+                id,
+                category: now.category.clone(),
+            });
+        }
+    }
+    events
+}
+
+/// The refusal in a reply, if the command was one somebody meant to change
+/// something with: the journal's own test (`air::journal::said`), which
+/// leaves out a read that failed.
+#[must_use]
+pub fn refused(
+    command: &crate::protocol::Command,
+    reply: &crate::protocol::Reply,
+) -> Option<Event> {
+    let crate::protocol::Reply::Error { message } = reply else {
+        return None;
+    };
+    crate::air::journal::said(command, reply)?;
+    let verb = serde_json::to_value(command)
+        .ok()
+        .and_then(|told| told.get("cmd")?.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Some(Event::Refused {
+        verb,
+        message: message.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -594,5 +721,132 @@ mod tests {
         assert_eq!(after.gap, Some(Gap { from: 3, to: 5 }));
         assert_eq!(after.events.first().map(|e| e.seq), Some(6));
         assert_eq!(events.since(5).gap, None);
+    }
+
+    fn row(id: i64) -> crate::protocol::Destination {
+        crate::protocol::Destination {
+            id,
+            name: format!("row {id}"),
+            platform: "twitch".into(),
+            status: "off".into(),
+            armed: false,
+            sandbox: false,
+            connected: true,
+            account: None,
+            category: None,
+            category_id: None,
+            viewers: None,
+            viewers_peak: None,
+            trouble: None,
+            title: None,
+            description: None,
+            channel: None,
+        }
+    }
+
+    fn sending(rows: Vec<crate::protocol::Destination>) -> Status {
+        Status {
+            destinations: rows,
+            ..status()
+        }
+    }
+
+    #[test]
+    fn each_destination_going_out_and_ending_is_an_event() {
+        let live = |id| crate::protocol::Destination {
+            status: "live".into(),
+            ..row(id)
+        };
+        let both = sending(vec![live(2), live(6)]);
+        assert_eq!(
+            changed(&sending(vec![row(2), row(6)]), &both),
+            vec![
+                Event::DestinationLive { id: 2 },
+                Event::DestinationLive { id: 6 }
+            ]
+        );
+        // YouTube fell over with the Twitch still going: what its ffmpeg said.
+        let dropped = sending(vec![
+            live(2),
+            crate::protocol::Destination {
+                trouble: Some("connection reset".into()),
+                ..row(6)
+            },
+        ]);
+        assert_eq!(
+            changed(&both, &dropped),
+            vec![Event::DestinationEnded {
+                id: 6,
+                why: Some("connection reset".into())
+            }]
+        );
+        // A stop is an end with nothing wrong.
+        assert_eq!(
+            changed(&dropped, &sending(vec![row(2), row(6)])),
+            vec![Event::DestinationEnded { id: 2, why: None }]
+        );
+    }
+
+    #[test]
+    fn a_row_armed_rehearsed_retitled_or_recategorized_is_an_event() {
+        let before = vec![row(2), row(6)];
+        let after = vec![
+            crate::protocol::Destination {
+                armed: true,
+                sandbox: true,
+                ..row(2)
+            },
+            crate::protocol::Destination {
+                title: Some("Rust at midnight".into()),
+                category: Some("Software and Game Development".into()),
+                ..row(6)
+            },
+        ];
+        assert_eq!(
+            rows_between(&before, &after),
+            vec![
+                Event::DestinationArmed { id: 2, on: true },
+                Event::DestinationSandbox { id: 2, on: true },
+                Event::DestinationRetitled {
+                    id: 6,
+                    title: Some("Rust at midnight".into()),
+                    description: None
+                },
+                Event::DestinationCategorized {
+                    id: 6,
+                    category: Some("Software and Game Development".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_that_arrived_or_left_says_nothing_of_what_it_holds() {
+        // The first list a wire hands over is every row at once: armed rows
+        // in it were armed before anybody was following.
+        let armed = crate::protocol::Destination {
+            armed: true,
+            ..row(2)
+        };
+        assert_eq!(rows_between(&[], std::slice::from_ref(&armed)), vec![]);
+        assert_eq!(rows_between(&[armed], &[]), vec![]);
+    }
+
+    #[test]
+    fn a_refusal_names_the_verb_and_says_why() {
+        use crate::protocol::{Command, Reply};
+        let no = Reply::Error {
+            message: "the scene is empty".into(),
+        };
+        assert_eq!(
+            refused(&Command::GoLive, &no),
+            Some(Event::Refused {
+                verb: "go-live".into(),
+                message: "the scene is empty".into()
+            })
+        );
+        assert_eq!(refused(&Command::GoLive, &Reply::Ok), None);
+        // A read that failed refused nobody anything.
+        assert_eq!(refused(&Command::Levels, &no), None);
     }
 }

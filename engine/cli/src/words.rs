@@ -871,6 +871,28 @@ fn render_events(
                 plain(body)
             ),
             Event::ChatHidden { line } => format!("chat #{line} hidden"),
+            Event::DestinationLive { id } => format!("destination {id} on air"),
+            Event::DestinationEnded { id, why: None } => format!("destination {id} off air"),
+            Event::DestinationEnded { id, why: Some(why) } => {
+                format!("destination {id} dropped: {}", plain(why))
+            }
+            Event::DestinationArmed { id, on: armed } => {
+                format!("destination {id} {}", on(*armed, "armed", "disarmed"))
+            }
+            Event::DestinationSandbox { id, on: rehearsal } => format!(
+                "destination {id} {}",
+                on(*rehearsal, "in the sandbox", "out of the sandbox")
+            ),
+            Event::DestinationRetitled { id, title, .. } => format!(
+                "destination {id} titled {}",
+                title.as_deref().map_or_else(|| "nothing".into(), plain)
+            ),
+            Event::DestinationCategorized { id, category } => match category {
+                Some(category) => format!("destination {id} filed under {}", plain(category)),
+                None => format!("destination {id} has no category"),
+            },
+            Event::Refused { verb, message } => format!("{verb} refused: {}", plain(message)),
+            Event::Notice { text } => format!("notice: {}", plain(text)),
         };
         format!(
             "{} #{} {what}",
@@ -3354,6 +3376,68 @@ mod reading {
                 plain("ana\u{1b}[31m"),
                 plain("oi\u{1b}[2J")
             )
+        );
+    }
+
+    #[test]
+    fn what_goes_out_and_what_was_refused_read_one_a_line() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(1, Event::DestinationLive { id: 2 }),
+                at(
+                    2,
+                    Event::DestinationEnded {
+                        id: 6,
+                        why: Some("connection reset".into()),
+                    },
+                ),
+                at(3, Event::DestinationEnded { id: 2, why: None }),
+                at(4, Event::DestinationArmed { id: 2, on: true }),
+                at(5, Event::DestinationSandbox { id: 2, on: false }),
+                at(
+                    6,
+                    Event::DestinationRetitled {
+                        id: 6,
+                        title: Some("Rust at midnight".into()),
+                        description: None,
+                    },
+                ),
+                at(
+                    7,
+                    Event::DestinationCategorized {
+                        id: 6,
+                        category: None,
+                    },
+                ),
+                at(
+                    8,
+                    Event::Refused {
+                        verb: "go-live".into(),
+                        message: "the scene is empty".into(),
+                    },
+                ),
+                at(
+                    9,
+                    Event::Notice {
+                        text: "Twitch refused the title".into(),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 destination 2 on air\n\
+             00:00:00 #2 destination 6 dropped: connection reset\n\
+             00:00:00 #3 destination 2 off air\n\
+             00:00:00 #4 destination 2 armed\n\
+             00:00:00 #5 destination 2 out of the sandbox\n\
+             00:00:00 #6 destination 6 titled Rust at midnight\n\
+             00:00:00 #7 destination 6 has no category\n\
+             00:00:00 #8 go-live refused: the scene is empty\n\
+             00:00:00 #9 notice: Twitch refused the title"
         );
     }
 }
