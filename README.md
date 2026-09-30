@@ -21,7 +21,7 @@ remux scene layer add screen desk 1
 remux scene layer add camera face FaceTime
 remux audio mic Razer
 
-remux destination sandbox 1 on            # sandbox mode, according to the destination
+remux destination sandbox 1 on            # a rehearsal; with no account, Twitch only
 remux plan                                # preview where it goes before going live
 remux live                                # on air
 remux stop

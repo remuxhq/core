@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-chat.sh |
 
 ## Relay
 
-One stream leaves your machine, and the relay sends it to each platform. `install-relay.sh` installs mediamtx and ffmpeg, and writes `~/.config/remux/byo.env` (0600) for your keys.
+The engine already sends to every armed destination, one stream each. The relay is optional: one stream leaves your machine, and the relay sends it on to each platform, which spares your upload. `install-relay.sh` installs mediamtx and ffmpeg, and writes `~/.config/remux/byo.env` (0600) for your keys.
 
 ```
 $EDITOR ~/.config/remux/byo.env      # TWITCH_KEY=…  YOUTUBE_KEY=…

@@ -44,16 +44,16 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["cut"], args: "", summary: "Panic button: turn everything off, including sound.", note: "" },
     Topic { names: &["record"], args: "[start|stop]", summary: "Start or stop a local recording.", note: "Omitted means start; `remux config` says where recordings go." },
     Topic { names: &["gate"], args: "[reset | opens|highs|closed|keys <dB> | hold_ms|attack_ms|hf_attack_ms <ms>]", summary: "Show or tune the microphone gate.", note: "Alone it shows the settings. opens: the level of your voice that opens the gate (-20 dB). highs: the level above 3 kHz that opens it for a keyboard behind the mic (-55 dB). closed: how far a closed gate turns the room down (-40 dB). keys: the lift for a keyboard with no voice (+6 dB). hold_ms: how long it stays open between words (450). attack_ms and hf_attack_ms: how long the voice or the highs must last to open it (50, 12). It looks 60 ms ahead, so a word keeps its first syllable. Example: remux audio gate opens -30; `remux audio gate reset` puts every setting back. The wire's own names (hf, full, floor, keys_boost) also work." },
-    Topic { names: &["title"], args: "<destination id> <words>", summary: "Change a destination's live title.", note: "Find destination IDs in the panel or web app. Example: remux destination title 2 Rust at midnight" },
-    Topic { names: &["describe"], args: "<destination id> <words>", summary: "Change a destination's live description.", note: "Find destination IDs in the panel or web app." },
-    Topic { names: &["announce"], args: "<destination id>", summary: "Send the current title and details to a platform now.", note: "Find destination IDs in the panel or web app." },
+    Topic { names: &["title"], args: "<destination id> <words>", summary: "Change a destination's live title.", note: "Needs an account (`remux login`); without one, the title is set on the platform. Find destination IDs with `remux destination list`. Example: remux destination title 2 Rust at midnight" },
+    Topic { names: &["describe"], args: "<destination id> <words>", summary: "Change a destination's live description.", note: "Needs an account (`remux login`). Find destination IDs with `remux destination list`." },
+    Topic { names: &["announce"], args: "<destination id>", summary: "Send the current title and details to a platform now.", note: "Needs an account (`remux login`). Find destination IDs with `remux destination list`." },
     Topic { names: &["delete"], args: "<line number>", summary: "Delete a chat line from its platform for everyone.", note: "Unlike `remux chat hide <n>`, this asks the platform to remove it." },
     Topic { names: &["category"], args: "<destination id> <category id> <name>", summary: "Set the category of a destination's live.", note: "Use `remux destination categories <id> <query>` to search for category IDs." },
-    Topic { names: &["categories"], args: "<destination id> [query]", summary: "Search categories for a destination's platform.", note: "Find destination IDs in the panel or web app." },
-    Topic { names: &["disconnect"], args: "<destination id>", summary: "Disconnect a destination's platform account.", note: "Find destination IDs in the panel or web app." },
-    Topic { names: &["sandbox"], args: "<destination id> [on|off]", summary: "Rehearse on a destination without a public audience.", note: "Omitted means on; find destination IDs in the panel or web app." },
-    Topic { names: &["arm"], args: "<destination id>", summary: "Include a destination in the next live.", note: "Does not start the live. Find destination IDs in the panel or web app." },
-    Topic { names: &["disarm"], args: "<destination id>", summary: "Leave a destination out of the next live.", note: "Does not stop a live. Find destination IDs in the panel or web app." },
+    Topic { names: &["categories"], args: "<destination id> [query]", summary: "Search categories for a destination's platform.", note: "Needs an account (`remux login`). Find destination IDs with `remux destination list`." },
+    Topic { names: &["disconnect"], args: "<destination id>", summary: "Disconnect a destination's platform account.", note: "Needs an account (`remux login`). Find destination IDs with `remux destination list`." },
+    Topic { names: &["sandbox"], args: "<destination id> [on|off]", summary: "Rehearse on a destination without a public audience.", note: "Omitted means on; find destination IDs with `remux destination list`. Without an account it reaches Twitch alone, through its bandwidth test; on YouTube or a server of your own it changes nothing." },
+    Topic { names: &["arm"], args: "<destination id>", summary: "Include a destination in the next live.", note: "Does not start the live. Find destination IDs with `remux destination list`." },
+    Topic { names: &["disarm"], args: "<destination id>", summary: "Leave a destination out of the next live.", note: "Does not stop a live. Find destination IDs with `remux destination list`." },
     Topic { names: &["scenes"], args: "", summary: "List scenes and the active scene.", note: "" },
     Topic { names: &["hear"], args: "<apps|off>", summary: "Hear these applications alone in the screen's sound.", note: "Names as `remux sources` lists them, comma-separated: remux audio hear Spotify, Brave. `off` is the whole screen's sound again." },
     Topic { names: &["denoise"], args: "[on|off]", summary: "Take the room out of the microphone before the gate.", note: "Omitted means on." },
@@ -108,7 +108,8 @@ Going live:
 2. remux destination list; remux destination add custom main --url <rtmp> --key -
    (a key is never typed on a command line: --key - reads stdin, --key-file a
    file), or remux login and the account's destinations.
-3. The picture, below; remux audio mic <name>; remux destination title <id> <words>.
+3. The picture, below; remux audio mic <name>; remux destination title <id> <words>
+   with an account (without one, the title is set on the platform).
 4. remux plan --json: what live would do, and a fingerprint.
 5. remux live --confirm <fingerprint>: on air only if nothing moved since the
    plan. A person types remux live and answers y.
@@ -116,7 +117,8 @@ Going live:
 7. remux chat read -f --json, remux log -f --json, remux audio levels -f --json.
 8. remux stop; remux history.
 A test live is a sandbox live: remux destination sandbox <id> on before arming a
-real platform.
+real platform. Without an account it reaches Twitch alone (its bandwidth test);
+elsewhere it changes nothing, so rehearse on a private broadcast.
 
 Picture: remux scene layer add screen desktop <display-id>;
 remux scene layer add window editor Ghostty;
@@ -374,6 +376,8 @@ mod tests {
             "switch to the opening one first",
             "remux status --json",
             "remux sources --json",
+            "the title is set on the platform",
+            "Twitch alone",
             "under destinations",
             "remux live",
             "on_air",
