@@ -1,11 +1,12 @@
 //! What changed in the engine, as a feed every face may follow: the live
 //! started, the scene switched, the track changed.
 //!
-//! An event is the difference between two statuses ([`between`]), taken where
-//! every change passes (`Engine::handle` and `Engine::tick`), so no verb has
-//! to remember to say it and nothing a verb forgets goes unsaid. Only the
-//! fields named here are compared, which keeps anything secret out by
-//! construction. Pure; the socket that follows it is `remuxd::server`.
+//! An event is the difference between two snapshots ([`between`]), taken
+//! where every change passes (`Engine::handle` and `Engine::tick`), so no
+//! verb has to remember to say it and nothing a verb forgets goes unsaid. A
+//! [`Snapshot`] holds the few fields the feed follows, which keeps anything
+//! secret out by construction. Pure; the socket that follows it is
+//! `remuxd::server`.
 
 use std::collections::VecDeque;
 
@@ -122,10 +123,37 @@ impl Events {
     }
 }
 
+/// The part of the engine's state the feed follows, and nothing else: what
+/// [`between`] compares. Its own type rather than a whole [`Status`] because
+/// the engine takes one on either side of every command, twelve a second
+/// from a panel's meter, and a status is the pipeline asked a dozen things.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Snapshot {
+    pub on_air: bool,
+    pub recording: bool,
+    pub active_scene: String,
+    pub muted: bool,
+    pub music: Option<String>,
+    pub app: bool,
+}
+
+impl From<&Status> for Snapshot {
+    fn from(status: &Status) -> Self {
+        Self {
+            on_air: status.on_air,
+            recording: status.recording,
+            active_scene: status.active_scene.clone(),
+            muted: status.muted,
+            music: status.music.clone(),
+            app: status.app,
+        }
+    }
+}
+
 /// What changed from `before` to `after`, in the order a person reads it:
 /// the air first, then the picture, then the sound, then the app.
 #[must_use]
-pub fn between(before: &Status, after: &Status) -> Vec<Event> {
+pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
     let mut events = Vec::new();
     if before.on_air != after.on_air {
         events.push(if after.on_air {
@@ -168,9 +196,13 @@ mod tests {
         Status::default()
     }
 
+    fn changed(before: &Status, after: &Status) -> Vec<Event> {
+        between(&before.into(), &after.into())
+    }
+
     #[test]
     fn nothing_changed_says_nothing() {
-        assert_eq!(between(&status(), &status()), vec![]);
+        assert_eq!(changed(&status(), &status()), vec![]);
     }
 
     #[test]
@@ -180,8 +212,8 @@ mod tests {
             on_air: true,
             ..status()
         };
-        assert_eq!(between(&off, &on), vec![Event::LiveStarted]);
-        assert_eq!(between(&on, &off), vec![Event::LiveEnded]);
+        assert_eq!(changed(&off, &on), vec![Event::LiveStarted]);
+        assert_eq!(changed(&on, &off), vec![Event::LiveEnded]);
     }
 
     #[test]
@@ -191,8 +223,8 @@ mod tests {
             recording: true,
             ..status()
         };
-        assert_eq!(between(&off, &on), vec![Event::RecordStarted]);
-        assert_eq!(between(&on, &off), vec![Event::RecordStopped]);
+        assert_eq!(changed(&off, &on), vec![Event::RecordStarted]);
+        assert_eq!(changed(&on, &off), vec![Event::RecordStopped]);
     }
 
     #[test]
@@ -202,7 +234,7 @@ mod tests {
             ..status()
         };
         assert_eq!(
-            between(&status(), &after),
+            changed(&status(), &after),
             vec![Event::SceneSwitched {
                 name: "break".into()
             }]
@@ -215,8 +247,8 @@ mod tests {
             muted: true,
             ..status()
         };
-        assert_eq!(between(&status(), &muted), vec![Event::Muted { on: true }]);
-        assert_eq!(between(&muted, &status()), vec![Event::Muted { on: false }]);
+        assert_eq!(changed(&status(), &muted), vec![Event::Muted { on: true }]);
+        assert_eq!(changed(&muted, &status()), vec![Event::Muted { on: false }]);
     }
 
     #[test]
@@ -226,13 +258,13 @@ mod tests {
             ..status()
         };
         assert_eq!(
-            between(&playing("one"), &playing("two")),
+            changed(&playing("one"), &playing("two")),
             vec![Event::TrackChanged {
                 title: Some("two".into())
             }]
         );
         assert_eq!(
-            between(&playing("two"), &status()),
+            changed(&playing("two"), &status()),
             vec![Event::TrackChanged { title: None }]
         );
     }
@@ -244,11 +276,11 @@ mod tests {
             ..status()
         };
         assert_eq!(
-            between(&status(), &up),
+            changed(&status(), &up),
             vec![Event::AppReachable { on: true }]
         );
         assert_eq!(
-            between(&up, &status()),
+            changed(&up, &status()),
             vec![Event::AppReachable { on: false }]
         );
     }
@@ -262,7 +294,7 @@ mod tests {
             mirrored: true,
             ..status()
         };
-        assert_eq!(between(&status(), &after), vec![]);
+        assert_eq!(changed(&status(), &after), vec![]);
     }
 
     #[test]
@@ -274,7 +306,7 @@ mod tests {
             ..status()
         };
         assert_eq!(
-            between(&status(), &after),
+            changed(&status(), &after),
             vec![
                 Event::LiveStarted,
                 Event::RecordStarted,
