@@ -192,8 +192,10 @@ text or expose credentials.
 pub fn help(words: &[String]) -> Option<Result<String, String>> {
     match words {
         [word] if matches!(word.as_str(), "help" | "-h" | "--help") => Some(Ok(usage())),
-        [word, group, action] if word == "help" => Some(group_action_help(group, action)),
-        [group, action, flag] if matches!(flag.as_str(), "-h" | "--help") => {
+        // Words past the action (`transform`, `add image`) are its own
+        // verbs, written down on its page.
+        [word, group, action, ..] if word == "help" => Some(group_action_help(group, action)),
+        [group, action, .., flag] if matches!(flag.as_str(), "-h" | "--help") => {
             Some(group_action_help(group, action))
         }
         [word, topic] if word == "help" => Some(topic_help(topic)),
@@ -335,6 +337,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    // A verb inside an action has no page of its own: the action's page is
+    // where `transform` is written down, so that is the answer, never the
+    // engine parser's "help is not a command".
+    #[test]
+    fn help_for_a_verb_inside_an_action_is_the_actions_help() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let layer = help(&words("help scene layer")).unwrap().unwrap();
+        for asked in [
+            "help scene layer transform",
+            "help scene layer add image",
+            "scene layer transform --help",
+            "scene layer transform -h",
+        ] {
+            assert_eq!(help(&words(asked)), Some(Ok(layer.clone())), "{asked}");
+        }
+        assert!(help(&words("help scene nope transform")).unwrap().is_err());
+        assert!(help(&words("help nope layer transform")).unwrap().is_err());
     }
 
     #[test]
