@@ -426,7 +426,7 @@ fn only_reads(command: &Command) -> bool {
         command,
         Command::Status
             | Command::Levels
-            | Command::Devices
+            | Command::Sources
             | Command::Plan
             | Command::Shot { .. }
             | Command::LayerShot { .. }
@@ -1918,6 +1918,13 @@ mod tests {
         // browser window is titled after the page and neither half alone
         // tells you which one it is.
         assert_eq!(devices.windows[1].name, "Brave Browser — remux");
+    }
+
+    // Asking what can be captured moves nothing the events follow: no
+    // snapshot after it.
+    #[test]
+    fn asking_what_can_be_captured_only_reads() {
+        assert!(only_reads(&Command::Sources));
     }
 
     // An empty list would read as "you have no monitors", which sends a person
