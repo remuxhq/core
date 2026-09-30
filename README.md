@@ -16,7 +16,7 @@ Needs OBS installed. The engine is powered by libobs.
 curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | sh
 remux destination add youtube yt --key-file ~/yt-streaming.key
 
-remux devices                             # the ids of screens, cameras and mics
+remux sources                             # screens, windows, apps, cameras and mics
 remux scene layer add screen desk 1
 remux scene layer add camera face FaceTime
 remux audio mic Razer

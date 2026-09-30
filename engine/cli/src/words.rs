@@ -202,7 +202,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Hide { seq })
         }
-        "devices" | "sources" => Ok(Command::Devices),
+        "sources" => Ok(Command::Devices),
         // `remux plan` says what live would do; `remux live --confirm <plan>`
         // does it only if that is still true. `remux live` alone asks a
         // person at a terminal, or is refused where there is nobody to ask.
@@ -225,11 +225,11 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "screen" => {
             let display = rest
                 .first()
-                .ok_or("screen needs a display id, which `remux devices` lists")?;
+                .ok_or("screen needs a display id, which `remux sources` lists")?;
             display
                 .parse()
                 .map(|display| Command::Screen { display })
-                .map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))
+                .map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))
         }
         "window" => {
             if joined.is_empty() {
@@ -592,7 +592,7 @@ fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
                 "app" => Source::app(said),
                 "screen" if source.len() == 1 => Source::screen(
                     said.parse()
-                        .map_err(|_| "screen needs a display id from `remux devices`")?,
+                        .map_err(|_| "screen needs a display id from `remux sources`")?,
                 ),
                 _ => return Err(usage.into()),
             };
@@ -638,7 +638,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
         }),
         [set, kind, name, display] if set == "set" && kind == "screen" => Ok(Command::LayerReplaceScreen {
             id: id(name)?,
-            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
         }),
         [set, kind, name, query @ ..] if set == "set" && !query.is_empty() => {
             let id = id(name)?;
@@ -651,7 +651,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
         }
         [add, kind, name, display] if add == "add" && kind == "screen" => Ok(Command::LayerScreen {
             id: id(name)?,
-            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
         }),
         [add, kind, name, query @ ..] if add == "add" && !query.is_empty() => {
             let id = id(name)?;
@@ -1580,7 +1580,7 @@ mod tests {
             "present",
             "watching",
             "meters",
-            "sources",
+            "devices",
             "permissions",
             "preview",
             "skip",
@@ -1747,7 +1747,7 @@ mod tests {
     #[test]
     fn the_short_ones_are_themselves() {
         assert_eq!(said("status"), Ok(Command::Status));
-        assert_eq!(said("devices"), Ok(Command::Devices));
+        assert_eq!(typed("sources"), Ok(Command::Devices));
         assert_eq!(said("live"), Ok(Command::GoLive));
         assert_eq!(said("stop"), Ok(Command::Stop));
         assert_eq!(said("cut"), Ok(Command::HideEverything));
@@ -1771,7 +1771,7 @@ mod tests {
         assert_eq!(said("screen 3"), Ok(Command::Screen { display: 3 }));
         let complaint = said("screen VG2791R").expect_err("a name is not an id");
         assert!(
-            complaint.contains("devices"),
+            complaint.contains("remux sources"),
             "it says where to look: {complaint}"
         );
     }

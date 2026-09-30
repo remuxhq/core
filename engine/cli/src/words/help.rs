@@ -22,20 +22,20 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["grants"], args: "", summary: "Show screen, camera and microphone permissions.", note: "" },
     Topic { names: &["chat"], args: "[-f|--follow|follow]", summary: "Read chat from the armed destinations.", note: "Follow keeps reading new lines until interrupted; `remux chat hide <n>` hides a line locally. `remux chat url ws://…` reads the chat from a wire of your own; `-` forgets it." },
     Topic { names: &["hide"], args: "<line number>", summary: "Hide a chat line on remux's faces.", note: "Does not delete it on the platform; use `remux chat delete <n>` for that." },
-    Topic { names: &["devices"], args: "", summary: "List screens, cameras, microphones and music genres.", note: "This does not list destinations: `remux destination list` does." },
+    Topic { names: &["sources"], args: "", summary: "List screens, windows, applications, cameras, microphones and music genres.", note: "This does not list destinations: `remux destination list` does." },
     Topic { names: &["live"], args: "[--confirm <plan>|--yes]", summary: "Go live on every armed destination.", note: "Alone, it prints the plan and asks a person at a terminal. A script runs `remux plan --json`, then `remux live --confirm <fingerprint>`, which goes only if nothing moved since the plan. Arm destinations first with `remux destination arm <id>`." },
     Topic { names: &["stop"], args: "", summary: "Stop the live broadcast.", note: "" },
     Topic { names: &["quit"], args: "", summary: "Shut down the engine.", note: "" },
     Topic { names: &["layer"], args: "add|set screen|camera|window <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]", summary: "Compose captures, text and timers in one back-to-front order.", note: "Example: `remux scene layer add text title 200 200 1000 160 Welcome`; `remux scene layer add timer clock 700 450 520 160 180`; `remux scene timer start clock`. Set uses the same arguments and preserves ID, order and visibility. Move uses a zero-based back-to-front index across captures and generated layers. Hide/show and remove work for all layers; hiding a capture keeps its device open. Transform uses scene pixels and clockwise degrees for captures; generated text/timer layers require degrees 0 and must fit in 1920x1080. Crop uses native capture pixels; crop, shape, mirror, position and screen-sound do not apply to text or timers. Shape and mirror apply only to cameras; `remux scene layer mirror face off` overrides that camera's broadcast mirror independently of the legacy panel self-view mirror. Shot reads one layer even while hidden. A layer filter processes captured pixels or a generated layer's own width×height pixels before composition; a scene filter runs after composition. Both may be active at once. Filter files are WGSL (see `remux help scene filter`) and must be trusted local files; paths and layouts survive restart. A set to a new capture source keeps its order and viewport, discarding a crop that no longer fits." },
     Topic { names: &["shader"], args: "<file.wgsl|off>", summary: "Apply a WGSL filter to the whole scene.", note: "A WGSL file, the same in both motors: one @fragment function taking @location(0) uv: vec2<f32> ((0, 0) is the top left) and returning @location(0) vec4<f32>, with the picture as a texture_2d<f32> at @group(0) @binding(0) and its sampler at @binding(1); sample it with `textureSample(scene, scene_sampler, uv)`. It is the composed 1920x1080 frame for a scene filter, or the layer's own pixels for a layer filter (a capture's native pixels, or a text/timer layer's width×height box). Optionally declare `struct Remux { time: f32, resolution: vec2<f32> }` and `@group(0) @binding(2) var<uniform> remux: Remux;`: time is seconds since the engine started drawing, resolution the picture's size in pixels, so `uv * remux.resolution` is a pixel; `textureDimensions(scene)` is the same size. A file that does not build, or does not keep to this, is the reply, with the reason. Load only trusted local files: GPU code is not sandboxed. Example: remux scene filter /path/to/invert.wgsl. `off` removes it. Filters belong to scenes and reload on restart; a missing or invalid file is skipped." },
-    Topic { names: &["mic"], args: "[name|off]", summary: "Select a microphone or turn it off.", note: "Find microphone names with `remux devices`; omitted also turns it off." },
+    Topic { names: &["mic"], args: "[name|off]", summary: "Select a microphone or turn it off.", note: "Find microphone names with `remux sources`; omitted also turns it off." },
     Topic { names: &["mute"], args: "[on|off]", summary: "Mute or unmute the microphone.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["monitor"], args: "[on|off]", summary: "Toggle monitoring music through the speakers.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["stream-music"], args: "[on|off]", summary: "Include music in the live mix.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["screen-sound"], args: "[on|off]", summary: "Include one display layer's audio in the live mix.", note: "Omitted means on if exactly one display layer exists; with several choose an ID using `remux scene layer screen-sound <id> on`. Mute your own live player to prevent echo." },
-    Topic { names: &["app-audio"], args: "<running app name|off>", summary: "Capture one application's sound independently of screen sound.", note: "Choose a name from remux devices; both sources on will double that app." },
+    Topic { names: &["app-audio"], args: "<running app name|off>", summary: "Capture one application's sound independently of screen sound.", note: "Choose a name from remux sources; both sources on will double that app." },
     Topic { names: &["app-audio-volume"], args: "<percent>", summary: "Set dedicated application audio volume.", note: "Example: remux audio app-volume 80" },
-    Topic { names: &["music"], args: "[on|off|genre]", summary: "Play, stop or choose a music genre.", note: "Find genres with `remux devices`; omitted means on." },
+    Topic { names: &["music"], args: "[on|off|genre]", summary: "Play, stop or choose a music genre.", note: "Find genres with `remux sources`; omitted means on." },
     Topic { names: &["next"], args: "", summary: "Skip to the next music track.", note: "" },
     Topic { names: &["vol"], args: "<percent>", summary: "Set microphone volume as a percentage.", note: "Example: remux audio vol 80 (80% and values above 100 also work)." },
     Topic { names: &["mvol"], args: "<percent>", summary: "Set music volume as a percentage.", note: "Example: remux music vol 30" },
@@ -55,7 +55,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["arm"], args: "<destination id>", summary: "Include a destination in the next live.", note: "Does not start the live. Find destination IDs in the panel or web app." },
     Topic { names: &["disarm"], args: "<destination id>", summary: "Leave a destination out of the next live.", note: "Does not stop a live. Find destination IDs in the panel or web app." },
     Topic { names: &["scenes"], args: "", summary: "List scenes and the active scene.", note: "" },
-    Topic { names: &["hear"], args: "<apps|off>", summary: "Hear these applications alone in the screen's sound.", note: "Names as `remux devices` lists them, comma-separated: remux audio hear Spotify, Brave. `off` is the whole screen's sound again." },
+    Topic { names: &["hear"], args: "<apps|off>", summary: "Hear these applications alone in the screen's sound.", note: "Names as `remux sources` lists them, comma-separated: remux audio hear Spotify, Brave. `off` is the whole screen's sound again." },
     Topic { names: &["denoise"], args: "[on|off]", summary: "Take the room out of the microphone before the gate.", note: "Omitted means on." },
     Topic { names: &["play"], args: "<clip|file>", summary: "Play one clip once over the mix.", note: "A name from `remux audio clips`, or a file." },
     Topic { names: &["clips"], args: "", summary: "List the clips `audio clip` can play.", note: "Read off the clips folder here; `remux config` says where it is." },
@@ -90,16 +90,16 @@ pub(super) const GUIDE: &str = "remux CLI guide for agents
 Every command answers prose for a person and, with --json anywhere, one JSON
 value for a program; `remux schema` prints the shapes. Exit codes: 0 done,
 1 the engine refused or is not there, 2 the words were wrong.
-Read before changes: remux status --json; remux devices --json; remux grants --json.
+Read before changes: remux status --json; remux sources --json; remux grants --json.
 Use remux help <group> <command> for syntax. Groups: scene, audio, music,
 destination, chat. No video group or capture shortcuts. Top-level: status,
-devices, grants, levels, plan, live, stop, record, cut, quit, health, wait,
+sources, grants, levels, plan, live, stop, record, cut, quit, health, wait,
 history, log, login, logout, config, daemon, bug, schema.
 
 Status lists active_scene, scenes, layers, layer_flowing and scene_flowing.
 Fresh setups contain only the default scene: no Starting Soon, BRB or Nothing
 Shared presets. Destinations are under destinations in status and in
-remux destination list; screen IDs are in devices.
+remux destination list; screen IDs are in sources.
 on_air means a change to sources affects the live output: do not change it
 without the operator's request.
 
@@ -272,7 +272,7 @@ pub fn usage() -> String {
             .expect("top-level help topic");
         text.push_str(&format!("  {:<18} {}\n", name, topic.summary));
     }
-    text.push_str("\nUse `remux help <group>` or `remux help <group> <command>` for details.\n`remux guide` is the local operating guide for agents.\n`--json` works before or after any command; replies (including errors) use the socket's JSON shape, help uses a `help` field, and chat follow emits one object per line.\nDestination IDs are in `remux destination list`, not in `remux devices`.");
+    text.push_str("\nUse `remux help <group>` or `remux help <group> <command>` for details.\n`remux guide` is the local operating guide for agents.\n`--json` works before or after any command; replies (including errors) use the socket's JSON shape, help uses a `help` field, and chat follow emits one object per line.\nDestination IDs are in `remux destination list`, not in `remux sources`.");
     text
 }
 
@@ -373,6 +373,7 @@ mod tests {
             "Build the scenes before going live",
             "switch to the opening one first",
             "remux status --json",
+            "remux sources --json",
             "under destinations",
             "remux live",
             "on_air",

@@ -390,7 +390,7 @@ pub(super) const GROUPS: &[Group] = &[
 /// The commands outside every group: the live's levers, what the engine is
 /// and what this shell keeps by itself.
 pub(super) const TOP: &[&str] = &[
-    "status", "devices", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
+    "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
     "health", "wait", "history", "log", "login", "logout", "config", "daemon", "bug", "schema",
 ];
 
