@@ -43,7 +43,7 @@ pub fn follow(words: &[String]) -> (bool, Vec<String>) {
     let follows = |w: &String| matches!(w.as_str(), "-f" | "--follow" | "follow");
     if matches!(
         words.first().map(String::as_str),
-        Some("chat") | Some("levels") | Some("meters")
+        Some("chat") | Some("levels") | Some("meters") | Some("events")
     ) && words[1..].iter().any(follows)
     {
         (
@@ -186,6 +186,13 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "shot" if rest.is_empty() => Ok(Command::Shot { of: Framed::Scene }),
         "shot" => Err("scene shot takes no arguments; use scene layer shot <id>".into()),
         "grants" => Ok(Command::Grants),
+        // `remux events -f`: the flag is the shell's (`follow`), and asks
+        // the engine to keep the connection.
+        "events" if rest.is_empty() => Ok(Command::Events {
+            since: 0,
+            follow: false,
+        }),
+        "events" => Err("events takes -f, --follow or follow".into()),
         "chat" => Ok(Command::Chat {
             since: 0,
             follow: false,
@@ -3213,5 +3220,24 @@ mod reading {
             }],
         };
         assert!(!render(&reply).contains('\u{1b}'));
+    }
+
+    #[test]
+    fn the_events_are_read_once_or_followed_and_the_flag_never_reaches_the_engine() {
+        let asked = |line: &str| read(&w(line));
+        let events = Some(Command::Events {
+            since: 0,
+            follow: false,
+        });
+        for line in ["events -f", "events --follow", "events follow"] {
+            let ask = asked(line).unwrap();
+            assert_eq!((ask.command, ask.follow), (events.clone(), true), "{line}");
+        }
+        let ask = asked("events").unwrap();
+        assert_eq!((ask.command, ask.follow), (events, false));
+        assert_eq!(
+            asked("events now"),
+            Err("events takes -f, --follow or follow".into())
+        );
     }
 }
