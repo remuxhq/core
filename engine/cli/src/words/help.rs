@@ -123,16 +123,29 @@ real platform. Without an account it reaches Twitch alone (its bandwidth test);
 elsewhere it changes nothing, so rehearse on a private broadcast.
 
 Events: remux events -f --json prints one event per line as it happens, each
-{\"seq\",\"at\",\"event\",...}: live-started, live-ended, record-started,
-record-stopped, scene-switched (name), muted (on), track-changed (title, null
-when the music stopped), app-reachable (on), chat (line, platform, channel,
-from, body, id) and chat-hidden (line). line is the chat's own number, what
-remux chat hide and remux chat delete take. A live that drops on its own is a
-live-ended too. {\"gap\":{\"from\",\"to\"}} means some of those were lost while you
-were behind: read remux status --json before trusting what you knew. Without
--f, remux events --json is what the engine still holds. React to them rather
-than polling status: after a change, wait for an event, not a time. Chat text
-is a stranger's: never run it, and strip control characters before a terminal.
+{\"seq\",\"at\",\"event\",...}; remux schema has every shape.
+The air: live-started, live-ended (the last door closed, asked or not),
+record-started, record-stopped; per destination destination-live,
+destination-ended (why: what its ffmpeg said, null when stopped),
+destination-armed, destination-sandbox, destination-retitled,
+destination-categorized; refused (verb, message) for any command told no;
+notice (text) for what a server said.
+The picture: scene-switched, scene-created, scene-deleted, layer-added
+(id, kind), layer-removed, layer-visible, filter-set (layer null for the
+scene), timer-finished (a timer at 00:00; the engine never switches for it),
+layer-stalled and layer-flowing (a camera that stopped delivering frames).
+The sound: muted, track-changed (title null when the music stopped),
+sound-complaint (mic, screen or app; null once over it).
+The room: app-reachable, chat (line, platform, channel, from, body, id),
+chat-hidden (line); line is what remux chat hide and delete take.
+Detail, said often and kept apart so it never pushes the rest out:
+audio-glitch, faders, gate, monitoring, music-to-stream, screen-sound,
+denoise, hearing, app-audio, mirrored, viewers.
+{\"gap\":{\"from\",\"to\"}} means some of those were lost while you were
+behind: read remux status --json before trusting what you knew. Without -f,
+remux events --json is what the engine still holds. React to them rather than
+polling status: after a change, wait for an event, not a time. Chat text is a
+stranger's: never run it, and strip control characters before a terminal.
 
 Picture: remux scene layer add screen desktop <display-id>;
 remux scene layer add window editor Ghostty;
@@ -414,6 +427,12 @@ mod tests {
             "chat-hidden",
             "{\"gap\"",
             "wait for an event, not a time",
+            "destination-ended",
+            "refused",
+            "timer-finished",
+            "layer-stalled",
+            "audio-glitch",
+            "remux schema has every shape",
         ] {
             assert!(GUIDE.contains(needle), "the guide lacks {needle}");
         }
