@@ -98,7 +98,7 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
             .with_history(Some(remuxd_domain::air::history::path()))
             .with_app(watching)
             .with_chat(Arc::clone(&wire.feed))
-            .with_events(Arc::clone(&followed.events)),
+            .with_events(followed.events()),
     ));
 
     // A heartbeat, for the one thing no client asks for: a track ending. Four
