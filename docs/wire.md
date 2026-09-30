@@ -36,11 +36,14 @@ dropped; a row with less in it is read with defaults. The shapes are in
 {"categorize":{"adapter":6,"id":"509670","name":"Software and Game Development"}}
 {"search":{"adapter":6,"query":"soft"}}
 {"delete":{"id":"m1","channel":"main"}}
+{"say":{"body":"valeu!","channel":"main"}}      no channel: every chat the server reads
 {"heartbeat":{}}                   every 25 s
 ```
 
 A server answers a verb with what changed (`destinations`, a `notice`), not
-with a reply; an engine reads state, never acknowledgements.
+with a reply; an engine reads state, never acknowledgements. A `say` is
+answered by the platform: the line comes back down as a `line` like
+anybody's, and the engine keeps no copy of its own. `channel` is a line's.
 
 ## Where the engine looks
 
@@ -48,7 +51,7 @@ The chat and the destinations are looked up apart.
 
 - The chat: `[chat] url` in `~/.config/remux/config.toml`, kept by `remux chat
   --url ws://…` (0600, the URL may carry a token; `REMUX_CHAT_URL` overrides
-  it): the `line` half alone, nothing is sent up but deletes. `remux chat
+  it): the `line` half alone, nothing is sent up but deletes and says. `remux chat
   --url -` forgets it. Else the session's wire, its `chat` half. Else nothing:
   `remux chat` says `no chat wire`.
 - The destinations: with a session (`remux login`), the account's, over the
@@ -65,7 +68,8 @@ The engine reconnects on its own, three seconds after a drop. `remux chat
 ## A chat bridge of your own
 
 Read the platform's chat however you like and write one `line` object per
-message to every connected client; act on `delete` or ignore it. That is the
+message to every connected client; act on `delete` and `say` or ignore them,
+and tell the engine what went wrong with a `notice`. That is the
 whole of it: without an account the destinations are the engine's own file,
 and the control half is not used. The smallest bridge is
 `cargo run -p remuxd --example wire`.

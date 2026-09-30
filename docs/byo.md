@@ -41,6 +41,16 @@ youtube = "<video id>"
 
 The bridge takes only the chat. With an account (`remux login`), the destinations, the title and the rest stay the account's. `remux chat --url -` turns the bridge off, back to the account's chat if you have one. `remux chat delete` only reaches the bridge: deleting on the platform needs a moderator token.
 
+`remux chat say valeu!` posts a line as you, on every chat the bridge reads; `--to <channel>` picks one (a line's channel, as `remux events` shows it). It comes back in `remux chat read` like anybody's. The bridge needs your tokens in `byo.env`, and says what is missing otherwise:
+
+```
+TWITCH_CHAT_TOKEN=…        # a user token with the chat:edit scope
+TWITCH_CHAT_NICK=…         # whose token it is, if not the channel's
+YOUTUBE_CLIENT_ID=…        # OAuth with the youtube.force-ssl scope;
+YOUTUBE_CLIENT_SECRET=…    # the refresh token is the channel's that
+YOUTUBE_REFRESH_TOKEN=…    # owns the live
+```
+
 ## Going live
 
 ```
