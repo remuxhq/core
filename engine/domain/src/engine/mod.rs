@@ -480,6 +480,8 @@ pub struct Engine {
     /// What the events saw last. `None` until the engine first does
     /// anything, since a motor and an app are given after construction.
     seen: Option<crate::app::events::Snapshot>,
+    /// The cameras shown, watched for a count that stops.
+    stalls: crate::picture::stall::Stalls,
     /// Where the picture goes when somebody presses Go live.
     ///
     /// It carries a credential, so the engine takes it from whoever started it
@@ -534,6 +536,7 @@ impl Engine {
             chat: Default::default(),
             events: Default::default(),
             seen: None,
+            stalls: Default::default(),
             pipeline: Box::new(NoPipeline),
             library: Box::new(NoLibrary),
             playing: None,
@@ -1152,6 +1155,22 @@ impl Engine {
     pub fn tick(&mut self) {
         self.seen();
         self.ticked();
+        let cameras: Vec<(String, u64)> = self
+            .status
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.visible && layer.source.kind == crate::picture::layers::Kind::Camera
+            })
+            .map(|layer| {
+                (
+                    layer.id.clone(),
+                    self.pipeline.layer_flowing(&layer.id).captured,
+                )
+            })
+            .collect();
+        let stalled = self.stalls.observe(cameras);
+        self.keep(stalled);
         self.notice();
     }
 
@@ -1236,6 +1255,7 @@ impl Engine {
     /// state and not from [`Self::reported`], which asks the pipeline a
     /// dozen things.
     fn snapshot(&self) -> crate::app::events::Snapshot {
+        use crate::app::events::LayerSeen;
         crate::app::events::Snapshot {
             on_air: self.status.on_air,
             recording: self.status.recording,
@@ -1245,6 +1265,26 @@ impl Engine {
             app: self.watching.reachable(),
             sending: self.pipeline.publishing().into_iter().collect(),
             troubles: self.pipeline.troubles().into_iter().collect(),
+            scenes: self
+                .status
+                .scenes
+                .iter()
+                .map(|scene| scene.name.clone())
+                .collect(),
+            layers: self
+                .status
+                .layers
+                .iter()
+                .map(LayerSeen::of_layer)
+                .chain(self.active_elements().iter().map(LayerSeen::of_element))
+                .collect(),
+            filter: self.status.shader.clone(),
+            timers_done: self
+                .counting
+                .iter()
+                .filter(|(_, deadline)| **deadline <= Instant::now())
+                .map(|(id, _)| id.clone())
+                .collect(),
         }
     }
 
@@ -2709,10 +2749,17 @@ mod tests {
         let (engine, _) = publishing_engine(None);
         let mut engine = engine.with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::Screen { display: 1 });
-        assert_eq!(said(&events), vec![], "a capture is not an event");
+        let added = Event::LayerAdded {
+            id: "source-1".into(),
+            kind: "screen".into(),
+        };
+        assert_eq!(said(&events), vec![added.clone()], "a capture is a layer");
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
         assert_eq!(engine.handle(Command::Stop), Reply::Ok);
-        assert_eq!(said(&events), vec![Event::LiveStarted, Event::LiveEnded]);
+        assert_eq!(
+            said(&events),
+            vec![added, Event::LiveStarted, Event::LiveEnded]
+        );
     }
 
     #[test]
@@ -2722,13 +2769,23 @@ mod tests {
         let (engine, published) = publishing_engine(None);
         let mut engine = engine.with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::Screen { display: 1 });
+        let from = events.lock().expect("events").last();
+        let since = |events: &std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>| {
+            let events = events.lock().expect("events");
+            events
+                .since(from)
+                .events
+                .into_iter()
+                .map(|e| e.event)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
         engine.tick();
-        assert_eq!(said(&events), vec![Event::LiveStarted]);
+        assert_eq!(since(&events), vec![Event::LiveStarted]);
         // The relay hung up.
         published.lock().expect("published").push(None);
         engine.tick();
-        assert_eq!(said(&events), vec![Event::LiveStarted, Event::LiveEnded]);
+        assert_eq!(since(&events), vec![Event::LiveStarted, Event::LiveEnded]);
     }
 
     #[test]
@@ -2740,7 +2797,8 @@ mod tests {
         let before = now();
         engine.handle(Command::GoLive);
         let events = events.lock().expect("events").since(0).events;
-        assert!(events[0].at >= before && events[0].at <= now());
+        let live = events.last().expect("the live");
+        assert!(live.at >= before && live.at <= now());
     }
 
     #[test]
@@ -2751,8 +2809,9 @@ mod tests {
         engine.handle(Command::Screen { display: 1 });
         engine.handle(Command::GoLive);
         engine.handle(Command::Stop);
+        // 1 the screen added, 2 the live started, 3 the live ended.
         let Reply::Events { gap, events } = engine.handle(Command::Events {
-            since: 1,
+            since: 2,
             follow: false,
         }) else {
             panic!("events answers with events")
@@ -2760,7 +2819,7 @@ mod tests {
         assert_eq!(gap, None);
         assert_eq!(
             events.iter().map(|e| (e.seq, &e.event)).collect::<Vec<_>>(),
-            [(2, &Event::LiveEnded)]
+            [(3, &Event::LiveEnded)]
         );
     }
 
@@ -2996,6 +3055,54 @@ mod tests {
         assert_eq!(
             said(&events),
             vec![Event::DestinationArmed { id: 2, on: true }]
+        );
+    }
+
+    #[test]
+    fn a_timer_reaching_zero_is_an_event() {
+        use crate::app::events::Event;
+        use crate::picture::scenes::{Element, ElementContent};
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::SceneElementAdd {
+            element: Element {
+                id: "clock".into(),
+                x: 600,
+                y: 400,
+                width: 700,
+                height: 180,
+                visible: true,
+                shader: None,
+                content: ElementContent::Timer { seconds: 0 },
+            },
+        });
+        engine.handle(Command::SceneTimerStart { id: "clock".into() });
+        engine.tick();
+        assert!(
+            said(&events).contains(&Event::TimerFinished { id: "clock".into() }),
+            "got {:?}",
+            said(&events)
+        );
+    }
+
+    #[test]
+    fn a_camera_whose_frames_stop_is_an_event_on_the_ticks() {
+        use crate::app::events::Event;
+        let events = followed();
+        // The fake camera's count never moves past three.
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Camera {
+            device: Some("HP".into()),
+        });
+        let id = engine.status().layers[0].id.clone();
+        for _ in 0..=crate::picture::stall::Stalls::FLAT_TICKS {
+            engine.tick();
+        }
+        assert!(
+            said(&events).contains(&Event::LayerStalled { id }),
+            "got {:?}",
+            said(&events)
         );
     }
 }

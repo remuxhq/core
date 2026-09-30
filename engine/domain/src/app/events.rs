@@ -74,6 +74,46 @@ pub enum Event {
         verb: String,
         message: String,
     },
+    /// A scene saved under a new name, made or duplicated.
+    SceneCreated {
+        name: String,
+    },
+    SceneDeleted {
+        name: String,
+    },
+    /// A layer put in the active scene: `kind` is `camera`, `window`,
+    /// `screen`, `image`, `text` or `timer`.
+    LayerAdded {
+        id: String,
+        kind: String,
+    },
+    LayerRemoved {
+        id: String,
+    },
+    /// Shown, or hidden with its capture kept open.
+    LayerVisible {
+        id: String,
+        on: bool,
+    },
+    /// A WGSL filter put on a layer, or on the whole scene when `layer` is
+    /// `None`; `file` is `None` when it was taken off.
+    FilterSet {
+        layer: Option<String>,
+        file: Option<String>,
+    },
+    /// A timer in the active scene reached 00:00. The engine never switches
+    /// scenes for it; this is where a face that wants to, does.
+    TimerFinished {
+        id: String,
+    },
+    /// A camera that stopped handing over frames, shown, for three seconds.
+    LayerStalled {
+        id: String,
+    },
+    /// A camera that stalled handing over frames again.
+    LayerFlowing {
+        id: String,
+    },
     /// What a server said out loud: a platform that refused a title.
     Notice {
         text: String,
@@ -247,6 +287,58 @@ pub struct Snapshot {
     pub sending: std::collections::BTreeSet<i64>,
     /// What each door's ffmpeg last complained about.
     pub troubles: std::collections::BTreeMap<i64, String>,
+    /// The scenes' names.
+    pub scenes: std::collections::BTreeSet<String>,
+    /// The active scene's layers, captures and generated alike.
+    pub layers: std::collections::BTreeMap<String, LayerSeen>,
+    /// The active scene's filter.
+    pub filter: Option<String>,
+    /// The timers of the active scene at 00:00.
+    pub timers_done: std::collections::BTreeSet<String>,
+}
+
+/// A layer, as far as the events follow it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LayerSeen {
+    pub kind: String,
+    pub visible: bool,
+    pub filter: Option<String>,
+}
+
+impl LayerSeen {
+    /// A capture: camera, window, screen or image.
+    #[must_use]
+    pub fn of_layer(layer: &crate::picture::layers::Layer) -> (String, Self) {
+        let kind = serde_json::to_value(layer.source.kind)
+            .ok()
+            .and_then(|kind| kind.as_str().map(str::to_string))
+            .unwrap_or_default();
+        (
+            layer.id.clone(),
+            Self {
+                kind,
+                visible: layer.visible,
+                filter: layer.shader.clone(),
+            },
+        )
+    }
+
+    /// A generated layer: text or timer.
+    #[must_use]
+    pub fn of_element(element: &crate::picture::scenes::Element) -> (String, Self) {
+        let kind = match element.content {
+            crate::picture::scenes::ElementContent::Text { .. } => "text",
+            crate::picture::scenes::ElementContent::Timer { .. } => "timer",
+        };
+        (
+            element.id.clone(),
+            Self {
+                kind: kind.into(),
+                visible: element.visible,
+                filter: element.shader.clone(),
+            },
+        )
+    }
 }
 
 impl From<&Status> for Snapshot {
@@ -269,6 +361,25 @@ impl From<&Status> for Snapshot {
                 .iter()
                 .filter_map(|row| Some((row.id, row.trouble.clone()?)))
                 .collect(),
+            scenes: status
+                .scenes
+                .iter()
+                .map(|scene| scene.name.clone())
+                .collect(),
+            layers: status
+                .layers
+                .iter()
+                .map(LayerSeen::of_layer)
+                .chain(
+                    status
+                        .scenes
+                        .iter()
+                        .filter(|scene| scene.name == status.active_scene)
+                        .flat_map(|scene| scene.elements.iter().map(LayerSeen::of_element)),
+                )
+                .collect(),
+            filter: status.shader.clone(),
+            timers_done: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -301,10 +412,25 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
             why: after.troubles.get(&id).cloned(),
         });
     }
-    if before.active_scene != after.active_scene {
+    let switched = before.active_scene != after.active_scene;
+    if switched {
         events.push(Event::SceneSwitched {
             name: after.active_scene.clone(),
         });
+    }
+    for name in after.scenes.difference(&before.scenes) {
+        events.push(Event::SceneCreated { name: name.clone() });
+    }
+    for name in before.scenes.difference(&after.scenes) {
+        events.push(Event::SceneDeleted { name: name.clone() });
+    }
+    // Within one scene only: a switch moves every layer and every filter,
+    // and the switch is the one thing that happened.
+    if !switched {
+        picture_between(before, after, &mut events);
+    }
+    for id in after.timers_done.difference(&before.timers_done) {
+        events.push(Event::TimerFinished { id: id.clone() });
     }
     if before.muted != after.muted {
         events.push(Event::Muted { on: after.muted });
@@ -318,6 +444,46 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
         events.push(Event::AppReachable { on: after.app });
     }
     events
+}
+
+/// The active scene's layers and filters, from `before` to `after`.
+fn picture_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
+    for id in before.layers.keys() {
+        if !after.layers.contains_key(id) {
+            events.push(Event::LayerRemoved { id: id.clone() });
+        }
+    }
+    for (id, now) in &after.layers {
+        if !before.layers.contains_key(id) {
+            events.push(Event::LayerAdded {
+                id: id.clone(),
+                kind: now.kind.clone(),
+            });
+        }
+    }
+    for (id, now) in &after.layers {
+        let Some(was) = before.layers.get(id) else {
+            continue;
+        };
+        if was.visible != now.visible {
+            events.push(Event::LayerVisible {
+                id: id.clone(),
+                on: now.visible,
+            });
+        }
+        if was.filter != now.filter {
+            events.push(Event::FilterSet {
+                layer: Some(id.clone()),
+                file: now.filter.clone(),
+            });
+        }
+    }
+    if before.filter != after.filter {
+        events.push(Event::FilterSet {
+            layer: None,
+            file: after.filter.clone(),
+        });
+    }
 }
 
 /// What changed in the rows both lists hold: armed, rehearsed, retitled,
@@ -848,5 +1014,122 @@ mod tests {
         assert_eq!(refused(&Command::GoLive, &Reply::Ok), None);
         // A read that failed refused nobody anything.
         assert_eq!(refused(&Command::Levels, &no), None);
+    }
+
+    fn seen(kind: &str, visible: bool, filter: Option<&str>) -> LayerSeen {
+        LayerSeen {
+            kind: kind.into(),
+            visible,
+            filter: filter.map(str::to_string),
+        }
+    }
+
+    fn with_layers(scene: &str, layers: &[(&str, LayerSeen)]) -> Snapshot {
+        Snapshot {
+            active_scene: scene.into(),
+            layers: layers
+                .iter()
+                .map(|(id, seen)| ((*id).to_string(), seen.clone()))
+                .collect(),
+            ..Snapshot::default()
+        }
+    }
+
+    #[test]
+    fn a_layer_added_removed_shown_or_filtered_in_one_scene_is_an_event() {
+        let before = with_layers(
+            "code",
+            &[
+                ("face", seen("camera", true, None)),
+                ("logo", seen("image", true, None)),
+            ],
+        );
+        let after = with_layers(
+            "code",
+            &[
+                ("face", seen("camera", false, Some("/tmp/warm.wgsl"))),
+                ("title", seen("text", true, None)),
+            ],
+        );
+        assert_eq!(
+            between(&before, &after),
+            vec![
+                Event::LayerRemoved { id: "logo".into() },
+                Event::LayerAdded {
+                    id: "title".into(),
+                    kind: "text".into()
+                },
+                Event::LayerVisible {
+                    id: "face".into(),
+                    on: false
+                },
+                Event::FilterSet {
+                    layer: Some("face".into()),
+                    file: Some("/tmp/warm.wgsl".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scene_switch_is_the_switch_not_every_layer_it_moved() {
+        let before = with_layers("code", &[("face", seen("camera", true, None))]);
+        let after = Snapshot {
+            filter: Some("/tmp/crt.wgsl".into()),
+            ..with_layers("break", &[("card", seen("image", true, None))])
+        };
+        assert_eq!(
+            between(&before, &after),
+            vec![Event::SceneSwitched {
+                name: "break".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_scene_made_or_deleted_and_the_scene_filter_are_events() {
+        let scenes = |names: &[&str]| Snapshot {
+            active_scene: "code".into(),
+            scenes: names.iter().map(|n| (*n).to_string()).collect(),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            between(&scenes(&["code"]), &scenes(&["code", "break"])),
+            vec![Event::SceneCreated {
+                name: "break".into()
+            }]
+        );
+        assert_eq!(
+            between(&scenes(&["code", "break"]), &scenes(&["code"])),
+            vec![Event::SceneDeleted {
+                name: "break".into()
+            }]
+        );
+        let filtered = Snapshot {
+            filter: Some("/tmp/crt.wgsl".into()),
+            ..scenes(&["code"])
+        };
+        assert_eq!(
+            between(&scenes(&["code"]), &filtered),
+            vec![Event::FilterSet {
+                layer: None,
+                file: Some("/tmp/crt.wgsl".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn a_timer_reaching_zero_is_an_event_once() {
+        let done = |ids: &[&str]| Snapshot {
+            timers_done: ids.iter().map(|n| (*n).to_string()).collect(),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            between(&done(&[]), &done(&["clock"])),
+            vec![Event::TimerFinished { id: "clock".into() }]
+        );
+        assert_eq!(between(&done(&["clock"]), &done(&["clock"])), vec![]);
+        // Restarted or stopped: nothing to say until it reaches zero again.
+        assert_eq!(between(&done(&["clock"]), &done(&[])), vec![]);
     }
 }

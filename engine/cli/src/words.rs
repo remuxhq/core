@@ -893,6 +893,23 @@ fn render_events(
             },
             Event::Refused { verb, message } => format!("{verb} refused: {}", plain(message)),
             Event::Notice { text } => format!("notice: {}", plain(text)),
+            Event::SceneCreated { name } => format!("scene {} created", plain(name)),
+            Event::SceneDeleted { name } => format!("scene {} deleted", plain(name)),
+            Event::LayerAdded { id, kind } => format!("layer {} added ({kind})", plain(id)),
+            Event::LayerRemoved { id } => format!("layer {} removed", plain(id)),
+            Event::LayerVisible { id, on: shown } => {
+                format!("layer {} {}", plain(id), on(*shown, "shown", "hidden"))
+            }
+            Event::FilterSet { layer, file } => format!(
+                "{} filter {}",
+                layer
+                    .as_deref()
+                    .map_or_else(|| "scene".into(), |id| format!("layer {}", plain(id))),
+                file.as_deref().map_or_else(|| "off".into(), plain)
+            ),
+            Event::TimerFinished { id } => format!("timer {} at zero", plain(id)),
+            Event::LayerStalled { id } => format!("camera {} stopped delivering", plain(id)),
+            Event::LayerFlowing { id } => format!("camera {} delivering again", plain(id)),
         };
         format!(
             "{} #{} {what}",
@@ -3438,6 +3455,69 @@ mod reading {
              00:00:00 #7 destination 6 has no category\n\
              00:00:00 #8 go-live refused: the scene is empty\n\
              00:00:00 #9 notice: Twitch refused the title"
+        );
+    }
+
+    #[test]
+    fn what_changed_in_the_picture_reads_one_a_line() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    Event::SceneCreated {
+                        name: "break".into(),
+                    },
+                ),
+                at(2, Event::SceneDeleted { name: "old".into() }),
+                at(
+                    3,
+                    Event::LayerAdded {
+                        id: "face".into(),
+                        kind: "camera".into(),
+                    },
+                ),
+                at(4, Event::LayerRemoved { id: "logo".into() }),
+                at(
+                    5,
+                    Event::LayerVisible {
+                        id: "face".into(),
+                        on: false,
+                    },
+                ),
+                at(
+                    6,
+                    Event::FilterSet {
+                        layer: Some("face".into()),
+                        file: Some("/tmp/warm.wgsl".into()),
+                    },
+                ),
+                at(
+                    7,
+                    Event::FilterSet {
+                        layer: None,
+                        file: None,
+                    },
+                ),
+                at(8, Event::TimerFinished { id: "clock".into() }),
+                at(9, Event::LayerStalled { id: "face".into() }),
+                at(10, Event::LayerFlowing { id: "face".into() }),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 scene break created\n\
+             00:00:00 #2 scene old deleted\n\
+             00:00:00 #3 layer face added (camera)\n\
+             00:00:00 #4 layer logo removed\n\
+             00:00:00 #5 layer face hidden\n\
+             00:00:00 #6 layer face filter /tmp/warm.wgsl\n\
+             00:00:00 #7 scene filter off\n\
+             00:00:00 #8 timer clock at zero\n\
+             00:00:00 #9 camera face stopped delivering\n\
+             00:00:00 #10 camera face delivering again"
         );
     }
 }
