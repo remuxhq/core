@@ -71,8 +71,9 @@ pub struct ObsPipeline {
     app_audio: *mut sys::obs_source_t,
     app_heard: Followed,
     app_audio_volume: f64,
-    /// The independent audio captures, each on its own channel from 8.
-    audio_layers: Vec<(String, *mut sys::obs_source_t, u32)>,
+    /// The independent audio captures, each on its own channel from 8, and
+    /// whether it steps back under the voice.
+    audio_layers: Vec<(String, *mut sys::obs_source_t, u32, bool)>,
     /// H264 and AAC (the OS's encoders, from the table), made on first use and shared
     /// by the stream and the recording.
     video_encoder: *mut sys::obs_encoder_t,
@@ -80,8 +81,9 @@ pub struct ObsPipeline {
     recording: Option<Output>,
     /// One RTMP output per destination, all on the same encoders.
     publishing: Vec<(i64, Output)>,
-    /// The duck: a compressor on the music keyed by the microphone.
-    duck: *mut sys::obs_source_t,
+    /// The duck: a compressor keyed by the microphone on each sound that
+    /// plays under the voice, with the sound it is on.
+    ducks: Vec<(*mut sys::obs_source_t, *mut sys::obs_source_t)>,
     duck_db: f64,
 }
 
@@ -386,7 +388,7 @@ impl ObsPipeline {
             audio_encoder: std::ptr::null_mut(),
             recording: None,
             publishing: Vec::new(),
-            duck: std::ptr::null_mut(),
+            ducks: Vec::new(),
             duck_db: -24.0,
         }
     }
@@ -532,6 +534,7 @@ impl ObsPipeline {
         // SAFETY: the old one comes off channel 3 before release.
         unsafe {
             if !self.screen_sound.is_null() {
+                self.unduck(self.screen_sound);
                 sys::obs_set_output_source(3, std::ptr::null_mut());
                 self.screen_heard.leave(self.screen_sound);
                 sys::obs_source_release(self.screen_sound);
@@ -582,45 +585,76 @@ impl ObsPipeline {
             self.screen_heard.follow(source);
             self.screen_sound = source;
         }
+        self.apply_duck();
         Ok(())
     }
 
-    /// The music steps under the voice: a compressor on the music keyed by
-    /// the microphone (libobs's sidechain), its threshold set so the step
-    /// is about `duck_db` when the voice is at a normal level.
+    /// Whatever plays under the voice steps back when it speaks: the music,
+    /// the screen's sound, an application's, and the audio layers whose kind
+    /// ducks; never a microphone or a clip. A compressor on each, keyed by
+    /// the microphone (libobs's sidechain), its threshold set so the step is
+    /// about `duck_db` when the voice is at a normal level.
     fn apply_duck(&mut self) {
-        if self.music.is_null() {
+        let ducked: Vec<*mut sys::obs_source_t> = self.ducks.iter().map(|(on, _)| *on).collect();
+        for on in ducked {
+            self.unduck(on);
+        }
+        if self.mic.is_null() || self.duck_db >= 0.0 {
             return;
         }
-        // SAFETY: the old filter is ours; settings released after create.
-        unsafe {
-            if !self.duck.is_null() {
-                sys::obs_source_filter_remove(self.music, self.duck);
-                sys::obs_source_release(self.duck);
-                self.duck = std::ptr::null_mut();
+        let under = [self.music, self.screen_sound, self.app_audio]
+            .into_iter()
+            .chain(
+                self.audio_layers
+                    .iter()
+                    .filter(|(_, _, _, ducks)| *ducks)
+                    .map(|(_, source, _, _)| *source),
+            )
+            .filter(|source| !source.is_null())
+            .collect::<Vec<_>>();
+        for on in under {
+            // SAFETY: `on` is ours and live; settings released after create.
+            unsafe {
+                let settings = sys::obs_data_create();
+                sys::obs_data_set_double(settings, c("ratio").as_ptr(), 32.0);
+                // A voice at about -20 dBFS compressed 32:1 above this
+                // threshold steps the sound down by about the duck.
+                sys::obs_data_set_double(settings, c("threshold").as_ptr(), -20.0 + self.duck_db);
+                sys::obs_data_set_int(settings, c("attack_time").as_ptr(), 10);
+                sys::obs_data_set_int(settings, c("release_time").as_ptr(), 400);
+                sys::obs_data_set_string(
+                    settings,
+                    c("sidechain_source").as_ptr(),
+                    c("mic").as_ptr(),
+                );
+                let filter = sys::obs_source_create(
+                    c("compressor_filter").as_ptr(),
+                    c("duck").as_ptr(),
+                    settings,
+                    std::ptr::null_mut(),
+                );
+                sys::obs_data_release(settings);
+                if !filter.is_null() {
+                    sys::obs_source_filter_add(on, filter);
+                    self.ducks.push((on, filter));
+                }
             }
-            if self.mic.is_null() || self.duck_db >= 0.0 {
-                return;
+        }
+    }
+
+    /// The duck off a sound, before the sound is released: a filter left on
+    /// a source that is gone is ours to release, and nobody's to remove.
+    fn unduck(&mut self, on: *mut sys::obs_source_t) {
+        let (off, kept) = std::mem::take(&mut self.ducks)
+            .into_iter()
+            .partition(|(there, _)| *there == on);
+        self.ducks = kept;
+        for (_, filter) in off {
+            // SAFETY: both ours; the sound is still live.
+            unsafe {
+                sys::obs_source_filter_remove(on, filter);
+                sys::obs_source_release(filter);
             }
-            let settings = sys::obs_data_create();
-            sys::obs_data_set_double(settings, c("ratio").as_ptr(), 32.0);
-            // A voice at about -20 dBFS compressed 32:1 above this threshold
-            // steps the music down by about the duck.
-            sys::obs_data_set_double(settings, c("threshold").as_ptr(), -20.0 + self.duck_db);
-            sys::obs_data_set_int(settings, c("attack_time").as_ptr(), 10);
-            sys::obs_data_set_int(settings, c("release_time").as_ptr(), 400);
-            sys::obs_data_set_string(settings, c("sidechain_source").as_ptr(), c("mic").as_ptr());
-            let filter = sys::obs_source_create(
-                c("compressor_filter").as_ptr(),
-                c("duck").as_ptr(),
-                settings,
-                std::ptr::null_mut(),
-            );
-            sys::obs_data_release(settings);
-            if !filter.is_null() {
-                sys::obs_source_filter_add(self.music, filter);
-            }
-            self.duck = filter;
         }
     }
 
@@ -907,7 +941,7 @@ impl Drop for ObsPipeline {
         self.publishing.clear();
         self.clear_picture();
         let _ = self.app_audio(None);
-        for (id, _, _) in self.audio_layers.clone() {
+        for (id, _, _, _) in self.audio_layers.clone() {
             self.audio_layer_remove(&id);
         }
         let _ = self.play(None);
@@ -1007,6 +1041,8 @@ impl Sound for ObsPipeline {
         if self.denoise_on {
             self.denoise(true);
         }
+        // With no microphone nothing ducks; with a new one, all of it again.
+        self.apply_duck();
         Ok(())
     }
     fn gate(&mut self, params: GateParams) {
@@ -1070,6 +1106,7 @@ impl Sound for ObsPipeline {
         // one is ours until then.
         unsafe {
             if !self.music.is_null() {
+                self.unduck(self.music);
                 sys::obs_set_output_source(2, std::ptr::null_mut());
                 sys::obs_source_release(self.music);
                 self.music = std::ptr::null_mut();
@@ -1095,7 +1132,6 @@ impl Sound for ObsPipeline {
             }
             sys::obs_set_output_source(2, source);
             self.music = source;
-            self.duck = std::ptr::null_mut();
             if self.music_meter.is_null() {
                 let meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
                 sys::obs_volmeter_add_callback(
@@ -1213,6 +1249,7 @@ impl Sound for ObsPipeline {
         // one is ours until the next.
         unsafe {
             if !self.app_audio.is_null() {
+                self.unduck(self.app_audio);
                 sys::obs_set_output_source(5, std::ptr::null_mut());
                 self.app_heard.leave(self.app_audio);
                 sys::obs_source_release(self.app_audio);
@@ -1226,6 +1263,7 @@ impl Sound for ObsPipeline {
                 self.meter_the_mix();
             }
         }
+        self.apply_duck();
         Ok(app.map(String::from))
     }
     /// Each audio layer on a channel of its own, from 8: libobs mixes every
@@ -1242,7 +1280,7 @@ impl Sound for ObsPipeline {
         }
         .ok_or("an audio layer names its source")?;
         let channel = (8..64)
-            .find(|ch| self.audio_layers.iter().all(|(_, _, used)| used != ch))
+            .find(|ch| self.audio_layers.iter().all(|(_, _, used, _)| used != ch))
             .ok_or("every audio channel is taken")?;
         let source = self.audio_source(layer.source.kind, &said)?;
         // SAFETY: ours until removed; on its own channel.
@@ -1252,16 +1290,19 @@ impl Sound for ObsPipeline {
             sys::obs_set_output_source(channel, source);
         }
         self.meter_the_mix();
-        self.audio_layers.push((layer.id.clone(), source, channel));
+        self.audio_layers
+            .push((layer.id.clone(), source, channel, layer.source.kind.ducks()));
+        self.apply_duck();
         Ok(())
     }
     fn audio_layer_remove(&mut self, id: &str) {
         if let Some(at) = self
             .audio_layers
             .iter()
-            .position(|(there, _, _)| there == id)
+            .position(|(there, _, _, _)| there == id)
         {
-            let (_, source, channel) = self.audio_layers.remove(at);
+            let (_, source, channel, _) = self.audio_layers.remove(at);
+            self.unduck(source);
             // SAFETY: off its channel before release.
             unsafe {
                 sys::obs_set_output_source(channel, std::ptr::null_mut());
@@ -1270,7 +1311,11 @@ impl Sound for ObsPipeline {
         }
     }
     fn audio_layer_levels(&mut self, id: &str, volume: f64, muted: bool) {
-        if let Some((_, source, _)) = self.audio_layers.iter().find(|(there, _, _)| there == id) {
+        if let Some((_, source, _, _)) = self
+            .audio_layers
+            .iter()
+            .find(|(there, _, _, _)| there == id)
+        {
             // SAFETY: ours and live.
             unsafe {
                 sys::obs_source_set_volume(*source, volume as f32);

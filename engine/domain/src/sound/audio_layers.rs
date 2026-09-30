@@ -11,6 +11,19 @@ pub enum Kind {
     Screen,
 }
 
+impl Kind {
+    /// Whether a sound of this kind steps back under the voice, as the music
+    /// does. An application's or a screen's sound is what plays while one
+    /// talks over it: a video, a game, a call. A microphone is somebody
+    /// talking, and a voice ducked under another voice is a voice lost.
+    pub fn ducks(self) -> bool {
+        match self {
+            Kind::Mic => false,
+            Kind::App | Kind::Screen => true,
+        }
+    }
+}
+
 /// One device per layer. The optional fields keep the protocol plain JSON and
 /// Codable in Swift; `Layer::new` rejects mismatched or missing fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -101,6 +114,12 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn what_plays_under_the_voice_ducks_and_another_voice_does_not() {
+        assert!(Kind::App.ducks());
+        assert!(Kind::Screen.ducks());
+        assert!(!Kind::Mic.ducks(), "a second microphone is a voice");
+    }
     #[test]
     fn layer_ids_and_sources_are_safe() {
         assert!(Layer::new("voice_2".into(), Source::mic("a".into())).is_ok());
