@@ -809,6 +809,12 @@ impl Engine {
                     id: saved.id.clone(),
                     on: saved.muted,
                 });
+                if !saved.duck.by_kind() {
+                    let _ = self.handle(Command::AudioLayerDuck {
+                        id: saved.id.clone(),
+                        duck: saved.duck,
+                    });
+                }
             }
         }
         if let Some(mic) = &setup.mic {
@@ -1160,6 +1166,7 @@ impl Engine {
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
             Command::AudioLayerVolume { id, volume } => self.audio_layer_volume(id, volume),
             Command::AudioLayerMute { id, on } => self.audio_layer_mute(id, on),
+            Command::AudioLayerDuck { id, duck } => self.audio_layer_duck(id, duck),
             Command::Watching { on } => self.watch(on),
             Command::Present => self.present(),
             Command::Levels => self.levels(),

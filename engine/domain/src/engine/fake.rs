@@ -138,6 +138,8 @@ pub(super) struct Wrote {
     pub(super) ran_out: std::sync::Arc<std::sync::Mutex<bool>>,
     pub(super) refuse: Option<String>,
     pub(super) scene_events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Every audio layer told whether it ducks, in order.
+    pub(super) ducked: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
 }
 
 impl Picture for Wrote {
@@ -343,6 +345,12 @@ impl Picture for Wrote {
 }
 
 impl Sound for Wrote {
+    fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
+        self.ducked
+            .lock()
+            .expect("ducked")
+            .push((id.to_string(), ducks));
+    }
     fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
         Ok(app.map(str::to_string))
     }
@@ -502,6 +510,7 @@ pub(super) fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
         ran_out: Default::default(),
         refuse,
         scene_events: Default::default(),
+        ducked: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -578,6 +587,7 @@ pub(super) fn machine_with_music() -> (Engine, Played, RanOut) {
         ran_out: ran_out.clone(),
         refuse: None,
         scene_events: Default::default(),
+        ducked: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))

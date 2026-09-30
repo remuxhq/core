@@ -79,6 +79,27 @@ impl Source {
     }
 }
 
+/// Whether one layer steps back under the voice: as its kind says, or as
+/// the operator said. A call captured as an app is a voice to keep level
+/// with one's own; a game captured as a screen is not.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(rename = "AudioLayerDuck")]
+pub enum Duck {
+    #[default]
+    ByKind,
+    On,
+    Off,
+}
+
+impl Duck {
+    pub fn by_kind(&self) -> bool {
+        *self == Duck::ByKind
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(rename = "AudioLayer")]
 pub struct Layer {
@@ -87,6 +108,10 @@ pub struct Layer {
     /// Linear gain, 0..=2.0. Mute is separate so a previous level survives.
     pub volume: f64,
     pub muted: bool,
+    /// Left out while it is the kind's, so a layer reads as it did before
+    /// a layer could be told.
+    #[serde(default, skip_serializing_if = "Duck::by_kind")]
+    pub duck: Duck,
 }
 
 impl Layer {
@@ -107,7 +132,17 @@ impl Layer {
             source,
             volume: 1.0,
             muted: false,
+            duck: Duck::ByKind,
         })
+    }
+
+    /// Whether this layer steps back under the voice now.
+    pub fn ducks(&self) -> bool {
+        match self.duck {
+            Duck::ByKind => self.source.kind.ducks(),
+            Duck::On => true,
+            Duck::Off => false,
+        }
     }
 }
 
@@ -119,6 +154,32 @@ mod tests {
         assert!(Kind::App.ducks());
         assert!(Kind::Screen.ducks());
         assert!(!Kind::Mic.ducks(), "a second microphone is a voice");
+    }
+    #[test]
+    fn a_layer_ducks_by_its_kind_until_told() {
+        let mut call = Layer::new("call".into(), Source::app("Discord".into())).unwrap();
+        assert!(call.ducks());
+        call.duck = Duck::Off;
+        assert!(!call.ducks(), "a call kept level with the voice");
+        let mut guest = Layer::new("guest".into(), Source::mic("USB".into())).unwrap();
+        assert!(!guest.ducks());
+        guest.duck = Duck::On;
+        assert!(guest.ducks());
+    }
+    #[test]
+    fn a_layer_left_to_its_kind_reads_as_it_did_before() {
+        let layer = Layer::new("call".into(), Source::app("Discord".into())).unwrap();
+        let said = serde_json::to_string(&layer).unwrap();
+        assert_eq!(
+            said,
+            r#"{"id":"call","source":{"kind":"app","name":"Discord"},"volume":1.0,"muted":false}"#
+        );
+        assert_eq!(serde_json::from_str::<Layer>(&said).unwrap(), layer);
+        let mut told = layer;
+        told.duck = Duck::Off;
+        let said = serde_json::to_string(&told).unwrap();
+        assert!(said.ends_with(r#""muted":false,"duck":"off"}"#), "{said}");
+        assert_eq!(serde_json::from_str::<Layer>(&said).unwrap(), told);
     }
     #[test]
     fn layer_ids_and_sources_are_safe() {

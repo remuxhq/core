@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 
 use crate::protocol::{Command, Reply};
+use crate::sound::audio_layers::Duck;
 
 /// What a command that just ran should say in the journal.
 ///
@@ -55,6 +56,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::AudioLayerMute { id, on } => {
             format!("audio layer {id} {}", if *on { "muted" } else { "open" })
         }
+        Command::AudioLayerDuck { id, duck } => format!(
+            "audio layer {id} {}",
+            match duck {
+                Duck::ByKind => "ducks by its kind",
+                Duck::On => "ducks under the voice",
+                Duck::Off => "stays level with the voice",
+            }
+        ),
         Command::GoLive | Command::Live { .. } => "\u{25b6} on air".into(),
         Command::Stop => "\u{25a0} off air".into(),
         Command::RecordStart => "\u{23fa} recording".into(),
@@ -176,7 +185,8 @@ fn verb(command: &Command) -> &'static str {
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
         | Command::AudioLayerVolume { .. }
-        | Command::AudioLayerMute { .. } => "audio layer",
+        | Command::AudioLayerMute { .. }
+        | Command::AudioLayerDuck { .. } => "audio layer",
         Command::GoLive | Command::Live { .. } => "go live",
         Command::Stop => "stop",
         Command::RecordStart | Command::RecordStop => "recording",

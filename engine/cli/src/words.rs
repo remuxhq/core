@@ -583,7 +583,7 @@ fn parse_scene_element(words: &[String]) -> Result<Command, String> {
 
 fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
     use remuxd_domain::sound::audio_layers::Source;
-    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, remove <id>";
+    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, duck <id> on|off|auto, remove <id>";
     match words {
         [add, kind, id, source @ ..] if add == "add" && !source.is_empty() => {
             let said = source.join(" ");
@@ -610,6 +610,15 @@ fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
         [mute, id, on] if mute == "mute" => Ok(Command::AudioLayerMute {
             id: id.clone(),
             on: on_or(on)?,
+        }),
+        // Auto is the kind's: an app or a screen ducks, a microphone does not.
+        [duck, id, said] if duck == "duck" => Ok(Command::AudioLayerDuck {
+            id: id.clone(),
+            duck: match said.as_str() {
+                "auto" => remuxd_domain::sound::audio_layers::Duck::ByKind,
+                said if on_or(said)? => remuxd_domain::sound::audio_layers::Duck::On,
+                _ => remuxd_domain::sound::audio_layers::Duck::Off,
+            },
         }),
         _ => Err(usage.into()),
     }
@@ -964,12 +973,17 @@ fn render_status(status: &Status) -> String {
             remuxd_domain::sound::audio_layers::Kind::Screen => "display",
         };
         said.push(format!(
-            "audio layer {}: {:?} {} ({}%){}",
+            "audio layer {}: {:?} {} ({}%){}{}",
             layer.id,
             layer.source.kind,
             plain(source),
             (layer.volume * 100.0).round(),
-            if layer.muted { " muted" } else { "" }
+            if layer.muted { " muted" } else { "" },
+            match layer.duck {
+                remuxd_domain::sound::audio_layers::Duck::ByKind => "",
+                remuxd_domain::sound::audio_layers::Duck::On => " ducked",
+                remuxd_domain::sound::audio_layers::Duck::Off => " not ducked",
+            }
         ));
     }
     if status.screen_sound {
@@ -1449,6 +1463,17 @@ mod tests {
             typed("audio layer remove chat"),
             Ok(Command::AudioLayerRemove { id: "chat".into() })
         );
+        use remuxd_domain::sound::audio_layers::Duck;
+        for (said, duck) in [("off", Duck::Off), ("on", Duck::On), ("auto", Duck::ByKind)] {
+            assert_eq!(
+                typed(&format!("audio layer duck chat {said}")),
+                Ok(Command::AudioLayerDuck {
+                    id: "chat".into(),
+                    duck
+                })
+            );
+        }
+        assert!(typed("audio layer duck chat maybe").is_err());
         assert!(typed("audio layer add screen desktop not-an-id").is_err());
     }
 

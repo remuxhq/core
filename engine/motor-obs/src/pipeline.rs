@@ -1291,7 +1291,7 @@ impl Sound for ObsPipeline {
         }
         self.meter_the_mix();
         self.audio_layers
-            .push((layer.id.clone(), source, channel, layer.source.kind.ducks()));
+            .push((layer.id.clone(), source, channel, layer.ducks()));
         self.apply_duck();
         Ok(())
     }
@@ -1308,6 +1308,16 @@ impl Sound for ObsPipeline {
                 sys::obs_set_output_source(channel, std::ptr::null_mut());
                 sys::obs_source_release(source);
             }
+        }
+    }
+    fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
+        if let Some(layer) = self
+            .audio_layers
+            .iter_mut()
+            .find(|(there, _, _, _)| there == id)
+        {
+            layer.3 = ducks;
+            self.apply_duck();
         }
     }
     fn audio_layer_levels(&mut self, id: &str, volume: f64, muted: bool) {

@@ -20,8 +20,8 @@ const AUDIO: &[Action] = &[
         name: "layer",
         target: "audio-layer",
         prefix: &[],
-        args: "add mic|app|screen <id> <source> | volume <id> <percent> | mute <id> on|off | remove <id>",
-        summary: "Manage independent audio captures by ID.",
+        args: "add mic|app|screen <id> <source> | volume <id> <percent> | mute <id> on|off | duck <id> on|off|auto | remove <id>",
+        summary: "Manage independent audio captures by ID; an app or screen ducks under the voice unless told off.",
     },
     Action {
         name: "mic",

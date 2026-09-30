@@ -56,6 +56,11 @@ pub enum Command {
         id: String,
         on: bool,
     },
+    /// Whether one audio layer steps back under the voice.
+    AudioLayerDuck {
+        id: String,
+        duck: crate::sound::audio_layers::Duck,
+    },
     /// Whether a window is drawing the preview.
     ///
     /// The engine renders the preview into shared memory on a clock, and that
