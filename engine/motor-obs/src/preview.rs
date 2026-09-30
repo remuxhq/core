@@ -1,6 +1,6 @@
 //! The preview, written where a face reads it: the shared-memory ring
-//! (`remuxd_domain::picture::preview`), filled here from
-//! libobs's raw video callback, scaled to 960x540 BGRA by libobs itself.
+//! (`remuxd_domain::picture::preview`), filled here from the scene's own
+//! texture, scaled to 960x540 BGRA on the GPU and read back a frame later.
 //! The last frame is kept for `remux shot`.
 
 use std::ffi::{c_void, CString};
@@ -64,6 +64,126 @@ impl Landed {
     }
 }
 
+/// Two stage surfaces taken in turns: a frame is staged into one while the
+/// one staged a frame before is read, so reading never waits for the GPU to
+/// finish the copy it was just given.
+///
+/// The first frame after waking is the exception: it is read at once from
+/// where it was staged, because a shot is waiting for it. Read a frame later,
+/// a shot of a sleeping ring took 67 ms at the median instead of 33 (600
+/// shots each, 1080p30). That one wait holds libobs's graphics thread 0.9 ms at
+/// the median and 10 at worst, of the 33 a frame has (900 wakes).
+#[derive(Default)]
+pub struct Turns {
+    at: usize,
+    staged: [bool; 2],
+    woken: bool,
+}
+
+impl Turns {
+    /// This frame's surface to stage into, and the one to read, if any.
+    pub fn next(&mut self) -> (usize, Option<usize>) {
+        let now = self.at;
+        let before = 1 - now;
+        self.at = before;
+        if !self.woken {
+            self.woken = true;
+            return (now, Some(now));
+        }
+        let read = self.staged[before].then_some(before);
+        self.staged[now] = true;
+        (now, read)
+    }
+
+    /// Asleep, what is staged is only getting older.
+    pub fn forget(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// A picture drawn into 960x540 on the GPU and read back in turns.
+#[derive(Default)]
+struct Readback {
+    texrender: usize,
+    stages: [usize; 2],
+    turns: Turns,
+}
+
+impl Readback {
+    /// Draws the frame with `draw`, `width` by `height` of its own pixels
+    /// onto the whole 960x540, stages it, and hands `land` the frame its
+    /// turn reads. Inside the graphics context.
+    unsafe fn frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        draw: impl FnOnce(),
+        land: impl FnOnce(&[u8]),
+    ) {
+        // SAFETY: the caller is inside the graphics context; the handles are
+        // made here, used only here and destroyed in `destroy`.
+        unsafe {
+            if self.texrender == 0 {
+                self.texrender = sys::gs_texrender_create(
+                    sys::gs_color_format_GS_BGRA,
+                    sys::gs_zstencil_format_GS_ZS_NONE,
+                ) as usize;
+                for stage in &mut self.stages {
+                    *stage = sys::gs_stagesurface_create(WIDE, TALL, sys::gs_color_format_GS_BGRA)
+                        as usize;
+                }
+            }
+            let texrender = self.texrender as *mut sys::gs_texrender_t;
+            sys::gs_texrender_reset(texrender);
+            if !sys::gs_texrender_begin(texrender, WIDE, TALL) {
+                return;
+            }
+            let clear = crate::vec4(0.0, 0.0, 0.0, 1.0);
+            sys::gs_clear(sys::GS_CLEAR_COLOR, &clear, 0.0, 0);
+            sys::gs_ortho(0.0, width as f32, 0.0, height as f32, -100.0, 100.0);
+            draw();
+            sys::gs_texrender_end(texrender);
+            let (now, read) = self.turns.next();
+            sys::gs_stage_texture(
+                self.stages[now] as *mut sys::gs_stagesurf_t,
+                sys::gs_texrender_get_texture(texrender),
+            );
+            let Some(read) = read else { return };
+            let stage = self.stages[read] as *mut sys::gs_stagesurf_t;
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let mut linesize: u32 = 0;
+            if !sys::gs_stagesurface_map(stage, &mut data, &mut linesize) || data.is_null() {
+                return;
+            }
+            let row = (WIDE * 4) as usize;
+            let mut whole = Vec::with_capacity(row * TALL as usize);
+            for y in 0..TALL as usize {
+                whole.extend_from_slice(std::slice::from_raw_parts(
+                    data.add(y * linesize as usize),
+                    row,
+                ));
+            }
+            sys::gs_stagesurface_unmap(stage);
+            land(&whole);
+        }
+    }
+
+    /// Inside the graphics context.
+    unsafe fn destroy(&mut self) {
+        if self.texrender == 0 {
+            return;
+        }
+        // SAFETY: made in `frame`, inside the graphics context as this is.
+        unsafe {
+            sys::gs_texrender_destroy(self.texrender as *mut sys::gs_texrender_t);
+            for stage in self.stages {
+                sys::gs_stagesurface_destroy(stage as *mut sys::gs_stagesurf_t);
+            }
+        }
+        *self = Self::default();
+    }
+}
+
 pub const WIDE: u32 = 960;
 pub const TALL: u32 = 540;
 
@@ -75,7 +195,8 @@ pub struct Ring {
     last: Mutex<Vec<u8>>,
     /// Bumped whenever `last` or a ring alone takes a frame.
     pub landed: Landed,
-    callback_on: bool,
+    scene: Mutex<Readback>,
+    watch_on: bool,
     /// The camera and the screen on their own: each rendered into a texture
     /// on libobs's render thread, staged, and copied into its ring.
     camera: Mutex<Alone>,
@@ -101,8 +222,7 @@ unsafe impl Send for Snap {}
 #[derive(Default)]
 pub struct Alone {
     pub source: *mut sys::obs_source_t,
-    texrender: *mut sys::gs_texrender_t,
-    stage: *mut sys::gs_stagesurf_t,
+    readback: Readback,
     sequence: u64,
     last: Vec<u8>,
 }
@@ -163,7 +283,8 @@ impl Ring {
             sequence: AtomicU64::new(0),
             last: Mutex::new(Vec::new()),
             landed: Landed::default(),
-            callback_on: false,
+            scene: Mutex::new(Readback::default()),
+            watch_on: false,
             camera: Mutex::new(Alone::default()),
             screen: Mutex::new(Alone::default()),
             render_on: false,
@@ -175,45 +296,43 @@ impl Ring {
         &self.said
     }
 
-    /// Ask libobs for every frame, scaled, or stop asking.
+    /// Read the scene back every frame, or stop.
     pub fn watch(&mut self, on: bool) {
-        if on == self.callback_on {
+        if on == self.watch_on {
             return;
         }
-        let scale = sys::video_scale_info {
-            format: sys::video_format_VIDEO_FORMAT_BGRA,
-            width: WIDE,
-            height: TALL,
-            range: sys::video_range_type_VIDEO_RANGE_PARTIAL,
-            colorspace: sys::video_colorspace_VIDEO_CS_709,
-        };
         let me = self as *mut Self as *mut c_void;
         // SAFETY: `self` is boxed and outlives the callback, which is removed
         // in `watch(false)` and in drop before the box goes.
         unsafe {
             if on {
-                sys::obs_add_raw_video_callback(&scale, Some(Self::on_frame), me);
+                sys::obs_add_main_rendered_callback(Some(Self::on_rendered), me);
             } else {
-                sys::obs_remove_raw_video_callback(Some(Self::on_frame), me);
+                sys::obs_remove_main_rendered_callback(Some(Self::on_rendered), me);
             }
         }
-        self.callback_on = on;
+        self.watch_on = on;
         // Asleep, the kept picture is only getting older: forgotten, so a
         // shot wakes the ring for one of now instead.
         if !on {
             if let Ok(mut last) = self.last.lock() {
                 last.clear();
             }
+            if let Ok(mut scene) = self.scene.lock() {
+                scene.turns.forget();
+            }
         }
     }
 
     /// Which source the camera's and the screen's rings show; null for none.
     pub fn alone(&self, camera: *mut sys::obs_source_t, screen: *mut sys::obs_source_t) {
-        if let Ok(mut it) = self.camera.lock() {
-            it.source = camera;
-        }
-        if let Ok(mut it) = self.screen.lock() {
-            it.source = screen;
+        for (alone, source) in [(&self.camera, camera), (&self.screen, screen)] {
+            if let Ok(mut it) = alone.lock() {
+                if it.source != source {
+                    it.readback.turns.forget();
+                }
+                it.source = source;
+            }
         }
     }
 
@@ -237,6 +356,7 @@ impl Ring {
             for alone in [&self.camera, &self.screen] {
                 if let Ok(mut it) = alone.lock() {
                     it.last.clear();
+                    it.readback.turns.forget();
                 }
             }
         }
@@ -382,54 +502,51 @@ impl Ring {
             if it.source.is_null() {
                 continue;
             }
+            let source = it.source;
+            // SAFETY: inside the graphics context, as above.
+            let (w, h) = unsafe {
+                (
+                    sys::obs_source_get_width(source),
+                    sys::obs_source_get_height(source),
+                )
+            };
+            if w == 0 || h == 0 {
+                continue;
+            }
+            let it = &mut *it;
+            // SAFETY: as above.
             unsafe {
-                if it.texrender.is_null() {
-                    it.texrender = sys::gs_texrender_create(
-                        sys::gs_color_format_GS_BGRA,
-                        sys::gs_zstencil_format_GS_ZS_NONE,
-                    );
-                    it.stage =
-                        sys::gs_stagesurface_create(WIDE, TALL, sys::gs_color_format_GS_BGRA);
-                }
-                let (w, h) = (
-                    sys::obs_source_get_width(it.source),
-                    sys::obs_source_get_height(it.source),
+                it.readback.frame(
+                    w,
+                    h,
+                    || sys::obs_source_video_render(source),
+                    |whole| {
+                        let slot = fills(it.sequence, SLOTS);
+                        ring.land(offset_of(&ring.said, slot), whole);
+                        it.sequence += 1;
+                        (*ring.base.add(counts_at).cast::<AtomicU64>())
+                            .store(it.sequence, Ordering::Release);
+                        it.last = whole.to_vec();
+                        ring.landed.bump();
+                    },
                 );
-                if w == 0 || h == 0 {
-                    continue;
-                }
-                sys::gs_texrender_reset(it.texrender);
-                if !sys::gs_texrender_begin(it.texrender, WIDE, TALL) {
-                    continue;
-                }
-                let clear = crate::vec4(0.0, 0.0, 0.0, 1.0);
-                sys::gs_clear(sys::GS_CLEAR_COLOR, &clear, 0.0, 0);
-                // The source's own pixels mapped onto the whole 960x540.
-                sys::gs_ortho(0.0, w as f32, 0.0, h as f32, -100.0, 100.0);
-                sys::obs_source_video_render(it.source);
-                sys::gs_texrender_end(it.texrender);
-                sys::gs_stage_texture(it.stage, sys::gs_texrender_get_texture(it.texrender));
-                let mut data: *mut u8 = std::ptr::null_mut();
-                let mut linesize: u32 = 0;
-                if !sys::gs_stagesurface_map(it.stage, &mut data, &mut linesize) || data.is_null() {
-                    continue;
-                }
-                let slot = fills(it.sequence, SLOTS);
-                let dst = ring.base.add(offset_of(&ring.said, slot));
-                let stride = ring.said.stride as usize;
-                let row = (WIDE * 4) as usize;
-                let mut whole = Vec::with_capacity(row * TALL as usize);
-                for y in 0..TALL as usize {
-                    let src = std::slice::from_raw_parts(data.add(y * linesize as usize), row);
-                    std::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(y * stride), row);
-                    whole.extend_from_slice(src);
-                }
-                sys::gs_stagesurface_unmap(it.stage);
-                it.sequence += 1;
-                (*ring.base.add(counts_at).cast::<AtomicU64>())
-                    .store(it.sequence, Ordering::Release);
-                it.last = whole;
-                ring.landed.bump();
+            }
+        }
+    }
+
+    /// One frame into the shared memory at `offset`, row by row.
+    fn land(&self, offset: usize, whole: &[u8]) {
+        let stride = self.said.stride as usize;
+        let row = (WIDE * 4) as usize;
+        for (y, src) in whole.chunks_exact(row).enumerate() {
+            // SAFETY: the slot at `offset` is TALL rows of `stride` bytes
+            // inside the mapping made in `new`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    self.base.add(offset + y * stride),
+                    row,
+                );
             }
         }
     }
@@ -456,29 +573,39 @@ impl Ring {
         Some((out, WIDE, TALL))
     }
 
-    unsafe extern "C" fn on_frame(param: *mut c_void, frame: *mut sys::video_data) {
-        // SAFETY: `param` is the ring `watch` registered; `frame` is
-        // libobs's for the duration of the call.
+    /// The scene, once libobs has rendered it: drawn the way libobs draws
+    /// its own preview, scaled on the GPU. Scaled on the CPU instead, by
+    /// libobs's raw video callback (swscale, NV12 to BGRA), the scene's ring
+    /// alone cost 23 points of a core awake; this way it costs 3 (30 s awake
+    /// against 20 asleep, 1080p30, the same scene).
+    unsafe extern "C" fn on_rendered(param: *mut c_void) {
+        // SAFETY: `param` is the ring `watch` registered; libobs calls this
+        // inside its graphics context, after the main texture is rendered.
         unsafe {
             let ring = &*(param as *const Self);
-            let frame = &*frame;
-            let slot = fills(ring.sequence.load(Ordering::Relaxed), SLOTS);
-            let dst = ring.base.add(ring.said.offset(slot));
-            let stride = ring.said.stride as usize;
-            let src_stride = frame.linesize[0] as usize;
-            let row = (WIDE * 4) as usize;
-            let mut whole = Vec::with_capacity(row * TALL as usize);
-            for y in 0..TALL as usize {
-                let src = std::slice::from_raw_parts(frame.data[0].add(y * src_stride), row);
-                std::ptr::copy_nonoverlapping(src.as_ptr(), dst.add(y * stride), row);
-                whole.extend_from_slice(src);
+            let Ok(mut scene) = ring.scene.try_lock() else {
+                return;
+            };
+            let texture = sys::obs_get_main_texture();
+            if texture.is_null() {
+                return;
             }
-            let next = ring.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-            (*ring.base.add(SEQUENCE_AT).cast::<AtomicU64>()).store(next, Ordering::Release);
-            if let Ok(mut last) = ring.last.lock() {
-                *last = whole;
-            }
-            ring.landed.bump();
+            scene.frame(
+                sys::gs_texture_get_width(texture),
+                sys::gs_texture_get_height(texture),
+                || sys::obs_render_main_texture(),
+                |whole| {
+                    let slot = fills(ring.sequence.load(Ordering::Relaxed), SLOTS);
+                    ring.land(ring.said.offset(slot), whole);
+                    let next = ring.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+                    (*ring.base.add(SEQUENCE_AT).cast::<AtomicU64>())
+                        .store(next, Ordering::Release);
+                    if let Ok(mut last) = ring.last.lock() {
+                        *last = whole.to_vec();
+                    }
+                    ring.landed.bump();
+                },
+            );
         }
     }
 
@@ -510,12 +637,12 @@ impl Drop for Ring {
         unsafe {
             sys::obs_enter_graphics();
             for alone in [&self.camera, &self.screen] {
-                if let Ok(it) = alone.lock() {
-                    if !it.texrender.is_null() {
-                        sys::gs_texrender_destroy(it.texrender);
-                        sys::gs_stagesurface_destroy(it.stage);
-                    }
+                if let Ok(mut it) = alone.lock() {
+                    it.readback.destroy();
                 }
+            }
+            if let Ok(mut scene) = self.scene.lock() {
+                scene.destroy();
             }
             sys::obs_leave_graphics();
         }
@@ -542,7 +669,7 @@ fn mirror(pixels: &mut [u8], width: usize) {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::Landed;
+    use super::{Landed, Turns};
 
     #[test]
     fn a_frame_landing_wakes_the_shot_waiting_for_it() {
@@ -576,6 +703,33 @@ mod tests {
     fn no_frame_landing_is_given_up_at_the_deadline() {
         let landed = Landed::default();
         assert_eq!(landed.after(landed.count(), Instant::now()), None);
+    }
+
+    #[test]
+    fn the_first_frame_after_waking_is_read_at_once_from_where_it_was_staged() {
+        let mut turns = Turns::default();
+        assert_eq!(turns.next(), (0, Some(0)));
+    }
+
+    #[test]
+    fn then_each_frame_reads_the_one_staged_a_frame_before() {
+        let mut turns = Turns::default();
+        turns.next();
+        assert_eq!(turns.next(), (1, None), "the first was read already");
+        assert_eq!(turns.next(), (0, Some(1)));
+        assert_eq!(turns.next(), (1, Some(0)));
+        assert_eq!(turns.next(), (0, Some(1)));
+    }
+
+    #[test]
+    fn a_ring_woken_again_never_reads_what_it_staged_before_it_slept() {
+        let mut turns = Turns::default();
+        turns.next();
+        turns.next();
+        turns.next();
+        turns.forget();
+        assert_eq!(turns.next(), (0, Some(0)));
+        assert_eq!(turns.next(), (1, None));
     }
 
     #[test]

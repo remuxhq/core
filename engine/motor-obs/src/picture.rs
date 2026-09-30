@@ -704,9 +704,10 @@ impl Picture for ObsPipeline {
                 seen = ring.landed.after(seen, until)?;
             }
         });
-        // Back to sleep unless a face is watching: left awake, libobs scaled
-        // every frame into the ring on the CPU for nobody, 45% of a core of
-        // an idle engine at 1080p30 (`sample`, all of it in swscale).
+        // Back to sleep unless a face is watching: left awake, the three rings
+        // cost 10 points of a core of an idle engine at 1080p30 for nobody
+        // (29 while libobs scaled the scene on the CPU; 30 s awake against
+        // 20 asleep, three rounds each).
         let watched = self.previewing;
         if let Some(ring) = self.preview.as_deref_mut() {
             ring.watch(watched);
