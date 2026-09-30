@@ -768,7 +768,7 @@ pub fn render(reply: &Reply) -> String {
         Reply::Error { message } => format!("no: {message}"),
         Reply::Status(status) => render_status(status),
         Reply::Plan(plan) => render_plan(plan),
-        Reply::Sources(devices) | Reply::Devices(devices) => render_devices(devices),
+        Reply::Sources(devices) => render_devices(devices),
         // dB, because that is what the meters are marked in and what a person
         // reading this in a terminal is comparing against them.
         // The panel's meters on one line: bar and held peak for the mic, the

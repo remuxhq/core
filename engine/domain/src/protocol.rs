@@ -96,9 +96,6 @@ pub enum Command {
     /// Everything capturable right now: screens, windows, cameras, mics,
     /// apps, and the music's genres.
     Sources,
-    /// [`Command::Sources`] under its old name, answered under the old name
-    /// too, for a face from before the rename.
-    Devices,
 
     // ---- the two levers ---------------------------------------------------
     GoLive,
@@ -428,8 +425,6 @@ pub enum Reply {
     Status(Box<Status>),
     Plan(crate::air::plan::Plan),
     Sources(Devices),
-    /// The answer to [`Command::Devices`].
-    Devices(Devices),
     Error {
         message: String,
     },
@@ -1179,24 +1174,20 @@ mod tests {
     // wire format and only one of them is written in this language, so the
     // exact bytes matter and a rename that serde would happily carry across a
     // round trip has to fail here instead.
-    // What can be captured is asked as `sources`; a face from before asks
-    // `devices` and reads the reply it always read, tag and all (the 0.2
-    // CLI refuses a reply it does not know).
+    // What can be captured is asked as `sources`; the old `devices` is gone
+    // from the wire, both ways.
     #[test]
-    fn what_can_be_captured_is_asked_as_sources_and_devices_is_still_answered() {
+    fn what_can_be_captured_is_asked_as_sources_and_devices_is_gone() {
         assert_eq!(encode(&Command::Sources), "{\"cmd\":\"sources\"}\n");
         assert_eq!(decode("{\"cmd\":\"sources\"}"), Ok(Command::Sources));
-        assert_eq!(decode("{\"cmd\":\"devices\"}"), Ok(Command::Devices));
+        assert!(decode("{\"cmd\":\"devices\"}").is_err());
         let lists =
             "\"screens\":[],\"windows\":[],\"cameras\":[],\"mics\":[],\"apps\":[],\"genres\":[]";
         assert_eq!(
             encode(&Reply::Sources(Devices::default())),
             format!("{{\"reply\":\"sources\",{lists}}}\n")
         );
-        assert_eq!(
-            encode(&Reply::Devices(Devices::default())),
-            format!("{{\"reply\":\"devices\",{lists}}}\n")
-        );
+        assert!(decode_reply(&format!("{{\"reply\":\"devices\",{lists}}}")).is_err());
     }
 
     #[test]

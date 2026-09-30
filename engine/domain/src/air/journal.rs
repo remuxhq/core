@@ -34,7 +34,6 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Present
             | Command::Levels
             | Command::Sources
-            | Command::Devices
             | Command::Shot { .. }
             | Command::LayerShot { .. }
             | Command::Chat { .. }
@@ -162,7 +161,6 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::Plan
         | Command::Levels
         | Command::Sources
-        | Command::Devices
         | Command::AudioLayerVolume { .. }
         | Command::Volume { .. }
         | Command::MusicVolume { .. }
@@ -252,7 +250,6 @@ fn verb(command: &Command) -> &'static str {
         | Command::Watching { .. }
         | Command::Levels
         | Command::Sources
-        | Command::Devices
         | Command::Shot { .. }
         | Command::Plan
         | Command::LayerShot { .. }

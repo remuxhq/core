@@ -1175,8 +1175,7 @@ impl Engine {
             Command::Watching { on } => self.watch(on),
             Command::Present => self.present(),
             Command::Levels => self.levels(),
-            Command::Sources => self.sources(Reply::Sources),
-            Command::Devices => self.sources(Reply::Devices),
+            Command::Sources => self.sources(),
             Command::Quit => self.quit(),
             // the daemon acts on it beside the engine; here it is a fact
             Command::Rewire => Reply::Ok,
@@ -1425,9 +1424,7 @@ impl Engine {
         self.sound()
     }
 
-    /// What can be captured, answered as the face asked: `answer` is the
-    /// reply's name, [`Reply::Sources`] or the old [`Reply::Devices`].
-    pub(super) fn sources(&mut self, answer: fn(Devices) -> Reply) -> Reply {
+    pub(super) fn sources(&mut self) -> Reply {
         match self.sources.available() {
             Ok(available) => {
                 let mut devices: Devices = available.into();
@@ -1440,7 +1437,7 @@ impl Engine {
                         name: playlist.title,
                     })
                     .collect();
-                answer(devices)
+                Reply::Sources(devices)
             }
             // The overwhelmingly likely reason is the screen recording
             // grant, which macOS ties to a code signature, so it comes
@@ -1726,17 +1723,6 @@ mod tests {
         assert_eq!(devices.windows[1].name, "Brave Browser — remux");
     }
 
-    // A face from before the rename asks `devices` and reads the reply it
-    // always read: the same lists, under the old name.
-    #[test]
-    fn devices_is_answered_under_its_old_name_with_the_same_lists() {
-        let mut engine = Engine::with_sources(Box::new(ThisMachine));
-        let Reply::Sources(sources) = engine.handle(Command::Sources) else {
-            panic!("sources answers with sources")
-        };
-        assert_eq!(engine.handle(Command::Devices), Reply::Devices(sources));
-    }
-
     // An empty list would read as "you have no monitors", which sends a person
     // looking at their cables instead of at System Settings.
     #[test]
@@ -1812,7 +1798,6 @@ mod tests {
         for command in [
             Command::Status,
             Command::Sources,
-            Command::Devices,
             Command::Grants,
             Command::Chat {
                 since: 0,
