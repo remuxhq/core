@@ -809,6 +809,7 @@ pub fn render(reply: &Reply) -> String {
         ),
         // The chat, plain: what a pipe or a test reads. See `render_with`.
         chat @ Reply::Chat { .. } => render_with(chat, Ink::Plain),
+        Reply::Events { gap, events } => render_events(*gap, events),
         // A shell prints what it can read. The bytes are for a panel; here
         // the useful thing is that a picture exists and how big it is.
         Reply::Shot {
@@ -819,6 +820,49 @@ pub fn render(reply: &Reply) -> String {
             format!("{width}x{height}, {} bytes of jpeg", jpeg.len() * 3 / 4)
         }
     }
+}
+
+/// What changed, one a line, oldest first.
+fn render_events(
+    gap: Option<remuxd_domain::app::events::Gap>,
+    events: &[remuxd_domain::app::events::Numbered],
+) -> String {
+    use remuxd_domain::app::events::Event;
+    if gap.is_none() && events.is_empty() {
+        return "nothing has happened yet".into();
+    }
+    let on = |on: bool, yes: &str, no: &str| if on { yes } else { no }.to_string();
+    // Said before what came after, so a face that reads only the first line
+    // knows its picture is stale.
+    let missed = gap.map(|gap| {
+        format!(
+            "missed #{} to #{}: remux status says where things are",
+            gap.from, gap.to
+        )
+    });
+    let happened = events.iter().map(|numbered| {
+        let what = match &numbered.event {
+            Event::LiveStarted => "on air".into(),
+            Event::LiveEnded => "off air".into(),
+            Event::RecordStarted => "recording".into(),
+            Event::RecordStopped => "recording stopped".into(),
+            Event::SceneSwitched { name } => format!("scene {}", plain(name)),
+            Event::Muted { on: muted } => on(*muted, "mic muted", "mic open"),
+            Event::TrackChanged { title: Some(title) } => format!("playing {}", plain(title)),
+            Event::TrackChanged { title: None } => "music stopped".into(),
+            Event::AppReachable { on: up } => on(*up, "app reachable", "app unreachable"),
+        };
+        format!(
+            "{} #{} {what}",
+            remuxd_domain::air::journal::clock_of(numbered.at),
+            numbered.seq
+        )
+    });
+    missed
+        .into_iter()
+        .chain(happened)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn grant(grant: &Grant) -> &'static str {
@@ -3081,5 +3125,93 @@ mod reading {
             "{shown}"
         );
         assert_eq!(elapsed(None, 5), "");
+    }
+
+    #[test]
+    fn the_events_read_one_a_line_with_the_time_they_happened() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, at, event| Numbered { seq, at, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(1, 3_600, Event::LiveStarted),
+                at(
+                    2,
+                    3_661,
+                    Event::SceneSwitched {
+                        name: "code".into(),
+                    },
+                ),
+                at(3, 3_662, Event::Muted { on: true }),
+                at(
+                    4,
+                    3_663,
+                    Event::TrackChanged {
+                        title: Some("lofi 2".into()),
+                    },
+                ),
+                at(5, 3_664, Event::TrackChanged { title: None }),
+                at(6, 3_665, Event::RecordStarted),
+                at(7, 3_666, Event::RecordStopped),
+                at(8, 3_667, Event::AppReachable { on: false }),
+                at(9, 3_668, Event::Muted { on: false }),
+                at(10, 3_669, Event::LiveEnded),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "01:00:00 #1 on air\n\
+             01:01:01 #2 scene code\n\
+             01:01:02 #3 mic muted\n\
+             01:01:03 #4 playing lofi 2\n\
+             01:01:04 #5 music stopped\n\
+             01:01:05 #6 recording\n\
+             01:01:06 #7 recording stopped\n\
+             01:01:07 #8 app unreachable\n\
+             01:01:08 #9 mic open\n\
+             01:01:09 #10 off air"
+        );
+    }
+
+    #[test]
+    fn a_face_that_fell_behind_is_told_before_what_came_after() {
+        use remuxd_domain::app::events::{Event, Gap, Numbered};
+        let reply = Reply::Events {
+            gap: Some(Gap { from: 3, to: 7 }),
+            events: vec![Numbered {
+                seq: 8,
+                at: 0,
+                event: Event::LiveEnded,
+            }],
+        };
+        assert_eq!(
+            render(&reply),
+            "missed #3 to #7: remux status says where things are\n00:00:00 #8 off air"
+        );
+    }
+
+    #[test]
+    fn no_events_say_so() {
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![],
+        };
+        assert_eq!(render(&reply), "nothing has happened yet");
+    }
+
+    #[test]
+    fn a_name_in_an_event_reaches_the_terminal_without_its_control_characters() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![Numbered {
+                seq: 1,
+                at: 0,
+                event: Event::TrackChanged {
+                    title: Some("lofi\u{1b}[2J 2".into()),
+                },
+            }],
+        };
+        assert!(!render(&reply).contains('\u{1b}'));
     }
 }

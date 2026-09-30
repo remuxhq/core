@@ -37,6 +37,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Shot { .. }
             | Command::LayerShot { .. }
             | Command::Chat { .. }
+            | Command::Events { .. }
             | Command::Plan
             | Command::Hide { .. }
             | Command::Categories { .. }
@@ -171,6 +172,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::LayerShot { .. }
         | Command::Grants
         | Command::Chat { .. }
+        | Command::Events { .. }
         | Command::Categories { .. }
         | Command::Rewire
         | Command::Quit => return None,
@@ -253,7 +255,8 @@ fn verb(command: &Command) -> &'static str {
         | Command::Shot { .. }
         | Command::Plan
         | Command::LayerShot { .. }
-        | Command::Chat { .. } => "read",
+        | Command::Chat { .. }
+        | Command::Events { .. } => "read",
         Command::Hide { .. } => "hide",
         Command::Delete { .. } => "delete",
         Command::Present => "present",

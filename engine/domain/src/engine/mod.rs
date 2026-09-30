@@ -1196,6 +1196,15 @@ impl Engine {
         }
     }
 
+    /// The events after `since`. See [`Command::Events`].
+    fn events(&self, since: u64) -> Reply {
+        let crate::app::events::Since { gap, events } = match self.events.lock() {
+            Ok(events) => events.since(since),
+            Err(poisoned) => poisoned.into_inner().since(since),
+        };
+        Reply::Events { gap, events }
+    }
+
     /// Keep what changed since `before` as events.
     fn changed(&self, before: &crate::app::events::Snapshot) {
         let changes = crate::app::events::between(before, &self.snapshot());
@@ -1308,6 +1317,7 @@ impl Engine {
             Command::Announce { adapter } => self.announce(adapter),
             Command::Disconnect { adapter } => self.disconnect(adapter),
             Command::Chat { since, .. } => self.chat(since),
+            Command::Events { since, .. } => self.events(since),
             Command::Hide { seq } => self.hide(seq),
             Command::Delete { seq } => self.delete_chat(seq),
             Command::Categorize { adapter, id, name } => self.categorize(adapter, &id, &name),
@@ -2668,5 +2678,26 @@ mod tests {
         engine.handle(Command::GoLive);
         let events = events.lock().expect("events").since(0).events;
         assert!(events[0].at >= before && events[0].at <= now());
+    }
+
+    #[test]
+    fn a_face_asks_for_the_events_after_the_last_it_saw() {
+        use crate::app::events::Event;
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(followed());
+        engine.handle(Command::Screen { display: 1 });
+        engine.handle(Command::GoLive);
+        engine.handle(Command::Stop);
+        let Reply::Events { gap, events } = engine.handle(Command::Events {
+            since: 1,
+            follow: false,
+        }) else {
+            panic!("events answers with events")
+        };
+        assert_eq!(gap, None);
+        assert_eq!(
+            events.iter().map(|e| (e.seq, &e.event)).collect::<Vec<_>>(),
+            [(2, &Event::LiveEnded)]
+        );
     }
 }

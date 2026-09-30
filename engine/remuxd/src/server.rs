@@ -175,6 +175,7 @@ fn changes_the_setup(command: &Command) -> bool {
             | Command::Shot { .. }
             | Command::Grants
             | Command::Chat { .. }
+            | Command::Events { .. }
             | Command::Rewire
             | Command::Quit
             | Command::GoLive
