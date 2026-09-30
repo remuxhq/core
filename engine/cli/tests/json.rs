@@ -87,3 +87,44 @@ fn json_reply_is_the_engine_reply_not_rendered_text() {
     );
     assert!(result.stderr.is_empty());
 }
+
+// `--out -` is the shell's usual stdout: the JPEG's bytes and nothing else,
+// so a shot pipes into whatever reads a picture.
+#[test]
+fn a_shot_out_to_a_dash_is_the_jpeg_on_stdout() {
+    let path = std::path::PathBuf::from(format!("/tmp/remux-shot-{}.sock", std::process::id()));
+    let listener = UnixListener::bind(&path).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 256];
+        let _ = stream.read(&mut request).unwrap();
+        // "/9j/" is the base64 of a JPEG's first three bytes.
+        stream
+            .write_all(b"{\"reply\":\"shot\",\"jpeg\":\"/9j/\",\"width\":1,\"height\":1}\n")
+            .unwrap();
+    });
+    let result = remux(&["scene", "shot", "--out", "-"], &path);
+    server.join().unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(result.status.success(), "{:?}", result);
+    assert_eq!(result.stdout, [0xff, 0xd8, 0xff]);
+    assert!(result.stderr.is_empty());
+    assert!(!std::path::Path::new("-").exists(), "no file named -");
+}
+
+// A reader that has gone (`| head`) ends the CLI quietly, the way it ends
+// cat: no panic on stderr about a broken pipe.
+#[test]
+fn a_reader_that_left_ends_it_without_a_panic() {
+    let missing = std::env::temp_dir().join(format!("remux-pipe-missing-{}", std::process::id()));
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let gone = Command::new(env!("CARGO_BIN_EXE_remux"))
+        .arg("guide")
+        .env("REMUXD_SOCKET", &missing)
+        .stdout(writer)
+        .output()
+        .expect("run CLI");
+    let said = String::from_utf8_lossy(&gone.stderr);
+    assert!(!said.contains("panicked"), "{said}");
+}

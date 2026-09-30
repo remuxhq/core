@@ -340,7 +340,7 @@ const SCENE: &[Action] = &[
         name: "shot",
         target: "shot",
         prefix: &[],
-        args: "[--out <file.jpg>]",
+        args: "[--out <file.jpg|->]",
         summary: "Read the composed scene preview.",
     },
     Action {

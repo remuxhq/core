@@ -139,7 +139,7 @@ require degrees 0; crop, shape, mirror and screen-sound apply only to captures
 remux scene layer hide editor and remux scene layer show editor preserve capture and layout;
 screen sound is paused until shown. remux scene layer remove editor closes it.
 remux scene layer shot editor reads a source; remux scene shot reads the
-composed picture; --out file.jpg writes it.
+composed picture; --out file.jpg writes it, --out - to stdout.
 Layer choices, layout and visibility survive a restart.
 Use remux audio screen-sound on for a unique display, or remux scene layer
 screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
