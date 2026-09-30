@@ -1035,6 +1035,12 @@ impl Sound for ObsPipeline {
                 settings
             };
             self.denoiser = self.filter_on_mic("noise_suppress_filter", "denoise", settings);
+            // libobs runs a source's filters in the order they were added, so
+            // a denoiser added after the gate cleaned what the gate had
+            // already let through, and the gate heard the room. It goes back
+            // on after the denoiser, which is the order `denoise` promises.
+            let params = self.gate_params;
+            self.gate(params);
         }
     }
     fn hearing(&self) -> Hearing {
