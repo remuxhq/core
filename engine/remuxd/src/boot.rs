@@ -97,7 +97,7 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
             .with_recordings(recordings())
             .with_history(Some(remuxd_domain::air::history::path()))
             .with_app(watching)
-            .with_chat(Arc::clone(&wire.feed))
+            .with_chat(Arc::clone(&wire.feed.held))
             .with_events(followed.events()),
     ));
 

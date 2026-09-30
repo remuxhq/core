@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use remuxd_domain::app::chat::Feed;
@@ -19,14 +19,14 @@ use remuxd_domain::app::wire::{wires, Adapter, Down, Up, Wire};
 use remuxd_domain::protocol::{Destination, Found};
 use serde_json::json;
 
+use crate::bell::Bell;
+
 /// What the wire has said, readable without waiting, and what waits to be
 /// said. Shared between the socket's thread, the engine and the daemon's
-/// socket (a follower wakes on `changed`).
+/// socket (a follower wakes on the feed's bell).
 pub struct Shared {
-    pub feed: Arc<Mutex<Feed>>,
-    /// Rung whenever the feed changed, for a follower to wake on.
-    pub changed: Condvar,
-    pub bell: Mutex<()>,
+    /// The chat, rung whenever it changed, for a follower to wake on.
+    pub feed: Bell<Feed>,
     /// Whether the wire carrying the control half is up right now.
     pub connected: AtomicBool,
     pub destinations: Mutex<Vec<Destination>>,
@@ -49,9 +49,7 @@ pub struct Shared {
 impl Shared {
     pub fn new(feed: Arc<Mutex<Feed>>) -> Arc<Self> {
         Arc::new(Self {
-            feed,
-            changed: Condvar::new(),
-            bell: Mutex::new(()),
+            feed: Bell::new(feed),
             connected: AtomicBool::new(false),
             destinations: Mutex::new(Vec::new()),
             viewers: AtomicU64::new(0),
@@ -66,18 +64,17 @@ impl Shared {
     }
 
     fn ring(&self) {
-        let _held = self.bell.lock().expect("bell");
-        self.changed.notify_all();
+        self.feed.ring();
     }
 
     fn fold(&self, down: Down) {
         match down {
             Down::Line(line) => {
-                self.feed.lock().expect("feed").push_line(line);
+                self.feed.lock().push_line(line);
                 self.ring();
             }
             Down::History(lines) => {
-                let mut feed = self.feed.lock().expect("feed");
+                let mut feed = self.feed.lock();
                 for line in lines {
                     feed.push_line(line);
                 }
@@ -174,7 +171,7 @@ impl Source {
             shared.connected.store(up, Ordering::Relaxed);
         }
         if self.wire.chat() {
-            shared.feed.lock().expect("feed").reachable = up;
+            shared.feed.lock().reachable = up;
         }
         shared.ring();
     }
@@ -205,7 +202,7 @@ pub fn keep(source: Source, shared: Arc<Shared>) {
 pub fn rewire(shared: &Arc<Shared>) {
     shared.generation.fetch_add(1, Ordering::Relaxed);
     shared.connected.store(false, Ordering::Relaxed);
-    shared.feed.lock().expect("feed").reachable = false;
+    shared.feed.lock().reachable = false;
     shared.ring();
     let sources = Source::from_files();
     if sources.is_empty() {
@@ -247,7 +244,7 @@ fn stay(source: &Source, shared: &Shared, generation: u64) -> Result<(), String>
             waiting.extend(shared.outgoing.lock().expect("outgoing").drain(..));
         }
         if source.wire.chat() {
-            waiting.extend(shared.feed.lock().expect("feed").take_outgoing());
+            waiting.extend(shared.feed.lock().take_outgoing());
         }
         // A server closes a wire that says nothing for a minute.
         if beat.elapsed() > Duration::from_secs(25) {
