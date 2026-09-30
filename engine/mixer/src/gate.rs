@@ -242,6 +242,8 @@ pub struct Gated {
     /// Samples that did not fill a whole block, kept for the next push:
     /// dropping the remainder would be dropping audio.
     spare: Vec<f32>,
+    /// The gain the last block ended on, where the next one starts from.
+    gain: f64,
 }
 
 /// One block through the gate.
@@ -262,6 +264,7 @@ impl Gated {
             line: (lookahead_frames > 0)
                 .then(|| DelayLine::new(lookahead_frames * channels.max(1))),
             spare: Vec::new(),
+            gain: 1.0,
         }
     }
 
@@ -292,17 +295,26 @@ impl Gated {
             let block: Vec<f32> = self.spare.drain(..size).collect();
             let first: Vec<f32> = block.iter().step_by(self.channels).copied().collect();
             let frame = self.detector.step(&first);
-            let samples = match self.line.as_mut() {
+            let mut samples = match self.line.as_mut() {
                 Some(line) => {
                     let mut out = vec![0.0; block.len()];
-                    line.process(&block, &mut out, frame.gain);
+                    line.process(&block, &mut out);
                     out
                 }
-                None => block
-                    .iter()
-                    .map(|s| (*s as f64 * frame.gain) as f32)
-                    .collect(),
+                None => block,
             };
+            // One gain per block stepped the wave at every opening, from the
+            // floor to 0.6 between two samples: a click. It glides from the
+            // last block's gain to this one's, frame by frame, and lands on
+            // it at the block's last frame.
+            let from = self.gain;
+            for (i, frame_samples) in samples.chunks_mut(self.channels).enumerate() {
+                let gain = from + (frame.gain - from) * (i + 1) as f64 / BLOCK as f64;
+                for sample in frame_samples {
+                    *sample = (*sample as f64 * gain) as f32;
+                }
+            }
+            self.gain = frame.gain;
             blocks.push(GatedBlock {
                 frame,
                 levels: self.detector.levels(),
@@ -389,11 +401,11 @@ impl DelayLine {
         }
     }
 
-    pub fn process(&mut self, input: &[f32], output: &mut [f32], gain: f64) {
+    pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
         let look_ahead = self.ring.len();
         for (i, sample) in input.iter().enumerate() {
             let idx = (self.write + i) % look_ahead;
-            output[i] = (self.ring[idx] as f64 * gain) as f32; // the delayed sample, gated
+            output[i] = self.ring[idx]; // the delayed sample
             self.ring[idx] = *sample; // store the fresh one
         }
         self.write = (self.write + input.len()) % look_ahead;
@@ -836,17 +848,61 @@ mod tests {
         assert_eq!(gated.held_frames(), lookahead + 40);
     }
 
+    // The gain was one number per block, so opening moved it from the floor
+    // to 0.6 between two samples: a step of 35 dB in the middle of the wave,
+    // a click at every opening, and from the floor to the keys boost, +6 dB,
+    // at every keystroke. The gain glides across the block instead, from the
+    // last block's to this one's. Over a sound of one magnitude, what comes
+    // out over what went in is the gain, sample by sample.
     #[test]
-    fn delay_line_plays_the_input_back_after_the_lookahead_scaled_by_the_gain() {
+    fn opening_the_gate_glides_instead_of_clicking() {
+        let nyquist = |a: f32| -> Vec<f32> {
+            (0..400 * BLOCK)
+                .map(|n| if n % 2 == 0 { a } else { -a })
+                .collect()
+        };
+        for (what, sound) in [
+            ("a voice", vec![0.5f32; 400 * BLOCK]),
+            ("a keyboard", nyquist(0.02)),
+        ] {
+            let input: Vec<f32> = [vec![0.0; 600 * BLOCK], sound]
+                .concat()
+                .iter()
+                .flat_map(|s| [*s, *s])
+                .collect();
+            let mut gated = Gated::new(GateDetector::new(SR, GateParams::default()), 2, 0);
+            let output: Vec<f32> = input
+                .chunks(941 * 2)
+                .flat_map(|chunk| gated.push(chunk))
+                .flat_map(|block| block.samples)
+                .collect();
+            let gains: Vec<f64> = (600 * BLOCK..output.len() / 2)
+                .map(|n| (output[2 * n] / input[2 * n]) as f64)
+                .collect();
+            let opened = gains.iter().copied().fold(0.0, f64::max);
+            assert!(opened > 0.9, "{what}: the gate never opened ({opened:.2})");
+            let step = gains
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0, f64::max);
+            assert!(
+                step < 0.02,
+                "{what}: the gain steps by {step:.3} between two samples"
+            );
+        }
+    }
+
+    #[test]
+    fn delay_line_plays_the_input_back_after_the_lookahead() {
         let mut line = DelayLine::new(2 * BLOCK);
         let mut impulse = vec![0.0f32; BLOCK];
         impulse[0] = 1.0;
         let mut out = vec![0.0f32; BLOCK];
-        line.process(&impulse, &mut out, 1.0);
+        line.process(&impulse, &mut out);
         assert_eq!(out[0], 0.0);
-        line.process(&vec![0.0; BLOCK], &mut out, 1.0);
+        line.process(&vec![0.0; BLOCK], &mut out);
         assert_eq!(out[0], 0.0);
-        line.process(&vec![0.0; BLOCK], &mut out, 0.5);
-        assert_eq!(out[0], 0.5);
+        line.process(&vec![0.0; BLOCK], &mut out);
+        assert_eq!(out[0], 1.0);
     }
 }
