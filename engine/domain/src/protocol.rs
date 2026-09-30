@@ -56,6 +56,11 @@ pub enum Command {
         id: String,
         on: bool,
     },
+    /// Whether one audio layer steps back under the voice.
+    AudioLayerDuck {
+        id: String,
+        duck: crate::sound::audio_layers::Duck,
+    },
     /// Whether a window is drawing the preview.
     ///
     /// The engine renders the preview into shared memory on a clock, and that
@@ -88,8 +93,9 @@ pub enum Command {
     /// window this replaces feel dead, and asking twelve times a second for
     /// everything is how you make the engine feel it.
     Levels,
-    /// Everything capturable right now: screens, windows, cameras, mics.
-    Devices,
+    /// Everything capturable right now: screens, windows, cameras, mics,
+    /// apps, and the music's genres.
+    Sources,
 
     // ---- the two levers ---------------------------------------------------
     GoLive,
@@ -132,6 +138,11 @@ pub enum Command {
         id: String,
         query: String,
     },
+    /// Add a picture file, by its absolute path.
+    LayerImage {
+        id: String,
+        path: String,
+    },
     /// Replace the source of this layer without changing its ID or order.
     LayerReplaceScreen {
         id: String,
@@ -144,6 +155,10 @@ pub enum Command {
     LayerReplaceCamera {
         id: String,
         device: String,
+    },
+    LayerReplaceImage {
+        id: String,
+        path: String,
     },
     /// Hide/show the layer's video without closing its capture.
     LayerVisible {
@@ -409,7 +424,7 @@ pub enum Reply {
     /// bytes wide. It serialises exactly the same, so the wire does not know.
     Status(Box<Status>),
     Plan(crate::air::plan::Plan),
-    Devices(Devices),
+    Sources(Devices),
     Error {
         message: String,
     },
@@ -1159,6 +1174,22 @@ mod tests {
     // wire format and only one of them is written in this language, so the
     // exact bytes matter and a rename that serde would happily carry across a
     // round trip has to fail here instead.
+    // What can be captured is asked as `sources`; the old `devices` is gone
+    // from the wire, both ways.
+    #[test]
+    fn what_can_be_captured_is_asked_as_sources_and_devices_is_gone() {
+        assert_eq!(encode(&Command::Sources), "{\"cmd\":\"sources\"}\n");
+        assert_eq!(decode("{\"cmd\":\"sources\"}"), Ok(Command::Sources));
+        assert!(decode("{\"cmd\":\"devices\"}").is_err());
+        let lists =
+            "\"screens\":[],\"windows\":[],\"cameras\":[],\"mics\":[],\"apps\":[],\"genres\":[]";
+        assert_eq!(
+            encode(&Reply::Sources(Devices::default())),
+            format!("{{\"reply\":\"sources\",{lists}}}\n")
+        );
+        assert!(decode_reply(&format!("{{\"reply\":\"devices\",{lists}}}")).is_err());
+    }
+
     #[test]
     fn the_verbs_go_out_on_the_wire_under_the_names_the_cli_already_uses() {
         assert_eq!(encode(&Command::GoLive), "{\"cmd\":\"go-live\"}\n");
@@ -1178,6 +1209,13 @@ mod tests {
                 query: "tmux".into()
             }),
             "{\"cmd\":\"window\",\"query\":\"tmux\"}\n"
+        );
+        assert_eq!(
+            encode(&Command::LayerImage {
+                id: "logo".into(),
+                path: "/tmp/logo.png".into()
+            }),
+            "{\"cmd\":\"layer-image\",\"id\":\"logo\",\"path\":\"/tmp/logo.png\"}\n"
         );
         assert_eq!(
             encode(&Command::CameraPosition {

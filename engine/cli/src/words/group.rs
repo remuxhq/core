@@ -20,8 +20,8 @@ const AUDIO: &[Action] = &[
         name: "layer",
         target: "audio-layer",
         prefix: &[],
-        args: "add mic|app|screen <id> <source> | volume <id> <percent> | mute <id> on|off | remove <id>",
-        summary: "Manage independent audio captures by ID.",
+        args: "add mic|app|screen <id> <source> | volume <id> <percent> | mute <id> on|off | duck <id> on|off|auto | remove <id>",
+        summary: "Manage independent audio captures by ID; an app or screen ducks under the voice unless told off.",
     },
     Action {
         name: "mic",
@@ -326,8 +326,8 @@ const SCENE: &[Action] = &[
         name: "layer",
         target: "layer",
         prefix: &[],
-        args: "add|set screen|camera|window <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]",
-        summary: "Compose captures, text and timers in one back-to-front order.",
+        args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]",
+        summary: "Compose captures, images, text and timers in one back-to-front order.",
     },
     Action {
         name: "filter",
@@ -390,7 +390,7 @@ pub(super) const GROUPS: &[Group] = &[
 /// The commands outside every group: the live's levers, what the engine is
 /// and what this shell keeps by itself.
 pub(super) const TOP: &[&str] = &[
-    "status", "devices", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
+    "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
     "health", "wait", "history", "log", "login", "logout", "config", "daemon", "bug", "schema",
 ];
 

@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-chat.sh |
 
 ## Relay
 
-One stream leaves your machine, and the relay sends it to each platform. `install-relay.sh` installs mediamtx and ffmpeg, and writes `~/.config/remux/byo.env` (0600) for your keys.
+The engine already sends to every armed destination, one stream each. The relay is optional: one stream leaves your machine, and the relay sends it on to each platform, which spares your upload. `install-relay.sh` installs mediamtx and ffmpeg, and writes `~/.config/remux/byo.env` (0600) for your keys.
 
 ```
 $EDITOR ~/.config/remux/byo.env      # TWITCH_KEY=…  YOUTUBE_KEY=…
@@ -39,7 +39,7 @@ twitch = "<channel>"
 youtube = "<video id>"
 ```
 
-`remux chat --url -` turns the chat off. `remux chat delete` only reaches the bridge: deleting on the platform needs a moderator token.
+The bridge takes only the chat. With an account (`remux login`), the destinations, the title and the rest stay the account's. `remux chat --url -` turns the bridge off, back to the account's chat if you have one. `remux chat delete` only reaches the bridge: deleting on the platform needs a moderator token.
 
 ## Going live
 

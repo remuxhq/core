@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 
 use crate::protocol::{Command, Reply};
+use crate::sound::audio_layers::Duck;
 
 /// What a command that just ran should say in the journal.
 ///
@@ -32,7 +33,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Watching { .. }
             | Command::Present
             | Command::Levels
-            | Command::Devices
+            | Command::Sources
             | Command::Shot { .. }
             | Command::LayerShot { .. }
             | Command::Chat { .. }
@@ -55,6 +56,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::AudioLayerMute { id, on } => {
             format!("audio layer {id} {}", if *on { "muted" } else { "open" })
         }
+        Command::AudioLayerDuck { id, duck } => format!(
+            "audio layer {id} {}",
+            match duck {
+                Duck::ByKind => "ducks by its kind",
+                Duck::On => "ducks under the voice",
+                Duck::Off => "stays level with the voice",
+            }
+        ),
         Command::GoLive | Command::Live { .. } => "\u{25b6} on air".into(),
         Command::Stop => "\u{25a0} off air".into(),
         Command::RecordStart => "\u{23fa} recording".into(),
@@ -67,12 +76,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::CameraShape { shape } => format!("camera shape: {shape:?}"),
         Command::LayerCamera { id, .. }
         | Command::LayerWindow { id, .. }
-        | Command::LayerScreen { id, .. } => {
+        | Command::LayerScreen { id, .. }
+        | Command::LayerImage { id, .. } => {
             format!("layer {id} added")
         }
         Command::LayerReplaceCamera { id, .. }
         | Command::LayerReplaceWindow { id, .. }
-        | Command::LayerReplaceScreen { id, .. } => format!("layer {id} source changed"),
+        | Command::LayerReplaceScreen { id, .. }
+        | Command::LayerReplaceImage { id, .. } => format!("layer {id} source changed"),
         Command::LayerVisible { id, on } => {
             format!("layer {id} {}", if *on { "shown" } else { "hidden" })
         }
@@ -149,7 +160,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::Present
         | Command::Plan
         | Command::Levels
-        | Command::Devices
+        | Command::Sources
         | Command::AudioLayerVolume { .. }
         | Command::Volume { .. }
         | Command::MusicVolume { .. }
@@ -176,7 +187,8 @@ fn verb(command: &Command) -> &'static str {
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
         | Command::AudioLayerVolume { .. }
-        | Command::AudioLayerMute { .. } => "audio layer",
+        | Command::AudioLayerMute { .. }
+        | Command::AudioLayerDuck { .. } => "audio layer",
         Command::GoLive | Command::Live { .. } => "go live",
         Command::Stop => "stop",
         Command::RecordStart | Command::RecordStop => "recording",
@@ -191,6 +203,8 @@ fn verb(command: &Command) -> &'static str {
         | Command::LayerReplaceScreen { .. }
         | Command::LayerReplaceWindow { .. }
         | Command::LayerReplaceCamera { .. }
+        | Command::LayerImage { .. }
+        | Command::LayerReplaceImage { .. }
         | Command::LayerVisible { .. }
         | Command::LayerRemove { .. }
         | Command::LayerMove { .. }
@@ -235,7 +249,7 @@ fn verb(command: &Command) -> &'static str {
         Command::Status
         | Command::Watching { .. }
         | Command::Levels
-        | Command::Devices
+        | Command::Sources
         | Command::Shot { .. }
         | Command::Plan
         | Command::LayerShot { .. }

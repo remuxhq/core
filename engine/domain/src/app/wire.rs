@@ -101,6 +101,65 @@ impl Up {
     }
 }
 
+/// One WebSocket the engine keeps, and the halves it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wire {
+    /// The web's, for an account: the control half, and the chat half
+    /// unless a chat wire of one's own carries it.
+    Account { chat: bool },
+    /// A chat wire of one's own (`remux chat --url`): lines down, deletes up.
+    Own,
+}
+
+impl Wire {
+    /// What it says once it is open.
+    pub fn opens(self) -> Vec<Up> {
+        match self {
+            Wire::Account { chat } => {
+                let mut halves = vec![Up::Open("control".into())];
+                if chat {
+                    halves.push(Up::Open("chat".into()));
+                }
+                halves
+            }
+            Wire::Own => Vec::new(),
+        }
+    }
+
+    /// Whether the account's verbs go up it and its destinations come down.
+    pub fn control(self) -> bool {
+        matches!(self, Wire::Account { .. })
+    }
+
+    /// Whether the chat comes down it and deletes go up.
+    pub fn chat(self) -> bool {
+        matches!(self, Wire::Account { chat: true } | Wire::Own)
+    }
+
+    /// Whether a frame is heard: the chat from the wire that carries it,
+    /// the account's state from the account's. A notice from either.
+    pub fn carries(self, down: &Down) -> bool {
+        match down {
+            Down::Line(_) | Down::History(_) => self.chat(),
+            Down::Notice(_) => true,
+            _ => self.control(),
+        }
+    }
+}
+
+/// The wires to keep. The account keeps its destinations whoever serves the
+/// chat; a chat wire of one's own takes the chat half and nothing else.
+pub fn wires(account: bool, own_chat: bool) -> Vec<Wire> {
+    let mut wires = Vec::new();
+    if account {
+        wires.push(Wire::Account { chat: !own_chat });
+    }
+    if own_chat {
+        wires.push(Wire::Own);
+    }
+    wires
+}
+
 /// The web's wire for an account: the web's own address, the socket's token
 /// on the query. `wss` under `https`, because a token in the clear is a
 /// session anybody on the network can take.
@@ -315,6 +374,49 @@ mod tests {
 
     fn read(key: &str, payload: Value) -> Option<Down> {
         Down::read(&json!({ key: payload }).to_string())
+    }
+
+    #[test]
+    fn a_chat_wire_of_ones_own_takes_the_chat_and_leaves_the_account_its_destinations() {
+        assert_eq!(
+            wires(true, true),
+            vec![Wire::Account { chat: false }, Wire::Own]
+        );
+        assert_eq!(wires(true, false), vec![Wire::Account { chat: true }]);
+        assert_eq!(wires(false, true), vec![Wire::Own]);
+        assert_eq!(wires(false, false), vec![]);
+    }
+
+    #[test]
+    fn a_wire_opens_the_halves_it_carries() {
+        let open = |half: &str| Up::Open(half.into());
+        assert_eq!(
+            Wire::Account { chat: true }.opens(),
+            vec![open("control"), open("chat")]
+        );
+        assert_eq!(Wire::Account { chat: false }.opens(), vec![open("control")]);
+        assert_eq!(Wire::Own.opens(), vec![]);
+        assert!(Wire::Account { chat: false }.control() && !Wire::Account { chat: false }.chat());
+        assert!(Wire::Own.chat() && !Wire::Own.control());
+    }
+
+    #[test]
+    fn a_wire_is_heard_only_on_the_halves_it_carries() {
+        let line = read("line", json!({"id": "m1", "from": "ana", "body": "hi"})).unwrap();
+        let rows = read("destinations", json!([])).unwrap();
+        let notice = Down::Notice("told the title".into());
+        assert!(Wire::Own.carries(&line));
+        assert!(
+            !Wire::Own.carries(&rows),
+            "a bridge never names the destinations"
+        );
+        assert!(
+            !Wire::Account { chat: false }.carries(&line),
+            "the chat is the bridge's"
+        );
+        assert!(Wire::Account { chat: false }.carries(&rows));
+        assert!(Wire::Account { chat: true }.carries(&line));
+        assert!(Wire::Own.carries(&notice) && Wire::Account { chat: false }.carries(&notice));
     }
 
     #[test]

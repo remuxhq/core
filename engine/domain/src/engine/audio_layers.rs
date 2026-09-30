@@ -1,7 +1,7 @@
 //! Independent audio layers: one capture per ID, separate from the legacy
 //! one-mic/one-app controls. Never report a source that failed to open.
 use super::*;
-use crate::sound::audio_layers::{Layer, Source};
+use crate::sound::audio_layers::{Duck, Layer, Source};
 
 impl Engine {
     pub(super) fn audio_layer_add(&mut self, id: String, source: Source) -> Reply {
@@ -61,6 +61,17 @@ impl Engine {
         };
         layer.muted = on;
         self.pipeline.audio_layer_levels(&id, layer.volume, on);
+        Reply::Status(Box::new(self.reported()))
+    }
+
+    pub(super) fn audio_layer_duck(&mut self, id: String, duck: Duck) -> Reply {
+        let Some(layer) = self.status.audio_layers.iter_mut().find(|l| l.id == id) else {
+            return Reply::Error {
+                message: format!("no audio layer {id:?}"),
+            };
+        };
+        layer.duck = duck;
+        self.pipeline.audio_layer_duck(&id, layer.ducks());
         Reply::Status(Box::new(self.reported()))
     }
 }
@@ -127,5 +138,45 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(engine.status().audio_layers.len(), 1);
+    }
+
+    // A call captured as an app ducked under the voice like a video, and the
+    // guest went quiet every time the operator spoke.
+    #[test]
+    fn one_audio_layer_is_told_whether_it_ducks_and_it_is_remembered() {
+        let fake = Wrote::default();
+        let ducked = fake.ducked.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        engine.handle(Command::AudioLayerAdd {
+            id: "call".into(),
+            source: Source::app("Discord".into()),
+        });
+        assert!(
+            engine.status().audio_layers[0].ducks(),
+            "an app ducks by its kind"
+        );
+        assert!(matches!(
+            engine.handle(Command::AudioLayerDuck {
+                id: "call".into(),
+                duck: Duck::Off,
+            }),
+            Reply::Status(_)
+        ));
+        assert!(!engine.status().audio_layers[0].ducks());
+        assert_eq!(*ducked.lock().unwrap(), [("call".to_string(), false)]);
+        assert!(matches!(
+            engine.handle(Command::AudioLayerDuck {
+                id: "nobody".into(),
+                duck: Duck::Off,
+            }),
+            Reply::Error { .. }
+        ));
+
+        let fake = Wrote::default();
+        let told = fake.ducked.clone();
+        let mut restored = Engine::new().with_pipeline(Box::new(fake));
+        restored.restore(&engine.remembered());
+        assert_eq!(restored.status().audio_layers[0].duck, Duck::Off);
+        assert_eq!(*told.lock().unwrap(), [("call".to_string(), false)]);
     }
 }

@@ -171,7 +171,7 @@ fn changes_the_setup(command: &Command) -> bool {
         command,
         Command::Status
             | Command::Levels
-            | Command::Devices
+            | Command::Sources
             | Command::Shot { .. }
             | Command::Grants
             | Command::Chat { .. }

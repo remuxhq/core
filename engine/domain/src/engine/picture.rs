@@ -3,6 +3,16 @@
 use super::*;
 use base64::Engine as _;
 
+/// A picture file the engine can open now: the name's rules are the
+/// domain's, whether the file is there is this machine's.
+fn image_source(path: &str) -> Result<crate::picture::layers::Source, String> {
+    let source = crate::picture::layers::image(path)?;
+    if !std::path::Path::new(path).is_file() {
+        return Err(format!("no image at {path}"));
+    }
+    Ok(source)
+}
+
 /// A failed source change may also lose the original device (for example,
 /// when its window closed during the swap). Never report it still active.
 #[derive(Debug)]
@@ -580,6 +590,27 @@ impl Engine {
         }
     }
 
+    pub(super) fn layer_image(&mut self, id: String, path: String) -> Reply {
+        if let Err(message) = self.validate_layer_id(&id) {
+            return Reply::Error { message };
+        }
+        match image_source(&path) {
+            Ok(source) => self.add_layer(Self::layer_with_source(id, source)),
+            Err(message) => Reply::Error { message },
+        }
+    }
+
+    pub(super) fn layer_replace_image(&mut self, id: String, path: String) -> Reply {
+        if let Err(message) = self.validate_replacement(&id, &[crate::picture::layers::Kind::Image])
+        {
+            return Reply::Error { message };
+        }
+        match image_source(&path) {
+            Ok(source) => self.replace_layer_source(id, source),
+            Err(message) => Reply::Error { message },
+        }
+    }
+
     fn screen_source(&self, display: u32) -> Result<crate::picture::layers::Source, String> {
         let available = self.sources.available()?;
         let screen = available
@@ -675,10 +706,10 @@ impl Engine {
         if !kinds.contains(&layer.source.kind) {
             return Err(format!(
                 "layer {id:?} is not a {}",
-                if kinds.len() == 1 {
-                    "camera"
-                } else {
-                    "display or window"
+                match kinds {
+                    [crate::picture::layers::Kind::Camera] => "camera",
+                    [crate::picture::layers::Kind::Image] => "image",
+                    _ => "display or window",
                 }
             ));
         }
@@ -700,14 +731,21 @@ impl Engine {
             crate::picture::layers::Kind::Screen,
             crate::picture::layers::Kind::Window,
         ];
-        if (old.source.kind == crate::picture::layers::Kind::Camera)
-            != (source.kind == crate::picture::layers::Kind::Camera)
+        let alone = [
+            crate::picture::layers::Kind::Camera,
+            crate::picture::layers::Kind::Image,
+        ];
+        if alone
+            .iter()
+            .any(|kind| (old.source.kind == *kind) != (source.kind == *kind))
         {
             return Reply::Error {
-                message: format!("layer {id:?} cannot change between camera and display/window"),
+                message: format!(
+                    "layer {id:?} cannot change between camera, image and display/window"
+                ),
             };
         }
-        if source.kind != crate::picture::layers::Kind::Camera && !visual.contains(&source.kind) {
+        if !alone.contains(&source.kind) && !visual.contains(&source.kind) {
             return Reply::Error {
                 message: "unsupported source".into(),
             };
@@ -1534,6 +1572,83 @@ mod tests {
         assert_eq!(engine.status().layers[2].shape, None);
     }
 
+    /// A file of this test's own, named by the pid: the engine looks for it.
+    fn picture_file(name: &str) -> String {
+        let path = std::env::temp_dir().join(format!("remux-{}-{name}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        path.display().to_string()
+    }
+
+    #[test]
+    fn an_image_is_a_layer_of_its_own_file() {
+        use crate::picture::layers::Kind;
+        let (mut engine, _, _) = machine_with_music();
+        let logo = picture_file("logo.png");
+        assert!(matches!(
+            engine.handle(Command::LayerImage {
+                id: "logo".into(),
+                path: logo.clone()
+            }),
+            Reply::Status(_)
+        ));
+        let layer = &engine.status().layers[0];
+        assert_eq!(layer.source.kind, Kind::Image);
+        assert_eq!(layer.source.handle, logo);
+        assert_eq!((layer.source.width, layer.source.height), (640, 480));
+        assert_eq!(layer.shape, None);
+        let badge = picture_file("badge.webp");
+        assert!(matches!(
+            engine.handle(Command::LayerReplaceImage {
+                id: "logo".into(),
+                path: badge.clone()
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(engine.status().layers[0].source.handle, badge);
+        assert_eq!(engine.status().layers[0].id, "logo");
+    }
+
+    #[test]
+    fn an_image_that_is_not_there_is_not_a_layer() {
+        let (mut engine, _, _) = machine_with_music();
+        let gone = std::env::temp_dir().join(format!("remux-{}-gone.png", std::process::id()));
+        let Reply::Error { message } = engine.handle(Command::LayerImage {
+            id: "logo".into(),
+            path: gone.display().to_string(),
+        }) else {
+            panic!("a missing file was added");
+        };
+        assert!(message.contains("no image at"), "{message}");
+        assert!(engine.status().layers.is_empty());
+    }
+
+    #[test]
+    fn an_image_and_a_capture_never_trade_places_under_one_id() {
+        let (mut engine, _, _) = machine_with_music();
+        engine.handle(Command::LayerScreen {
+            id: "desk".into(),
+            display: 3,
+        });
+        assert!(matches!(
+            engine.handle(Command::LayerReplaceImage {
+                id: "desk".into(),
+                path: picture_file("desk.png")
+            }),
+            Reply::Error { .. }
+        ));
+        engine.handle(Command::LayerImage {
+            id: "logo".into(),
+            path: picture_file("logo2.png"),
+        });
+        let Reply::Error { message } = engine.handle(Command::LayerReplaceScreen {
+            id: "logo".into(),
+            display: 3,
+        }) else {
+            panic!("an image became a display");
+        };
+        assert!(message.contains("not a display or window"), "{message}");
+    }
+
     #[test]
     fn display_layers_have_no_reserved_id_or_order() {
         let (mut engine, _, _) = machine_with_music();
@@ -2028,6 +2143,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: None,
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
@@ -2146,6 +2262,7 @@ mod tests {
             previewed: Default::default(),
             ran_out: Default::default(),
             refuse: None,
+            ducked: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))
@@ -2245,6 +2362,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: Some("macOS refused: screen recording".into()),
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(refusing));

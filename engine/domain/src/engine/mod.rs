@@ -118,6 +118,7 @@ impl Picture for NoPipeline {
             crate::picture::layers::Kind::Screen => (1920, 1080),
             crate::picture::layers::Kind::Camera => (1280, 720),
             crate::picture::layers::Kind::Window => (853, 479),
+            crate::picture::layers::Kind::Image => (640, 480),
         })
     }
     fn show(
@@ -708,6 +709,10 @@ impl Engine {
                     id: saved.id.clone(),
                     query: saved.source.name.clone(),
                 }),
+                crate::picture::layers::Kind::Image => Some(Command::LayerImage {
+                    id: saved.id.clone(),
+                    path: saved.source.handle.clone(),
+                }),
             };
             if let Some(command) = reply {
                 if matches!(self.handle(command), Reply::Status(_)) {
@@ -809,6 +814,12 @@ impl Engine {
                     id: saved.id.clone(),
                     on: saved.muted,
                 });
+                if !saved.duck.by_kind() {
+                    let _ = self.handle(Command::AudioLayerDuck {
+                        id: saved.id.clone(),
+                        duck: saved.duck,
+                    });
+                }
             }
         }
         if let Some(mic) = &setup.mic {
@@ -1160,10 +1171,11 @@ impl Engine {
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
             Command::AudioLayerVolume { id, volume } => self.audio_layer_volume(id, volume),
             Command::AudioLayerMute { id, on } => self.audio_layer_mute(id, on),
+            Command::AudioLayerDuck { id, duck } => self.audio_layer_duck(id, duck),
             Command::Watching { on } => self.watch(on),
             Command::Present => self.present(),
             Command::Levels => self.levels(),
-            Command::Devices => self.devices(),
+            Command::Sources => self.sources(),
             Command::Quit => self.quit(),
             // the daemon acts on it beside the engine; here it is a fact
             Command::Rewire => Reply::Ok,
@@ -1203,6 +1215,8 @@ impl Engine {
             Command::LayerReplaceScreen { id, display } => self.layer_replace_screen(id, display),
             Command::LayerReplaceWindow { id, query } => self.layer_replace_window(id, query),
             Command::LayerReplaceCamera { id, device } => self.layer_replace_camera(id, device),
+            Command::LayerImage { id, path } => self.layer_image(id, path),
+            Command::LayerReplaceImage { id, path } => self.layer_replace_image(id, path),
             Command::LayerVisible { id, on } => self.layer_visible(id, on),
             Command::LayerRemove { id } => self.layer_remove(id),
             Command::LayerMove { id, index } => self.layer_move(id, index),
@@ -1410,7 +1424,7 @@ impl Engine {
         self.sound()
     }
 
-    pub(super) fn devices(&mut self) -> Reply {
+    pub(super) fn sources(&mut self) -> Reply {
         match self.sources.available() {
             Ok(available) => {
                 let mut devices: Devices = available.into();
@@ -1423,7 +1437,7 @@ impl Engine {
                         name: playlist.title,
                     })
                     .collect();
-                Reply::Devices(devices)
+                Reply::Sources(devices)
             }
             // The overwhelmingly likely reason is the screen recording
             // grant, which macOS ties to a code signature, so it comes
@@ -1696,10 +1710,10 @@ mod tests {
     }
 
     #[test]
-    fn devices_come_from_whatever_is_plugged_in() {
+    fn sources_come_from_whatever_is_plugged_in() {
         let mut engine = Engine::with_sources(Box::new(ThisMachine));
-        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
-            panic!("devices answers with devices")
+        let Reply::Sources(devices) = engine.handle(Command::Sources) else {
+            panic!("sources answers with sources")
         };
         assert_eq!(devices.screens.len(), 2);
         assert_eq!(devices.screens[1].name, "VG2791R");
@@ -1715,7 +1729,7 @@ mod tests {
     fn a_refused_grant_comes_back_as_a_sentence_not_an_empty_list() {
         let mut engine = Engine::with_sources(Box::new(Refused));
         assert_eq!(
-            engine.handle(Command::Devices),
+            engine.handle(Command::Sources),
             Reply::Error {
                 message: "macOS refused: screen recording".into()
             }
@@ -1726,8 +1740,8 @@ mod tests {
     fn an_engine_with_nothing_plugged_in_says_so_truthfully() {
         let mut engine = engine();
         assert_eq!(
-            engine.handle(Command::Devices),
-            Reply::Devices(Devices::default())
+            engine.handle(Command::Sources),
+            Reply::Sources(Devices::default())
         );
     }
 
@@ -1783,7 +1797,7 @@ mod tests {
         let (mut engine, _) = publishing_engine(None);
         for command in [
             Command::Status,
-            Command::Devices,
+            Command::Sources,
             Command::Grants,
             Command::Chat {
                 since: 0,
@@ -2271,11 +2285,11 @@ mod tests {
     }
 
     #[test]
-    fn the_music_a_panel_can_offer_comes_back_with_the_devices() {
+    fn the_music_a_panel_can_offer_comes_back_with_the_sources() {
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_library(Box::new(ThreeGenres));
-        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
-            panic!("devices answers with devices")
+        let Reply::Sources(devices) = engine.handle(Command::Sources) else {
+            panic!("sources answers with sources")
         };
         assert_eq!(
             devices
@@ -2358,6 +2372,7 @@ mod tests {
             previewed: Default::default(),
             ran_out: Default::default(),
             refuse: None,
+            ducked: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))

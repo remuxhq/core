@@ -5,7 +5,8 @@
 //!
 //! With an account it is the web's wire, both halves; with a chat source of
 //! one's own it is the `line` half alone, and nothing is asked of the
-//! server. The engine tells the two apart by what arrives, not by who serves.
+//! server. With both, two sockets: the account keeps the control half and the
+//! chat is the bridge's. Each hears only the frames of the halves it carries.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,7 +15,7 @@ use std::time::Duration;
 
 use remuxd_domain::app::chat::Feed;
 use remuxd_domain::app::session::Session;
-use remuxd_domain::app::wire::{Adapter, Down, Up};
+use remuxd_domain::app::wire::{wires, Adapter, Down, Up, Wire};
 use remuxd_domain::protocol::{Destination, Found};
 use serde_json::json;
 
@@ -26,7 +27,7 @@ pub struct Shared {
     /// Rung whenever the feed changed, for a follower to wake on.
     pub changed: Condvar,
     pub bell: Mutex<()>,
-    /// Whether the wire is up right now.
+    /// Whether the wire carrying the control half is up right now.
     pub connected: AtomicBool,
     pub destinations: Mutex<Vec<Destination>>,
     pub viewers: AtomicU64,
@@ -105,31 +106,46 @@ impl Shared {
     }
 }
 
-/// Where the wire is: a URL the shell kept (`remux chat --url`, the `line`
+/// Where a wire is: a URL the shell kept (`remux chat --url`, the `line`
 /// half), or the web's for an account, asked for at every connect because
 /// the token on it is the session's.
-pub enum Source {
+enum Door {
     Fixed(String),
     Account(Session),
 }
 
+/// One wire to keep: where it is and the halves it carries.
+pub struct Source {
+    door: Door,
+    wire: Wire,
+}
+
 impl Source {
-    /// What the files say now: a chat wire of one's own in the config wins,
-    /// else the account's, else none.
-    pub fn from_files() -> Option<Source> {
-        if let Some(url) = remuxd_domain::config::chat_url() {
-            return Some(Source::Fixed(url));
-        }
-        remuxd_domain::app::session::read(&remuxd_domain::app::session::path()).map(Source::Account)
+    /// What the files say now: the account's wire for its control, and the
+    /// chat from a wire of one's own if the config names one, else from the
+    /// account's.
+    pub fn from_files() -> Vec<Source> {
+        let own = remuxd_domain::config::chat_url();
+        let mut session = remuxd_domain::app::session::read(&remuxd_domain::app::session::path());
+        wires(session.is_some(), own.is_some())
+            .into_iter()
+            .filter_map(|wire| {
+                let door = match wire {
+                    Wire::Account { .. } => Door::Account(session.take()?),
+                    Wire::Own => Door::Fixed(own.clone()?),
+                };
+                Some(Source { door, wire })
+            })
+            .collect()
     }
 
     /// Where to connect. For an account, `/api/session` answers with the
     /// socket's token and the relay's door, and the door is kept for the
     /// engine to publish to.
     fn url(&self, shared: &Shared) -> Result<String, String> {
-        match self {
-            Source::Fixed(url) => Ok(url.clone()),
-            Source::Account(session) => {
+        match &self.door {
+            Door::Fixed(url) => Ok(url.clone()),
+            Door::Account(session) => {
                 let answer = remux_wire::get_json(
                     &format!("{}/api/session", session.base),
                     &session.token.0,
@@ -151,11 +167,16 @@ impl Source {
         }
     }
 
-    fn opens(&self) -> Vec<Up> {
-        match self {
-            Source::Fixed(_) => Vec::new(),
-            Source::Account(_) => vec![Up::Open("control".into()), Up::Open("chat".into())],
+    /// Mark this wire's halves up or down: the control's `connected`, the
+    /// chat's `reachable`.
+    fn up(&self, shared: &Shared, up: bool) {
+        if self.wire.control() {
+            shared.connected.store(up, Ordering::Relaxed);
         }
+        if self.wire.chat() {
+            shared.feed.lock().expect("feed").reachable = up;
+        }
+        shared.ring();
     }
 }
 
@@ -173,27 +194,26 @@ pub fn keep(source: Source, shared: Arc<Shared>) {
             if shared.generation.load(Ordering::Relaxed) != generation {
                 return;
             }
-            shared.connected.store(false, Ordering::Relaxed);
-            shared.feed.lock().expect("feed").reachable = false;
-            shared.ring();
+            source.up(&shared, false);
             std::thread::sleep(Duration::from_secs(3));
         }
     });
 }
 
-/// `remux chat --url` changed the config: drop the wire and open what the
+/// `remux chat --url` changed the config: drop the wires and open what the
 /// files say now, the live untouched.
 pub fn rewire(shared: &Arc<Shared>) {
     shared.generation.fetch_add(1, Ordering::Relaxed);
     shared.connected.store(false, Ordering::Relaxed);
     shared.feed.lock().expect("feed").reachable = false;
     shared.ring();
-    match Source::from_files() {
-        Some(source) => {
-            remuxd_domain::log::note("wire: opening again, as the config says now");
-            keep(source, Arc::clone(shared));
-        }
-        None => remuxd_domain::log::note("wire: none now; remux chat --url, or remux login"),
+    let sources = Source::from_files();
+    if sources.is_empty() {
+        remuxd_domain::log::note("wire: none now; remux chat --url, or remux login");
+    }
+    for source in sources {
+        remuxd_domain::log::note("wire: opening again, as the config says now");
+        keep(source, Arc::clone(shared));
     }
 }
 
@@ -208,27 +228,27 @@ fn stay(source: &Source, shared: &Shared, generation: u64) -> Result<(), String>
         }
         _ => None,
     };
-    for open in source.opens() {
+    for open in source.wire.opens() {
         socket
             .send(tungstenite::Message::Text(open.encode()))
             .map_err(|e| format!("opening: {e}"))?;
     }
-    shared.connected.store(true, Ordering::Relaxed);
-    shared.feed.lock().expect("feed").reachable = true;
-    shared.ring();
+    source.up(shared, true);
 
     let mut beat = std::time::Instant::now();
     loop {
         if shared.generation.load(Ordering::Relaxed) != generation {
             return Ok(());
         }
-        let mut waiting: Vec<Up> = shared
-            .outgoing
-            .lock()
-            .expect("outgoing")
-            .drain(..)
-            .collect();
-        waiting.extend(shared.feed.lock().expect("feed").take_outgoing());
+        // The account's verbs go up the control half, the deletes up the
+        // chat's: with two wires, each takes only its own.
+        let mut waiting: Vec<Up> = Vec::new();
+        if source.wire.control() {
+            waiting.extend(shared.outgoing.lock().expect("outgoing").drain(..));
+        }
+        if source.wire.chat() {
+            waiting.extend(shared.feed.lock().expect("feed").take_outgoing());
+        }
         // A server closes a wire that says nothing for a minute.
         if beat.elapsed() > Duration::from_secs(25) {
             beat = std::time::Instant::now();
@@ -241,7 +261,7 @@ fn stay(source: &Source, shared: &Shared, generation: u64) -> Result<(), String>
         }
         match socket.read() {
             Ok(tungstenite::Message::Text(text)) => {
-                if let Some(down) = Down::read(&text) {
+                if let Some(down) = Down::read(&text).filter(|d| source.wire.carries(d)) {
                     shared.fold(down);
                 }
             }

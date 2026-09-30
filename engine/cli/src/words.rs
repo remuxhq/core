@@ -202,7 +202,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Hide { seq })
         }
-        "devices" | "sources" => Ok(Command::Devices),
+        "sources" => Ok(Command::Sources),
         // `remux plan` says what live would do; `remux live --confirm <plan>`
         // does it only if that is still true. `remux live` alone asks a
         // person at a terminal, or is refused where there is nobody to ask.
@@ -225,11 +225,11 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "screen" => {
             let display = rest
                 .first()
-                .ok_or("screen needs a display id, which `remux devices` lists")?;
+                .ok_or("screen needs a display id, which `remux sources` lists")?;
             display
                 .parse()
                 .map(|display| Command::Screen { display })
-                .map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))
+                .map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))
         }
         "window" => {
             if joined.is_empty() {
@@ -583,7 +583,7 @@ fn parse_scene_element(words: &[String]) -> Result<Command, String> {
 
 fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
     use remuxd_domain::sound::audio_layers::Source;
-    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, remove <id>";
+    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, duck <id> on|off|auto, remove <id>";
     match words {
         [add, kind, id, source @ ..] if add == "add" && !source.is_empty() => {
             let said = source.join(" ");
@@ -592,7 +592,7 @@ fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
                 "app" => Source::app(said),
                 "screen" if source.len() == 1 => Source::screen(
                     said.parse()
-                        .map_err(|_| "screen needs a display id from `remux devices`")?,
+                        .map_err(|_| "screen needs a display id from `remux sources`")?,
                 ),
                 _ => return Err(usage.into()),
             };
@@ -610,6 +610,15 @@ fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
         [mute, id, on] if mute == "mute" => Ok(Command::AudioLayerMute {
             id: id.clone(),
             on: on_or(on)?,
+        }),
+        // Auto is the kind's: an app or a screen ducks, a microphone does not.
+        [duck, id, said] if duck == "duck" => Ok(Command::AudioLayerDuck {
+            id: id.clone(),
+            duck: match said.as_str() {
+                "auto" => remuxd_domain::sound::audio_layers::Duck::ByKind,
+                said if on_or(said)? => remuxd_domain::sound::audio_layers::Duck::On,
+                _ => remuxd_domain::sound::audio_layers::Duck::Off,
+            },
         }),
         _ => Err(usage.into()),
     }
@@ -631,6 +640,12 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
     {
         return parse_scene_element(words);
     }
+    // The engine runs in a directory of its own: the file is named from here.
+    let image = |file: &[String]| -> Result<String, String> {
+        std::path::absolute(file.join(" "))
+            .map(|path| path.display().to_string())
+            .map_err(|e| format!("image: {e}"))
+    };
     match words {
         [mirror, name, on] if mirror == "mirror" => Ok(Command::LayerMirror { id: id(name)?, on: on_or(on)? }),
         [sound, name, setting @ ..] if sound == "screen-sound" && setting.len() <= 1 => Ok(Command::LayerScreenSound {
@@ -638,7 +653,13 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
         }),
         [set, kind, name, display] if set == "set" && kind == "screen" => Ok(Command::LayerReplaceScreen {
             id: id(name)?,
-            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
+        }),
+        [set, kind, name, file @ ..] if set == "set" && kind == "image" && !file.is_empty() => Ok(Command::LayerReplaceImage {
+            id: id(name)?, path: image(file)?,
+        }),
+        [add, kind, name, file @ ..] if add == "add" && kind == "image" && !file.is_empty() => Ok(Command::LayerImage {
+            id: id(name)?, path: image(file)?,
         }),
         [set, kind, name, query @ ..] if set == "set" && !query.is_empty() => {
             let id = id(name)?;
@@ -646,12 +667,12 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             match kind.as_str() {
                 "camera" => Ok(Command::LayerReplaceCamera { id, device: query }),
                 "window" => Ok(Command::LayerReplaceWindow { id, query }),
-                _ => Err("layer set expects screen, camera or window".into()),
+                _ => Err("layer set expects screen, camera, window or image".into()),
             }
         }
         [add, kind, name, display] if add == "add" && kind == "screen" => Ok(Command::LayerScreen {
             id: id(name)?,
-            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux devices` lists them"))?,
+            display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
         }),
         [add, kind, name, query @ ..] if add == "add" && !query.is_empty() => {
             let id = id(name)?;
@@ -659,7 +680,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             match kind.as_str() {
                 "camera" => Ok(Command::LayerCamera { id, device: query }),
                 "window" => Ok(Command::LayerWindow { id, query }),
-                _ => Err("layer add expects screen, camera or window".into()),
+                _ => Err("layer add expects screen, camera, window or image".into()),
             }
         }
         [crop, name, off] if crop == "crop" && off == "off" => Ok(Command::LayerCrop { id: id(name)?, crop: None }),
@@ -706,7 +727,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             transform.validate()?;
             Ok(Command::LayerTransform { id: id(name)?, transform })
         }
-        _ => Err("layer: add|set screen|camera|window <id> <display-id|name>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
+        _ => Err("layer: add|set screen|camera|window|image <id> <display-id|name|file>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
     }
 }
 
@@ -747,7 +768,7 @@ pub fn render(reply: &Reply) -> String {
         Reply::Error { message } => format!("no: {message}"),
         Reply::Status(status) => render_status(status),
         Reply::Plan(plan) => render_plan(plan),
-        Reply::Devices(devices) => render_devices(devices),
+        Reply::Sources(devices) => render_devices(devices),
         // dB, because that is what the meters are marked in and what a person
         // reading this in a terminal is comparing against them.
         // The panel's meters on one line: bar and held peak for the mic, the
@@ -964,12 +985,17 @@ fn render_status(status: &Status) -> String {
             remuxd_domain::sound::audio_layers::Kind::Screen => "display",
         };
         said.push(format!(
-            "audio layer {}: {:?} {} ({}%){}",
+            "audio layer {}: {:?} {} ({}%){}{}",
             layer.id,
             layer.source.kind,
             plain(source),
             (layer.volume * 100.0).round(),
-            if layer.muted { " muted" } else { "" }
+            if layer.muted { " muted" } else { "" },
+            match layer.duck {
+                remuxd_domain::sound::audio_layers::Duck::ByKind => "",
+                remuxd_domain::sound::audio_layers::Duck::On => " ducked",
+                remuxd_domain::sound::audio_layers::Duck::Off => " not ducked",
+            }
         ));
     }
     if status.screen_sound {
@@ -1199,6 +1225,26 @@ mod tests {
                 device: "FaceTime".into()
             })
         );
+        assert_eq!(
+            super::parse(&words("scene layer add image logo /tmp/my logo.png")),
+            Ok(remuxd_domain::protocol::Command::LayerImage {
+                id: "logo".into(),
+                path: "/tmp/my logo.png".into(),
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer set image logo badge.png")),
+            Ok(remuxd_domain::protocol::Command::LayerReplaceImage {
+                id: "logo".into(),
+                path: std::env::current_dir()
+                    .unwrap()
+                    .join("badge.png")
+                    .display()
+                    .to_string(),
+            }),
+            "the engine does not run where the file was named"
+        );
+        assert!(super::parse(&words("scene layer add image logo")).is_err());
         assert!(super::parse(&words("scene layer set screen desktop nope")).is_err());
         assert_eq!(
             super::parse(&words("scene layer hide desktop")),
@@ -1449,6 +1495,17 @@ mod tests {
             typed("audio layer remove chat"),
             Ok(Command::AudioLayerRemove { id: "chat".into() })
         );
+        use remuxd_domain::sound::audio_layers::Duck;
+        for (said, duck) in [("off", Duck::Off), ("on", Duck::On), ("auto", Duck::ByKind)] {
+            assert_eq!(
+                typed(&format!("audio layer duck chat {said}")),
+                Ok(Command::AudioLayerDuck {
+                    id: "chat".into(),
+                    duck
+                })
+            );
+        }
+        assert!(typed("audio layer duck chat maybe").is_err());
         assert!(typed("audio layer add screen desktop not-an-id").is_err());
     }
 
@@ -1475,7 +1532,7 @@ mod tests {
                 message: "refused".into(),
             },
             Reply::Status(Box::default()),
-            Reply::Devices(Devices::default()),
+            Reply::Sources(Devices::default()),
             Reply::Chat {
                 reachable: false,
                 lines: vec![],
@@ -1580,7 +1637,7 @@ mod tests {
             "present",
             "watching",
             "meters",
-            "sources",
+            "devices",
             "permissions",
             "preview",
             "skip",
@@ -1698,7 +1755,7 @@ mod tests {
                 name: "Lofi".into(),
             }],
         };
-        let said = render(&Reply::Devices(devices));
+        let said = render(&Reply::Sources(devices));
         assert!(said.starts_with("screens:"), "{said}");
         assert!(said.contains("VG2791R"), "{said}");
         assert!(
@@ -1747,7 +1804,7 @@ mod tests {
     #[test]
     fn the_short_ones_are_themselves() {
         assert_eq!(said("status"), Ok(Command::Status));
-        assert_eq!(said("devices"), Ok(Command::Devices));
+        assert_eq!(typed("sources"), Ok(Command::Sources));
         assert_eq!(said("live"), Ok(Command::GoLive));
         assert_eq!(said("stop"), Ok(Command::Stop));
         assert_eq!(said("cut"), Ok(Command::HideEverything));
@@ -1771,7 +1828,7 @@ mod tests {
         assert_eq!(said("screen 3"), Ok(Command::Screen { display: 3 }));
         let complaint = said("screen VG2791R").expect_err("a name is not an id");
         assert!(
-            complaint.contains("devices"),
+            complaint.contains("remux sources"),
             "it says where to look: {complaint}"
         );
     }

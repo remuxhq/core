@@ -24,6 +24,8 @@ pub trait Sound: Send {
     }
     fn audio_layer_remove(&mut self, _id: &str) {}
     fn audio_layer_levels(&mut self, _id: &str, _volume: f64, _muted: bool) {}
+    /// Whether one audio layer steps back under the voice now.
+    fn audio_layer_duck(&mut self, _id: &str, _ducks: bool) {}
     /// Open a microphone by id, or close the one that is open.
     fn mic(&mut self, device: Option<&str>) -> Result<(), String>;
     /// Start or stop a dedicated app capture; a failed start leaves the previous one intact.
@@ -634,6 +636,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: None,
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));

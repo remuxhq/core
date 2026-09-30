@@ -302,7 +302,8 @@ pub unsafe extern "C" fn tick(param: *mut c_void, _seconds: f32) {
 }
 
 impl ObsPipeline {
-    /// A capture of this source, opened: a display, a window or a camera.
+    /// A capture of this source, opened: a display, a window, a camera or a
+    /// picture file.
     fn open(&self, source: &Source) -> Result<*mut sys::obs_source_t, String> {
         // SAFETY: settings created and released around the create; the
         // source is the caller's.
@@ -416,6 +417,17 @@ impl ObsPipeline {
                         std::ptr::null(),
                     );
                     (table.source, settings)
+                }
+                Kind::Image => {
+                    let settings = sys::obs_data_create();
+                    sys::obs_data_set_string(
+                        settings,
+                        c"file".as_ptr(),
+                        c(&source.handle).as_ptr(),
+                    );
+                    // Loaded once and kept, whether shown or not.
+                    sys::obs_data_set_bool(settings, c"unload".as_ptr(), false);
+                    ("image_source", settings)
                 }
             };
             let made = sys::obs_source_create(
