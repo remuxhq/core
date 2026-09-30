@@ -1256,6 +1256,7 @@ impl Engine {
     /// dozen things.
     fn snapshot(&self) -> crate::app::events::Snapshot {
         use crate::app::events::LayerSeen;
+        let heard = self.pipeline.hearing();
         crate::app::events::Snapshot {
             on_air: self.status.on_air,
             recording: self.status.recording,
@@ -1285,6 +1286,23 @@ impl Engine {
                 .filter(|(_, deadline)| **deadline <= Instant::now())
                 .map(|(id, _)| id.clone())
                 .collect(),
+            mic_complaint: heard.complaint,
+            screen_complaint: heard.screen_complaint,
+            app_complaint: heard.app_complaint,
+            starved: heard.starved,
+            dropped: heard.dropped,
+            faders: self.status.faders,
+            gate: self.status.gate,
+            monitoring: self.status.monitoring,
+            music_to_stream: self.status.music_to_stream,
+            screen_sound: self.status.screen_sound,
+            screen_sound_layer: self.status.screen_sound_layer.clone(),
+            denoise: self.status.denoise,
+            hearing_apps: self.status.hearing_apps.clone(),
+            app_audio: self.status.app_audio.clone(),
+            app_audio_volume: self.status.app_audio_volume,
+            mirrored: self.status.mirrored,
+            viewers: self.watching.viewers(),
         }
     }
 
@@ -3103,6 +3121,23 @@ mod tests {
             said(&events).contains(&Event::LayerStalled { id }),
             "got {:?}",
             said(&events)
+        );
+    }
+
+    #[test]
+    fn a_fader_moved_is_an_event_on_the_detail_ring() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Volume { level: 0.5 });
+        let faders = engine.status().faders;
+        assert_eq!(
+            said(&events),
+            vec![Event::Faders {
+                mic: 0.5,
+                music: faders.music,
+                duck_db: faders.duck_db
+            }]
         );
     }
 }

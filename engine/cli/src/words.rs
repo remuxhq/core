@@ -834,7 +834,7 @@ fn render_events(
     gap: Option<remuxd_domain::app::events::Gap>,
     events: &[remuxd_domain::app::events::Numbered],
 ) -> String {
-    use remuxd_domain::app::events::Event;
+    use remuxd_domain::app::events::{Event, Heard};
     if gap.is_none() && events.is_empty() {
         return "nothing has happened yet".into();
     }
@@ -910,6 +910,60 @@ fn render_events(
             Event::TimerFinished { id } => format!("timer {} at zero", plain(id)),
             Event::LayerStalled { id } => format!("camera {} stopped delivering", plain(id)),
             Event::LayerFlowing { id } => format!("camera {} delivering again", plain(id)),
+            Event::SoundComplaint { source, complaint } => {
+                let what = match source {
+                    Heard::Mic => "mic",
+                    Heard::Screen => "screen sound",
+                    Heard::App => "app sound",
+                };
+                match complaint {
+                    Some(why) => format!("{what}: {}", plain(why)),
+                    None => format!("{what} fine again"),
+                }
+            }
+            Event::AudioGlitch { starved, dropped } => {
+                format!("voice glitched: {starved} holes, {dropped} dropped so far")
+            }
+            Event::Faders {
+                mic,
+                music,
+                duck_db,
+            } => format!(
+                "faders: mic {:.0}%, music {:.0}%, duck {duck_db:.0} dB",
+                mic * 100.0,
+                music * 100.0
+            ),
+            Event::Gate { .. } => "gate changed (remux audio gate)".into(),
+            Event::Monitoring { on: up } => on(*up, "speakers on", "speakers off"),
+            Event::MusicToStream { on: out } => {
+                on(*out, "music in the stream", "music off the stream")
+            }
+            Event::ScreenSound { on: true, layer } => format!(
+                "screen sound on{}",
+                layer
+                    .as_deref()
+                    .map_or_else(String::new, |id| format!(" ({})", plain(id)))
+            ),
+            Event::ScreenSound { on: false, .. } => "screen sound off".into(),
+            Event::Denoise { on: up } => on(*up, "denoise on", "denoise off"),
+            Event::Hearing { apps } if apps.is_empty() => "hearing the whole screen".into(),
+            Event::Hearing { apps } => format!(
+                "hearing only {}",
+                apps.iter()
+                    .map(|app| plain(app))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Event::AppAudio {
+                app: Some(app),
+                volume,
+            } => format!("app sound {} at {:.0}%", plain(app), volume * 100.0),
+            Event::AppAudio { app: None, .. } => "app sound off".into(),
+            Event::Mirrored { on: flipped } => {
+                on(*flipped, "self-view mirrored", "self-view not mirrored")
+            }
+            Event::Viewers { total: Some(total) } => format!("{total} watching"),
+            Event::Viewers { total: None } => "viewers unknown".into(),
         };
         format!(
             "{} #{} {what}",
@@ -3518,6 +3572,86 @@ mod reading {
              00:00:00 #8 timer clock at zero\n\
              00:00:00 #9 camera face stopped delivering\n\
              00:00:00 #10 camera face delivering again"
+        );
+    }
+
+    #[test]
+    fn what_changed_in_the_sound_and_the_room_reads_one_a_line() {
+        use remuxd_domain::app::events::{Event, Heard, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    Event::SoundComplaint {
+                        source: Heard::Mic,
+                        complaint: Some("speaks 8-bit".into()),
+                    },
+                ),
+                at(
+                    2,
+                    Event::SoundComplaint {
+                        source: Heard::Screen,
+                        complaint: None,
+                    },
+                ),
+                at(
+                    3,
+                    Event::AudioGlitch {
+                        starved: 5,
+                        dropped: 1,
+                    },
+                ),
+                at(
+                    4,
+                    Event::Faders {
+                        mic: 0.8,
+                        music: 0.85,
+                        duck_db: -18.0,
+                    },
+                ),
+                at(5, Event::Monitoring { on: true }),
+                at(6, Event::MusicToStream { on: false }),
+                at(
+                    7,
+                    Event::ScreenSound {
+                        on: true,
+                        layer: Some("desk".into()),
+                    },
+                ),
+                at(8, Event::Denoise { on: true }),
+                at(
+                    9,
+                    Event::Hearing {
+                        apps: vec!["Spotify".into(), "Brave".into()],
+                    },
+                ),
+                at(
+                    10,
+                    Event::AppAudio {
+                        app: Some("Safari".into()),
+                        volume: 1.0,
+                    },
+                ),
+                at(11, Event::Mirrored { on: true }),
+                at(12, Event::Viewers { total: Some(12) }),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 mic: speaks 8-bit\n\
+             00:00:00 #2 screen sound fine again\n\
+             00:00:00 #3 voice glitched: 5 holes, 1 dropped so far\n\
+             00:00:00 #4 faders: mic 80%, music 85%, duck -18 dB\n\
+             00:00:00 #5 speakers on\n\
+             00:00:00 #6 music off the stream\n\
+             00:00:00 #7 screen sound on (desk)\n\
+             00:00:00 #8 denoise on\n\
+             00:00:00 #9 hearing only Spotify, Brave\n\
+             00:00:00 #10 app sound Safari at 100%\n\
+             00:00:00 #11 self-view mirrored\n\
+             00:00:00 #12 12 watching"
         );
     }
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocol::Status;
 
 /// One thing that changed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
     LiveStarted,
@@ -114,6 +114,60 @@ pub enum Event {
     LayerFlowing {
         id: String,
     },
+    /// A capture of sound saying what is wrong with it, a format it does not
+    /// read, or `None` once it is over it.
+    SoundComplaint {
+        source: Heard,
+        complaint: Option<String>,
+    },
+    /// The voice had a hole (`starved`: the microphone late) or a crackle
+    /// (`dropped`: samples thrown away), as totals since the microphone
+    /// opened. On the detail ring: a bad device says it often.
+    AudioGlitch {
+        starved: u64,
+        dropped: u64,
+    },
+    Faders {
+        mic: f64,
+        music: f64,
+        duck_db: f64,
+    },
+    Gate {
+        params: crate::sound::mixer::gate::GateParams,
+    },
+    /// Hearing your own mix on the speakers.
+    Monitoring {
+        on: bool,
+    },
+    /// The music in the mix that leaves.
+    MusicToStream {
+        on: bool,
+    },
+    /// The screen's sound in the mix, and the display layer it comes from.
+    ScreenSound {
+        on: bool,
+        layer: Option<String>,
+    },
+    Denoise {
+        on: bool,
+    },
+    /// The applications heard alone in the screen's sound; empty is all.
+    Hearing {
+        apps: Vec<String>,
+    },
+    /// One application's sound on its own fader, `None` when off.
+    AppAudio {
+        app: Option<String>,
+        volume: f64,
+    },
+    /// The self-view flipped.
+    Mirrored {
+        on: bool,
+    },
+    /// How many are watching, when the platforms said.
+    Viewers {
+        total: Option<u32>,
+    },
     /// What a server said out loud: a platform that refused a title.
     Notice {
         text: String,
@@ -150,16 +204,47 @@ impl Event {
         }
     }
 
-    /// Whether it belongs to the chat, which has a ring of its own.
-    fn is_chat(&self) -> bool {
-        matches!(self, Self::Chat { .. } | Self::ChatHidden { .. })
+    /// Which ring keeps it.
+    fn ring(&self) -> Ring {
+        match self {
+            Self::Chat { .. } | Self::ChatHidden { .. } => Ring::Chat,
+            Self::AudioGlitch { .. }
+            | Self::Faders { .. }
+            | Self::Gate { .. }
+            | Self::Monitoring { .. }
+            | Self::MusicToStream { .. }
+            | Self::ScreenSound { .. }
+            | Self::Denoise { .. }
+            | Self::Hearing { .. }
+            | Self::AppAudio { .. }
+            | Self::Mirrored { .. }
+            | Self::Viewers { .. } => Ring::Detail,
+            _ => Ring::State,
+        }
     }
+}
+
+/// A capture of sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Heard {
+    Mic,
+    Screen,
+    App,
+}
+
+/// The three rings, so that what is said often never pushes out what is
+/// said once: a busy chat, a fader dragged, the viewers counted.
+enum Ring {
+    State,
+    Chat,
+    Detail,
 }
 
 /// An event as the feed keeps it: numbered from one in the order it
 /// happened, so a face that asks for what came after the last one it saw
 /// misses nothing, and stamped in seconds past the epoch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Numbered {
     pub seq: u64,
     pub at: i64,
@@ -179,7 +264,7 @@ pub struct Gap {
 
 /// What came after a number: the events still held, and the gap before
 /// them when some were not.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Since {
     pub gap: Option<Gap>,
     pub events: Vec<Numbered>,
@@ -187,13 +272,15 @@ pub struct Since {
 
 /// The last of the events, for every face, oldest first.
 ///
-/// Two rings on one count: the engine's own and the chat's. A busy room says
-/// a thousand things in an hour, and in one ring they pushed the live ending
-/// out before a face that was a little behind came back for it.
+/// Three rings on one count: the engine's own, the chat's and the detail's
+/// (faders, switches, viewers, glitches). A busy room says a thousand things
+/// in an hour, and in one ring they pushed the live ending out before a face
+/// that was a little behind came back for it.
 #[derive(Debug, Clone, Default)]
 pub struct Events {
     kept: VecDeque<Numbered>,
     chat: VecDeque<Numbered>,
+    detail: VecDeque<Numbered>,
     last: u64,
     /// The highest number no longer held, by either ring; below the first
     /// number of an engine that started after another, every one.
@@ -207,6 +294,8 @@ impl Events {
     pub const KEPT: usize = 200;
     /// How many of the chat's, as many as the chat holds.
     pub const CHAT_KEPT: usize = crate::protocol::CHAT_LINES;
+    /// How many of the detail's: a fader dragged says dozens a second.
+    pub const DETAIL_KEPT: usize = 200;
 
     /// Numbers start at `from` and only rise: an engine restarted under a
     /// face that remembers the last number it saw hands over bigger ones,
@@ -217,6 +306,7 @@ impl Events {
         Self {
             kept: VecDeque::new(),
             chat: VecDeque::new(),
+            detail: VecDeque::new(),
             last,
             lost: last,
         }
@@ -224,10 +314,10 @@ impl Events {
 
     /// Keep an event, at this many seconds past the epoch; its number.
     pub fn push(&mut self, at: i64, event: Event) -> u64 {
-        let (ring, most) = if event.is_chat() {
-            (&mut self.chat, Self::CHAT_KEPT)
-        } else {
-            (&mut self.kept, Self::KEPT)
+        let (ring, most) = match event.ring() {
+            Ring::State => (&mut self.kept, Self::KEPT),
+            Ring::Chat => (&mut self.chat, Self::CHAT_KEPT),
+            Ring::Detail => (&mut self.detail, Self::DETAIL_KEPT),
         };
         if ring.len() == most {
             if let Some(gone) = ring.pop_front() {
@@ -257,6 +347,7 @@ impl Events {
             .kept
             .iter()
             .chain(&self.chat)
+            .chain(&self.detail)
             .filter(|kept| kept.seq > seq)
             .cloned()
             .collect();
@@ -275,7 +366,7 @@ impl Events {
 /// [`between`] compares. Its own type rather than a whole [`Status`] because
 /// the engine takes one after every command that changes something and on
 /// every tick, and a status is the pipeline asked a dozen things.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Snapshot {
     pub on_air: bool,
     pub recording: bool,
@@ -295,6 +386,24 @@ pub struct Snapshot {
     pub filter: Option<String>,
     /// The timers of the active scene at 00:00.
     pub timers_done: std::collections::BTreeSet<String>,
+    pub mic_complaint: Option<String>,
+    pub screen_complaint: Option<String>,
+    pub app_complaint: Option<String>,
+    /// The voice's holes and crackles, counted since the microphone opened.
+    pub starved: u64,
+    pub dropped: u64,
+    pub faders: crate::protocol::Faders,
+    pub gate: crate::sound::mixer::gate::GateParams,
+    pub monitoring: bool,
+    pub music_to_stream: bool,
+    pub screen_sound: bool,
+    pub screen_sound_layer: Option<String>,
+    pub denoise: bool,
+    pub hearing_apps: Vec<String>,
+    pub app_audio: Option<String>,
+    pub app_audio_volume: f64,
+    pub mirrored: bool,
+    pub viewers: Option<u32>,
 }
 
 /// A layer, as far as the events follow it.
@@ -380,6 +489,23 @@ impl From<&Status> for Snapshot {
                 .collect(),
             filter: status.shader.clone(),
             timers_done: std::collections::BTreeSet::new(),
+            mic_complaint: status.hearing.complaint.clone(),
+            screen_complaint: status.hearing.screen_complaint.clone(),
+            app_complaint: status.hearing.app_complaint.clone(),
+            starved: status.hearing.starved,
+            dropped: status.hearing.dropped,
+            faders: status.faders,
+            gate: status.gate,
+            monitoring: status.monitoring,
+            music_to_stream: status.music_to_stream,
+            screen_sound: status.screen_sound,
+            screen_sound_layer: status.screen_sound_layer.clone(),
+            denoise: status.denoise,
+            hearing_apps: status.hearing_apps.clone(),
+            app_audio: status.app_audio.clone(),
+            app_audio_volume: status.app_audio_volume,
+            mirrored: status.mirrored,
+            viewers: status.viewers,
         }
     }
 }
@@ -440,10 +566,88 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
             title: after.music.clone(),
         });
     }
+    sound_between(before, after, &mut events);
     if before.app != after.app {
         events.push(Event::AppReachable { on: after.app });
     }
+    if before.viewers != after.viewers {
+        events.push(Event::Viewers {
+            total: after.viewers,
+        });
+    }
     events
+}
+
+/// The captures' complaints, the voice's glitches, the switches and faders.
+fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
+    for (source, was, now) in [
+        (Heard::Mic, &before.mic_complaint, &after.mic_complaint),
+        (
+            Heard::Screen,
+            &before.screen_complaint,
+            &after.screen_complaint,
+        ),
+        (Heard::App, &before.app_complaint, &after.app_complaint),
+    ] {
+        if was != now {
+            events.push(Event::SoundComplaint {
+                source,
+                complaint: now.clone(),
+            });
+        }
+    }
+    // Rising only: a microphone opened again counts from zero.
+    if after.starved > before.starved || after.dropped > before.dropped {
+        events.push(Event::AudioGlitch {
+            starved: after.starved,
+            dropped: after.dropped,
+        });
+    }
+    if before.faders != after.faders {
+        events.push(Event::Faders {
+            mic: after.faders.mic,
+            music: after.faders.music,
+            duck_db: after.faders.duck_db,
+        });
+    }
+    if before.gate != after.gate {
+        events.push(Event::Gate { params: after.gate });
+    }
+    if before.monitoring != after.monitoring {
+        events.push(Event::Monitoring {
+            on: after.monitoring,
+        });
+    }
+    if before.music_to_stream != after.music_to_stream {
+        events.push(Event::MusicToStream {
+            on: after.music_to_stream,
+        });
+    }
+    if (before.screen_sound, &before.screen_sound_layer)
+        != (after.screen_sound, &after.screen_sound_layer)
+    {
+        events.push(Event::ScreenSound {
+            on: after.screen_sound,
+            layer: after.screen_sound_layer.clone(),
+        });
+    }
+    if before.denoise != after.denoise {
+        events.push(Event::Denoise { on: after.denoise });
+    }
+    if before.hearing_apps != after.hearing_apps {
+        events.push(Event::Hearing {
+            apps: after.hearing_apps.clone(),
+        });
+    }
+    if (&before.app_audio, before.app_audio_volume) != (&after.app_audio, after.app_audio_volume) {
+        events.push(Event::AppAudio {
+            app: after.app_audio.clone(),
+            volume: after.app_audio_volume,
+        });
+    }
+    if before.mirrored != after.mirrored {
+        events.push(Event::Mirrored { on: after.mirrored });
+    }
 }
 
 /// The active scene's layers and filters, from `before` to `after`.
@@ -648,13 +852,16 @@ mod tests {
 
     #[test]
     fn a_field_nobody_follows_changing_says_nothing() {
-        // The meters and the viewers move all the time; a feed of them would
-        // be the only thing anybody saw in it.
-        let after = Status {
-            viewers: Some(12),
-            mirrored: true,
+        // The meters move twelve times a second: a feed of them would be the
+        // only thing anybody saw in it. `levels -f` is where they are read.
+        let mut after = Status {
+            version: "9.9.9".into(),
+            motor: "obs 99".into(),
             ..status()
         };
+        after.hearing.level_db = -12.0;
+        after.hearing.peak_db = -3.0;
+        after.mixing.level_db = -9.0;
         assert_eq!(changed(&status(), &after), vec![]);
     }
 
@@ -1131,5 +1338,108 @@ mod tests {
         assert_eq!(between(&done(&["clock"]), &done(&["clock"])), vec![]);
         // Restarted or stopped: nothing to say until it reaches zero again.
         assert_eq!(between(&done(&["clock"]), &done(&[])), vec![]);
+    }
+
+    #[test]
+    fn a_capture_complaining_and_getting_over_it_is_an_event() {
+        let complaining = Status {
+            hearing: crate::protocol::Hearing {
+                complaint: Some("the microphone speaks 8-bit".into()),
+                ..Default::default()
+            },
+            ..status()
+        };
+        assert_eq!(
+            changed(&status(), &complaining),
+            vec![Event::SoundComplaint {
+                source: Heard::Mic,
+                complaint: Some("the microphone speaks 8-bit".into())
+            }]
+        );
+        assert_eq!(
+            changed(&complaining, &status()),
+            vec![Event::SoundComplaint {
+                source: Heard::Mic,
+                complaint: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_hole_or_a_crackle_in_the_voice_is_an_event_with_the_totals() {
+        let heard = |starved, dropped| Snapshot {
+            starved,
+            dropped,
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            between(&heard(3, 0), &heard(5, 0)),
+            vec![Event::AudioGlitch {
+                starved: 5,
+                dropped: 0
+            }]
+        );
+        assert_eq!(between(&heard(5, 0), &heard(5, 0)), vec![]);
+        // A new microphone counts from zero: nothing went wrong.
+        assert_eq!(between(&heard(5, 2), &heard(0, 0)), vec![]);
+    }
+
+    #[test]
+    fn the_sound_switches_faders_and_viewers_are_events() {
+        let before = status();
+        let mut after = status();
+        after.faders.mic = 0.8;
+        after.gate.full = 0.2;
+        after.monitoring = true;
+        after.music_to_stream = !before.music_to_stream;
+        after.screen_sound = true;
+        after.screen_sound_layer = Some("desk".into());
+        after.denoise = true;
+        after.hearing_apps = vec!["Spotify".into()];
+        after.app_audio = Some("Safari".into());
+        after.mirrored = true;
+        after.viewers = Some(12);
+        let said = changed(&before, &after);
+        assert_eq!(
+            said,
+            vec![
+                Event::Faders {
+                    mic: 0.8,
+                    music: before.faders.music,
+                    duck_db: before.faders.duck_db
+                },
+                Event::Gate { params: after.gate },
+                Event::Monitoring { on: true },
+                Event::MusicToStream {
+                    on: after.music_to_stream
+                },
+                Event::ScreenSound {
+                    on: true,
+                    layer: Some("desk".into())
+                },
+                Event::Denoise { on: true },
+                Event::Hearing {
+                    apps: vec!["Spotify".into()]
+                },
+                Event::AppAudio {
+                    app: Some("Safari".into()),
+                    volume: before.app_audio_volume
+                },
+                Event::Mirrored { on: true },
+                Event::Viewers { total: Some(12) },
+            ]
+        );
+    }
+
+    #[test]
+    fn what_changes_all_the_time_never_pushes_the_live_out() {
+        let mut events = Events::default();
+        events.push(1, Event::LiveStarted);
+        for n in 0..Events::DETAIL_KEPT as u32 + 50 {
+            events.push(2, Event::Viewers { total: Some(n) });
+        }
+        let held = events.since(0).events;
+        assert_eq!(held.first().map(|e| &e.event), Some(&Event::LiveStarted));
+        assert_eq!(held.len(), 1 + Events::DETAIL_KEPT);
     }
 }
