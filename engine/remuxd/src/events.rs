@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use remuxd_domain::app::events::{Events, Since};
+use remuxd_domain::app::events::{Event, Events, Since};
 
 use crate::bell::Bell;
 
@@ -41,6 +41,21 @@ impl Followed {
         }
     }
 
+    /// Keep what happened outside the engine, now, and wake every follower:
+    /// a line of chat off the wire.
+    pub fn tell(&self, events: impl IntoIterator<Item = Event>) {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs() as i64);
+        {
+            let mut kept = self.bell.lock();
+            for event in events {
+                kept.push(at, event);
+            }
+        }
+        self.bell.ring();
+    }
+
     /// What came after `since`, waiting up to `patience` for it when there
     /// is nothing yet.
     pub fn after(&self, since: u64, patience: Duration) -> Since {
@@ -54,7 +69,7 @@ impl Followed {
 
     /// How many followers are asleep on the bell.
     #[cfg(test)]
-    fn asleep(&self) -> usize {
+    pub(crate) fn asleep(&self) -> usize {
         self.bell.asleep()
     }
 }

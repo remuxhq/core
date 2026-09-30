@@ -263,7 +263,10 @@ mod tests {
     // holding that lock to put the line in the gap every time.
     #[test]
     fn a_line_that_lands_while_the_follower_turns_around_is_pushed_at_once() {
-        let chat = Shared::new(Arc::new(Mutex::new(Feed::starting_at(1))));
+        let chat = Shared::new(
+            Arc::new(Mutex::new(Feed::starting_at(1))),
+            Followed::starting_at(1),
+        );
         chat.feed.lock().push(said("first"));
 
         let (mine, mut theirs) = UnixStream::pair().expect("a pair");

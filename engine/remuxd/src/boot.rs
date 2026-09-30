@@ -44,14 +44,19 @@ fn started() -> u64 {
         .unwrap_or(1)
 }
 
-fn wire() -> (
+fn wire(
+    followed: &Arc<crate::events::Followed>,
+) -> (
     Arc<crate::wire::Shared>,
     Box<dyn remuxd_domain::engine::Watching>,
 ) {
     use crate::wire::{keep, App, Shared, Source};
     use remuxd_domain::air::destinations;
     use remuxd_domain::app::{chat, session};
-    let shared = Shared::new(Arc::new(Mutex::new(chat::Feed::starting_at(started()))));
+    let shared = Shared::new(
+        Arc::new(Mutex::new(chat::Feed::starting_at(started()))),
+        Arc::clone(followed),
+    );
     let watching: Box<dyn remuxd_domain::engine::Watching> = match session::read(&session::path()) {
         Some(session) => Box::new(App::new(session.base, Arc::clone(&shared))),
         None => Box::new(destinations::Local::new(destinations::path())),
@@ -86,8 +91,8 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
             std::process::exit(1);
         }
     };
-    let (wire, watching) = wire();
     let followed = crate::events::Followed::starting_at(started());
+    let (wire, watching) = wire(&followed);
     let engine = Arc::new(Mutex::new(
         Engine::with_sources(motor.sources)
             .with_pipeline(motor.pipeline)

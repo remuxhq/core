@@ -20,6 +20,9 @@ use remuxd_domain::protocol::{Destination, Found};
 use serde_json::json;
 
 use crate::bell::Bell;
+use crate::events::Followed;
+use remuxd_domain::app::events::Event;
+use remuxd_domain::protocol::ChatLine;
 
 /// What the wire has said, readable without waiting, and what waits to be
 /// said. Shared between the socket's thread, the engine and the daemon's
@@ -27,6 +30,8 @@ use crate::bell::Bell;
 pub struct Shared {
     /// The chat, rung whenever it changed, for a follower to wake on.
     pub feed: Bell<Feed>,
+    /// The events, where a line off the wire is said too.
+    events: Arc<Followed>,
     /// Whether the wire carrying the control half is up right now.
     pub connected: AtomicBool,
     pub destinations: Mutex<Vec<Destination>>,
@@ -47,9 +52,10 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(feed: Arc<Mutex<Feed>>) -> Arc<Self> {
+    pub fn new(feed: Arc<Mutex<Feed>>, events: Arc<Followed>) -> Arc<Self> {
         Arc::new(Self {
             feed: Bell::new(feed),
+            events,
             connected: AtomicBool::new(false),
             destinations: Mutex::new(Vec::new()),
             viewers: AtomicU64::new(0),
@@ -70,9 +76,17 @@ impl Shared {
     fn fold(&self, down: Down) {
         match down {
             Down::Line(line) => {
-                self.feed.lock().push_line(line);
+                let said = {
+                    let mut feed = self.feed.lock();
+                    let seq = feed.push_line(line.clone());
+                    Event::said(&ChatLine { seq, ..line })
+                };
                 self.ring();
+                self.events.tell([said]);
             }
+            // Not events: what was said before this engine opened comes
+            // again on every connect, and a bridge that dropped and came back
+            // would say it all twice to every face that follows.
             Down::History(lines) => {
                 let mut feed = self.feed.lock();
                 for line in lines {
@@ -361,5 +375,81 @@ impl remuxd_domain::engine::Watching for App {
     }
     fn notices(&mut self) -> Vec<String> {
         std::mem::take(&mut *self.shared.notices.lock().expect("notices"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Followed;
+    use remuxd_domain::app::events::Event;
+    use remuxd_domain::protocol::ChatLine;
+    use std::time::Instant;
+
+    fn said(id: &str, body: &str) -> ChatLine {
+        ChatLine {
+            seq: 0,
+            from: "ana".into(),
+            body: body.into(),
+            platform: "twitch".into(),
+            id: id.into(),
+            channel: "kartths".into(),
+        }
+    }
+
+    fn shared() -> (Arc<Shared>, Arc<Followed>) {
+        let followed = Followed::starting_at(1);
+        let shared = Shared::new(
+            Arc::new(Mutex::new(Feed::starting_at(1))),
+            Arc::clone(&followed),
+        );
+        (shared, followed)
+    }
+
+    #[test]
+    fn a_line_off_the_wire_is_an_event_with_the_chats_number() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Line(said("m1", "oi")));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0].event,
+            Event::Chat {
+                line: 1,
+                platform: "twitch".into(),
+                channel: "kartths".into(),
+                from: "ana".into(),
+                body: "oi".into(),
+                id: "m1".into(),
+            }
+        );
+    }
+
+    // What was said before the engine opened comes again on every connect:
+    // as events, a bridge that dropped and came back would say it all twice.
+    #[test]
+    fn the_history_a_wire_opens_with_is_not_an_event() {
+        let (shared, followed) = shared();
+        shared.fold(Down::History(vec![said("m0", "earlier")]));
+        assert_eq!(shared.feed.lock().since(0).len(), 1, "the chat has it");
+        assert_eq!(followed.after(0, Duration::ZERO).events, vec![]);
+    }
+
+    #[test]
+    fn a_face_following_the_events_is_woken_by_a_line() {
+        let (shared, followed) = shared();
+        let waiting = Arc::clone(&followed);
+        let began = Instant::now();
+        let follower = std::thread::spawn(move || waiting.after(0, Duration::from_secs(10)).events);
+        while followed.asleep() == 0 {
+            std::thread::yield_now();
+        }
+        shared.fold(Down::Line(said("m1", "oi")));
+        assert_eq!(follower.join().expect("the follower returns").len(), 1);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "woken by its patience, after {:?}",
+            began.elapsed()
+        );
     }
 }
