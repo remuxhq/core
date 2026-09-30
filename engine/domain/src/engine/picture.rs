@@ -2028,6 +2028,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: None,
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
@@ -2146,6 +2147,7 @@ mod tests {
             previewed: Default::default(),
             ran_out: Default::default(),
             refuse: None,
+            ducked: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))
@@ -2245,6 +2247,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: Some("macOS refused: screen recording".into()),
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(refusing));

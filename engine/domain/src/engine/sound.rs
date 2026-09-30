@@ -636,6 +636,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: None,
             scene_events: Default::default(),
+            ducked: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
