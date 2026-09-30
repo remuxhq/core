@@ -80,6 +80,17 @@ impl Events {
     /// while is told what it missed.
     pub const KEPT: usize = 200;
 
+    /// Numbers start at `from` and only rise: an engine restarted under a
+    /// face that remembers the last number it saw hands over bigger ones,
+    /// and the face is told it missed the restart. See `app::chat::Feed`.
+    #[must_use]
+    pub fn starting_at(from: u64) -> Self {
+        Self {
+            kept: VecDeque::new(),
+            last: from.max(1) - 1,
+        }
+    }
+
     /// Keep an event, at this many seconds past the epoch; its number.
     pub fn push(&mut self, at: i64, event: Event) -> u64 {
         if self.kept.len() == Self::KEPT {
@@ -404,5 +415,21 @@ mod tests {
         })
         .unwrap();
         assert_eq!(live, r#"{"seq":1,"at":1,"event":"live-started"}"#);
+    }
+
+    #[test]
+    fn a_face_that_outlived_the_engine_is_told_it_missed_the_restart() {
+        // The daemon starts the numbers at the moment it started, as the
+        // chat does, so the number a face kept from the engine before is
+        // below every one this engine gives out.
+        let mut before = Events::default();
+        before.push(10, Event::LiveStarted);
+        let kept = before.last();
+
+        let mut after = Events::starting_at(1_000);
+        assert_eq!(after.push(20, Event::LiveEnded), 1_000);
+        let told = after.since(kept);
+        assert_eq!(told.gap, Some(Gap { from: 2, to: 999 }));
+        assert_eq!(told.events.len(), 1);
     }
 }
