@@ -1254,6 +1254,11 @@ impl Engine {
         if changes.is_empty() {
             return;
         }
+        self.keep(changes);
+    }
+
+    /// Keep these events, now, in the order given.
+    fn keep(&self, changes: impl IntoIterator<Item = crate::app::events::Event>) {
         let at = now();
         let mut events = match self.events.lock() {
             Ok(events) => events,
@@ -2838,5 +2843,50 @@ mod tests {
         let mut engine = engine().with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::Mute { on: true });
         assert_eq!(said(&events), vec![Event::Muted { on: true }]);
+    }
+
+    fn a_room_with(
+        body: &str,
+    ) -> (
+        std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
+        u64,
+    ) {
+        let feed: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>> = Default::default();
+        let seq = feed.lock().expect("feed").push(crate::app::wire::Line {
+            id: "m1".into(),
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "ana".into(),
+            body: body.into(),
+        });
+        (feed, seq)
+    }
+
+    #[test]
+    fn a_line_hidden_or_deleted_is_taken_down_on_every_face_that_follows() {
+        use crate::app::events::Event;
+        for take in [|seq| Command::Hide { seq }, |seq| Command::Delete { seq }] {
+            let events = followed();
+            let (feed, seq) = a_room_with("spam");
+            let mut engine = engine()
+                .with_chat(feed)
+                .with_events(std::sync::Arc::clone(&events));
+            assert_eq!(engine.handle(take(seq)), Reply::Ok);
+            assert_eq!(said(&events), vec![Event::ChatHidden { line: seq }]);
+        }
+    }
+
+    #[test]
+    fn a_line_the_engine_no_longer_has_is_not_taken_down() {
+        let events = followed();
+        let (feed, seq) = a_room_with("spam");
+        let mut engine = engine()
+            .with_chat(feed)
+            .with_events(std::sync::Arc::clone(&events));
+        assert!(matches!(
+            engine.handle(Command::Delete { seq: seq + 40 }),
+            Reply::Error { .. }
+        ));
+        assert_eq!(said(&events), vec![]);
     }
 }

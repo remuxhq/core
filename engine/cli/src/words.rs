@@ -843,7 +843,7 @@ fn render_events(
     // knows its picture is stale.
     let missed = gap.map(|gap| {
         format!(
-            "missed #{} to #{}: remux status says where things are",
+            "some of #{} to #{} are gone: remux status says where things are",
             gap.from, gap.to
         )
     });
@@ -858,6 +858,19 @@ fn render_events(
             Event::TrackChanged { title: Some(title) } => format!("playing {}", plain(title)),
             Event::TrackChanged { title: None } => "music stopped".into(),
             Event::AppReachable { on: up } => on(*up, "app reachable", "app unreachable"),
+            Event::Chat {
+                line,
+                platform,
+                from,
+                body,
+                ..
+            } => format!(
+                "chat #{line} {} {}: {}",
+                plain(platform),
+                plain(from),
+                plain(body)
+            ),
+            Event::ChatHidden { line } => format!("chat #{line} hidden"),
         };
         format!(
             "{} #{} {what}",
@@ -3207,7 +3220,7 @@ mod reading {
         };
         assert_eq!(
             render(&reply),
-            "missed #3 to #7: remux status says where things are\n00:00:00 #8 off air"
+            "some of #3 to #7 are gone: remux status says where things are\n00:00:00 #8 off air"
         );
     }
 
@@ -3300,6 +3313,47 @@ mod reading {
         assert_eq!(
             event_lines(&refused),
             vec![r#"{"reply":"error","message":"no"}"#.to_string()]
+        );
+    }
+
+    #[test]
+    fn a_line_of_chat_in_the_events_reads_like_the_chat_stripped() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                Numbered {
+                    seq: 9,
+                    at: 0,
+                    event: Event::Chat {
+                        line: 7,
+                        platform: "twitch".into(),
+                        channel: "kartths".into(),
+                        from: "ana\u{1b}[31m".into(),
+                        body: "oi\u{1b}[2J".into(),
+                        id: "m1".into(),
+                    },
+                },
+                Numbered {
+                    seq: 10,
+                    at: 0,
+                    event: Event::ChatHidden { line: 7 },
+                },
+            ],
+        };
+        let shown = render(&reply);
+        assert_eq!(
+            shown.replace(|c: char| c.is_control() && c != '\n', ""),
+            shown,
+            "no control character reaches the terminal"
+        );
+        assert_eq!(
+            shown,
+            format!(
+                "00:00:00 #9 chat #7 twitch {}: {}\n00:00:00 #10 chat #7 hidden",
+                plain("ana\u{1b}[31m"),
+                plain("oi\u{1b}[2J")
+            )
         );
     }
 }

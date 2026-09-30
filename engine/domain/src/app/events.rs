@@ -1,12 +1,13 @@
 //! What changed in the engine, as a feed every face may follow: the live
-//! started, the scene switched, the track changed.
+//! started, the scene switched, the track changed, somebody said something.
 //!
-//! An event is the difference between two snapshots ([`between`]), taken
-//! where every change passes (`Engine::handle` and `Engine::tick`), so no
-//! verb has to remember to say it and nothing a verb forgets goes unsaid. A
-//! [`Snapshot`] holds the few fields the feed follows, which keeps anything
-//! secret out by construction. Pure; the socket that follows it is
-//! `remuxd::server`.
+//! The engine's own state is the difference between two snapshots
+//! ([`between`]), taken where every change passes (`Engine::handle` and
+//! `Engine::tick`), so no verb has to remember to say it and nothing a verb
+//! forgets goes unsaid. A [`Snapshot`] holds the few fields the feed follows,
+//! which keeps anything secret out by construction. The chat is said where it
+//! arrives, the wire, and where a line is taken off, a hide or a delete.
+//! Pure; the socket that follows it is `remuxd::server`.
 
 use std::collections::VecDeque;
 
@@ -37,6 +38,42 @@ pub enum Event {
     AppReachable {
         on: bool,
     },
+    /// Somebody said something. `line` is the chat's own number, what
+    /// `remux chat hide` and `remux chat delete` take. Text from strangers:
+    /// a face strips it before a terminal and never runs it.
+    Chat {
+        line: u64,
+        platform: String,
+        channel: String,
+        from: String,
+        body: String,
+        id: String,
+    },
+    /// A line of chat taken off every face, hidden here or deleted on its
+    /// platform: a face that shows the chat takes it down too.
+    ChatHidden {
+        line: u64,
+    },
+}
+
+impl Event {
+    /// A line of chat as the feed kept it, numbered.
+    #[must_use]
+    pub fn said(line: &crate::protocol::ChatLine) -> Self {
+        Self::Chat {
+            line: line.seq,
+            platform: line.platform.clone(),
+            channel: line.channel.clone(),
+            from: line.from.clone(),
+            body: line.body.clone(),
+            id: line.id.clone(),
+        }
+    }
+
+    /// Whether it belongs to the chat, which has a ring of its own.
+    fn is_chat(&self) -> bool {
+        matches!(self, Self::Chat { .. } | Self::ChatHidden { .. })
+    }
 }
 
 /// An event as the feed keeps it: numbered from one in the order it
@@ -50,9 +87,10 @@ pub struct Numbered {
     pub event: Event,
 }
 
-/// Events a face asked for and can no longer have: they fell out of the ring
-/// before it came back for them. Its picture of the engine is stale from
-/// `from` to `to`, both included, and a status is what makes it whole.
+/// Events a face asked for and can no longer have: they fell out of a ring
+/// before it came back for them. Some of `from` to `to`, both included, are
+/// gone (the other ring may still hold the rest, and hands them over), and a
+/// status is what makes the face whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Gap {
     pub from: u64,
@@ -68,36 +106,56 @@ pub struct Since {
 }
 
 /// The last of the events, for every face, oldest first.
+///
+/// Two rings on one count: the engine's own and the chat's. A busy room says
+/// a thousand things in an hour, and in one ring they pushed the live ending
+/// out before a face that was a little behind came back for it.
 #[derive(Debug, Clone, Default)]
 pub struct Events {
     kept: VecDeque<Numbered>,
+    chat: VecDeque<Numbered>,
     last: u64,
+    /// The highest number no longer held, by either ring; below the first
+    /// number of an engine that started after another, every one.
+    lost: u64,
 }
 
 impl Events {
-    /// How many survive, as many as the journal: a face that follows is
-    /// woken on every one and never far behind, and one that asks once in a
-    /// while is told what it missed.
+    /// How many of the engine's own survive, as many as the journal: a face
+    /// that follows is woken on every one and never far behind, and one that
+    /// asks once in a while is told what it missed.
     pub const KEPT: usize = 200;
+    /// How many of the chat's, as many as the chat holds.
+    pub const CHAT_KEPT: usize = crate::protocol::CHAT_LINES;
 
     /// Numbers start at `from` and only rise: an engine restarted under a
     /// face that remembers the last number it saw hands over bigger ones,
     /// and the face is told it missed the restart. See `app::chat::Feed`.
     #[must_use]
     pub fn starting_at(from: u64) -> Self {
+        let last = from.max(1) - 1;
         Self {
             kept: VecDeque::new(),
-            last: from.max(1) - 1,
+            chat: VecDeque::new(),
+            last,
+            lost: last,
         }
     }
 
     /// Keep an event, at this many seconds past the epoch; its number.
     pub fn push(&mut self, at: i64, event: Event) -> u64 {
-        if self.kept.len() == Self::KEPT {
-            let _ = self.kept.pop_front();
+        let (ring, most) = if event.is_chat() {
+            (&mut self.chat, Self::CHAT_KEPT)
+        } else {
+            (&mut self.kept, Self::KEPT)
+        };
+        if ring.len() == most {
+            if let Some(gone) = ring.pop_front() {
+                self.lost = self.lost.max(gone.seq);
+            }
         }
         self.last += 1;
-        self.kept.push_back(Numbered {
+        ring.push_back(Numbered {
             seq: self.last,
             at,
             event,
@@ -111,20 +169,19 @@ impl Events {
         if seq >= self.last {
             return Since::default();
         }
-        let oldest = self.kept.front().map_or(self.last, |kept| kept.seq);
-        let gap = (seq > 0 && seq + 1 < oldest).then(|| Gap {
+        let gap = (seq > 0 && seq < self.lost).then_some(Gap {
             from: seq + 1,
-            to: oldest - 1,
+            to: self.lost,
         });
-        Since {
-            gap,
-            events: self
-                .kept
-                .iter()
-                .filter(|kept| kept.seq > seq)
-                .cloned()
-                .collect(),
-        }
+        let mut events: Vec<Numbered> = self
+            .kept
+            .iter()
+            .chain(&self.chat)
+            .filter(|kept| kept.seq > seq)
+            .cloned()
+            .collect();
+        events.sort_by_key(|kept| kept.seq);
+        Since { gap, events }
     }
 
     /// The number of the newest event, zero before the first.
@@ -136,8 +193,8 @@ impl Events {
 
 /// The part of the engine's state the feed follows, and nothing else: what
 /// [`between`] compares. Its own type rather than a whole [`Status`] because
-/// the engine takes one on either side of every command, twelve a second
-/// from a panel's meter, and a status is the pipeline asked a dozen things.
+/// the engine takes one after every command that changes something and on
+/// every tick, and a status is the pipeline asked a dozen things.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Snapshot {
     pub on_air: bool,
@@ -431,5 +488,111 @@ mod tests {
         let told = after.since(kept);
         assert_eq!(told.gap, Some(Gap { from: 2, to: 999 }));
         assert_eq!(told.events.len(), 1);
+    }
+
+    fn chat(n: u64) -> Event {
+        Event::Chat {
+            line: n,
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "ana".into(),
+            body: format!("line {n}"),
+            id: format!("m{n}"),
+        }
+    }
+
+    #[test]
+    fn a_chat_line_reads_as_one_flat_object_with_its_own_number() {
+        let line = serde_json::to_string(&Numbered {
+            seq: 9,
+            at: 1,
+            event: Event::Chat {
+                line: 7,
+                platform: "twitch".into(),
+                channel: "kartths".into(),
+                from: "ana".into(),
+                body: "oi".into(),
+                id: "m1".into(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"{"seq":9,"at":1,"event":"chat","line":7,"platform":"twitch","channel":"kartths","from":"ana","body":"oi","id":"m1"}"#
+        );
+        let hidden = serde_json::to_string(&Numbered {
+            seq: 10,
+            at: 1,
+            event: Event::ChatHidden { line: 7 },
+        })
+        .unwrap();
+        assert_eq!(
+            hidden,
+            r#"{"seq":10,"at":1,"event":"chat-hidden","line":7}"#
+        );
+    }
+
+    #[test]
+    fn a_line_of_chat_is_its_own_line_whatever_a_stranger_typed() {
+        let said = crate::protocol::ChatLine {
+            seq: 7,
+            from: "ana".into(),
+            body: "oi".into(),
+            platform: "twitch".into(),
+            id: "m1".into(),
+            channel: "kartths".into(),
+        };
+        assert_eq!(
+            Event::said(&said),
+            Event::Chat {
+                line: 7,
+                platform: "twitch".into(),
+                channel: "kartths".into(),
+                from: "ana".into(),
+                body: "oi".into(),
+                id: "m1".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_busy_chat_never_pushes_the_live_out() {
+        let mut events = Events::default();
+        events.push(1, Event::LiveStarted);
+        for n in 0..Events::CHAT_KEPT as u64 + 50 {
+            events.push(2, chat(n));
+        }
+        let held = events.since(0).events;
+        assert_eq!(held.first().map(|e| &e.event), Some(&Event::LiveStarted));
+        assert_eq!(held.len(), 1 + Events::CHAT_KEPT);
+        assert!(
+            held.windows(2).all(|pair| pair[0].seq < pair[1].seq),
+            "one order, by number, whichever ring an event sits in"
+        );
+    }
+
+    #[test]
+    fn the_two_rings_come_out_as_one_order() {
+        let mut events = Events::default();
+        events.push(1, Event::LiveStarted);
+        events.push(2, chat(1));
+        events.push(3, switched("code"));
+        events.push(4, Event::ChatHidden { line: 1 });
+        let order: Vec<u64> = events.since(1).events.iter().map(|e| e.seq).collect();
+        assert_eq!(order, [2, 3, 4]);
+    }
+
+    #[test]
+    fn a_face_behind_the_chat_ring_is_told_though_the_live_is_still_held() {
+        let mut events = Events::default();
+        for n in 0..Events::CHAT_KEPT as u64 + 5 {
+            events.push(1, chat(n));
+        }
+        events.push(2, Event::LiveEnded);
+        // Chat 1 to 5 fell out; a face that saw 2 missed 3 to 5.
+        let after = events.since(2);
+        assert_eq!(after.gap, Some(Gap { from: 3, to: 5 }));
+        assert_eq!(after.events.first().map(|e| e.seq), Some(6));
+        assert_eq!(events.since(5).gap, None);
     }
 }

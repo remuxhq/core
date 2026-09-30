@@ -71,16 +71,22 @@ impl Engine {
         }
     }
 
+    /// Off every face, and off every face that follows the events too.
     pub(super) fn hide(&mut self, seq: u64) -> Reply {
         self.chat.lock().expect("chat").hide(seq);
+        self.keep([crate::app::events::Event::ChatHidden { line: seq }]);
         Reply::Ok
     }
 
     /// Off every face here at once, and a delete down the wire for the
     /// platform. A line the engine no longer has cannot be deleted from here.
     pub(super) fn delete_chat(&mut self, seq: u64) -> Reply {
-        match self.chat.lock().expect("chat").delete(seq) {
-            Ok(()) => Reply::Ok,
+        let deleted = self.chat.lock().expect("chat").delete(seq);
+        match deleted {
+            Ok(()) => {
+                self.keep([crate::app::events::Event::ChatHidden { line: seq }]);
+                Reply::Ok
+            }
             Err(message) => Reply::Error { message },
         }
     }
