@@ -9,9 +9,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 
+use remuxd_domain::app::events::Since;
 use remuxd_domain::engine::Engine;
 use remuxd_domain::protocol::{decode, encode, Command, Reply};
 
+use crate::events::Followed;
 use crate::wire::Shared;
 
 /// Where the socket lives when nobody says otherwise. Inside the app's own
@@ -57,15 +59,17 @@ pub fn serve(
     listener: UnixListener,
     engine: Arc<Mutex<Engine>>,
     chat: Arc<Shared>,
+    followed: Arc<Followed>,
     quit: mpsc::Sender<()>,
 ) {
     for incoming in listener.incoming() {
         let Ok(stream) = incoming else { continue };
         let engine = Arc::clone(&engine);
         let chat = Arc::clone(&chat);
+        let followed = Arc::clone(&followed);
         let quit = quit.clone();
         std::thread::spawn(move || {
-            if converse(stream, &engine, chat) {
+            if converse(stream, &engine, chat, &followed) {
                 let _ = quit.send(());
             }
         });
@@ -101,8 +105,36 @@ fn follow(out: &mut UnixStream, chat: &Shared, mut since: u64) {
     }
 }
 
+/// `events --follow`: after the one reply, whatever happens next is pushed
+/// as a reply of its own, until the client hangs up. Woken by the engine
+/// keeping an event, never by a clock.
+fn follow_events(out: &mut UnixStream, followed: &Followed, mut since: u64) {
+    loop {
+        // A second's patience only so a client that hung up is noticed even
+        // when nothing happens.
+        let Since { gap, events } = followed.after(since, std::time::Duration::from_secs(1));
+        if let Some(to) = events.last().map(|e| e.seq).or(gap.map(|gap| gap.to)) {
+            since = to;
+            if out
+                .write_all(encode(&Reply::Events { gap, events }).as_bytes())
+                .is_err()
+            {
+                return;
+            }
+        }
+        if out.write_all(b"").is_err() {
+            return;
+        }
+    }
+}
+
 /// One client, until it hangs up. Returns whether it asked the engine to quit.
-fn converse(stream: UnixStream, engine: &Mutex<Engine>, chat: Arc<Shared>) -> bool {
+fn converse(
+    stream: UnixStream,
+    engine: &Mutex<Engine>,
+    chat: Arc<Shared>,
+    followed: &Followed,
+) -> bool {
     let Ok(mut out) = stream.try_clone() else {
         return false;
     };
@@ -125,7 +157,9 @@ fn converse(stream: UnixStream, engine: &Mutex<Engine>, chat: Arc<Shared>) -> bo
                     // every client after it.
                     Err(poisoned) => poisoned.into_inner(),
                 };
+                let before = followed.last();
                 let reply = engine.handle(command);
+                followed.ring_after(before);
                 if engine.quitting() {
                     remuxd_domain::log::note("quitting: a client asked");
                     let _ = out.write_all(encode(&reply).as_bytes());
@@ -147,6 +181,22 @@ fn converse(stream: UnixStream, engine: &Mutex<Engine>, chat: Arc<Shared>) -> bo
                 _ => 0,
             };
             follow(&mut out, &chat, since);
+            return false;
+        }
+        if let Ok(Command::Events {
+            since,
+            follow: true,
+        }) = decode(&line)
+        {
+            let since = match &reply {
+                Reply::Events { gap, events } => events
+                    .last()
+                    .map(|e| e.seq)
+                    .or(gap.map(|gap| gap.to))
+                    .unwrap_or(since),
+                _ => since,
+            };
+            follow_events(&mut out, followed, since);
             return false;
         }
         if worth_keeping {

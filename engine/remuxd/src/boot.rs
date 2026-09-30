@@ -35,6 +35,15 @@ fn recordings() -> Option<String> {
 /// (`remux chat --url`) takes the chat and nothing else. The feed starts
 /// numbering at the clock so a restart never hands a face a number below one
 /// it has.
+/// Milliseconds past the epoch, where the chat's and the events' numbers
+/// start: an engine restarted under a face hands over bigger ones.
+fn started() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .unwrap_or(1)
+}
+
 fn wire() -> (
     Arc<crate::wire::Shared>,
     Box<dyn remuxd_domain::engine::Watching>,
@@ -42,11 +51,7 @@ fn wire() -> (
     use crate::wire::{keep, App, Shared, Source};
     use remuxd_domain::air::destinations;
     use remuxd_domain::app::{chat, session};
-    let started = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis() as u64)
-        .unwrap_or(1);
-    let shared = Shared::new(Arc::new(Mutex::new(chat::Feed::starting_at(started))));
+    let shared = Shared::new(Arc::new(Mutex::new(chat::Feed::starting_at(started()))));
     let watching: Box<dyn remuxd_domain::engine::Watching> = match session::read(&session::path()) {
         Some(session) => Box::new(App::new(session.base, Arc::clone(&shared))),
         None => Box::new(destinations::Local::new(destinations::path())),
@@ -82,6 +87,7 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
         }
     };
     let (wire, watching) = wire();
+    let followed = crate::events::Followed::starting_at(started());
     let engine = Arc::new(Mutex::new(
         Engine::with_sources(motor.sources)
             .with_pipeline(motor.pipeline)
@@ -91,7 +97,8 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
             .with_recordings(recordings())
             .with_history(Some(remuxd_domain::air::history::path()))
             .with_app(watching)
-            .with_chat(Arc::clone(&wire.feed)),
+            .with_chat(Arc::clone(&wire.feed))
+            .with_events(Arc::clone(&followed.events)),
     ));
 
     // A heartbeat, for the one thing no client asks for: a track ending. Four
@@ -100,10 +107,13 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
     let (quit, quitted) = mpsc::channel();
     let beating = Arc::clone(&engine);
     let quit_from_the_tick = quit.clone();
+    let rung_by_the_tick = Arc::clone(&followed);
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(250));
         if let Ok(mut engine) = beating.lock() {
+            let before = rung_by_the_tick.last();
             engine.tick();
+            rung_by_the_tick.ring_after(before);
             // The tick is a way out too: a face's lease running out sets
             // `quitting` with no client on the line to notice it.
             if engine.quitting() {
@@ -130,7 +140,7 @@ pub fn boot(start: impl FnOnce() -> Result<Motor, String>, park: impl FnOnce(mps
         // and the CLI both read it.
         println!("listening {}", announcing.display());
         let _ = std::io::stdout().flush();
-        crate::server::serve(listener, engine, wire, quit);
+        crate::server::serve(listener, engine, wire, followed, quit);
     });
     park(quitted);
     let _ = std::fs::remove_file(&path);

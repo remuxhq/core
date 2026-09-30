@@ -145,6 +145,15 @@ impl Client {
             .expect("the daemon answers");
         reply.trim_end().to_string()
     }
+
+    /// The next line the daemon pushes without being asked.
+    fn next(&mut self) -> String {
+        let mut line = String::new();
+        self.reader
+            .read_line(&mut line)
+            .expect("the daemon pushes a line");
+        line.trim_end().to_string()
+    }
 }
 
 /// A socket of its own per test, so the suite can run in parallel the way
@@ -333,4 +342,38 @@ fn a_second_engine_refuses_to_steal_a_socket_that_answers() {
         .connect()
         .ask(r#"{"cmd":"status"}"#)
         .starts_with(r#"{"reply":"status""#));
+}
+
+// A face follows the events on a connection of its own, and a dozen of them
+// may: the panel, a script, an agent. Each is woken by the change, never by a
+// clock, and none of them keeps the engine from answering anybody else.
+#[test]
+fn every_face_following_the_events_hears_what_changed() {
+    let daemon = Daemon::start();
+    let mut first = daemon.connect();
+    let mut second = daemon.connect();
+    for follower in [&mut first, &mut second] {
+        let told = follower.ask(r#"{"cmd":"events","follow":true}"#);
+        assert!(told.starts_with(r#"{"reply":"events""#), "got {told}");
+    }
+
+    let mut driver = daemon.connect();
+    let muted = driver.ask(r#"{"cmd":"mute","on":true}"#);
+    assert!(muted.contains(r#""muted":true"#), "got {muted}");
+
+    for follower in [&mut first, &mut second] {
+        let pushed = follower.next();
+        assert!(
+            pushed.starts_with(r#"{"reply":"events""#)
+                && pushed.contains(r#""event":"muted","on":true"#),
+            "got {pushed}"
+        );
+    }
+    // And the one after it, on the same connection, numbered after it.
+    driver.ask(r#"{"cmd":"mute","on":false}"#);
+    let pushed = first.next();
+    assert!(
+        pushed.contains(r#""event":"muted","on":false"#),
+        "got {pushed}"
+    );
 }

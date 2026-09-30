@@ -6,6 +6,7 @@
 //! behind the domain's ports; the seam is a fact of the build.
 
 pub mod boot;
+pub mod events;
 pub mod library;
 pub mod prefs;
 pub mod server;
