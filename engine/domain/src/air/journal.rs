@@ -76,12 +76,14 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::CameraShape { shape } => format!("camera shape: {shape:?}"),
         Command::LayerCamera { id, .. }
         | Command::LayerWindow { id, .. }
-        | Command::LayerScreen { id, .. } => {
+        | Command::LayerScreen { id, .. }
+        | Command::LayerImage { id, .. } => {
             format!("layer {id} added")
         }
         Command::LayerReplaceCamera { id, .. }
         | Command::LayerReplaceWindow { id, .. }
-        | Command::LayerReplaceScreen { id, .. } => format!("layer {id} source changed"),
+        | Command::LayerReplaceScreen { id, .. }
+        | Command::LayerReplaceImage { id, .. } => format!("layer {id} source changed"),
         Command::LayerVisible { id, on } => {
             format!("layer {id} {}", if *on { "shown" } else { "hidden" })
         }
@@ -201,6 +203,8 @@ fn verb(command: &Command) -> &'static str {
         | Command::LayerReplaceScreen { .. }
         | Command::LayerReplaceWindow { .. }
         | Command::LayerReplaceCamera { .. }
+        | Command::LayerImage { .. }
+        | Command::LayerReplaceImage { .. }
         | Command::LayerVisible { .. }
         | Command::LayerRemove { .. }
         | Command::LayerMove { .. }

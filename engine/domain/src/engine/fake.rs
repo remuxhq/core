@@ -253,11 +253,13 @@ impl Picture for Wrote {
                         .lock()
                         .unwrap()
                         .push(Some(layer.source.handle.clone())),
+                    crate::picture::layers::Kind::Image => {}
                 }
                 Ok(match layer.source.kind {
                     crate::picture::layers::Kind::Camera => (1280, 720),
                     crate::picture::layers::Kind::Window => (853, 479),
                     crate::picture::layers::Kind::Screen => (1920, 1080),
+                    crate::picture::layers::Kind::Image => (640, 480),
                 })
             },
             Err,

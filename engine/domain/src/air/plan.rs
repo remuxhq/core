@@ -146,6 +146,7 @@ fn picture(status: &Status) -> String {
                         crate::picture::layers::Kind::Screen => "screen",
                         crate::picture::layers::Kind::Window => "window",
                         crate::picture::layers::Kind::Camera => "camera",
+                        crate::picture::layers::Kind::Image => "image",
                     };
                     format!("{id} ({kind} {})", layer.source.name)
                 });

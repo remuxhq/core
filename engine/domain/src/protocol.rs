@@ -137,6 +137,11 @@ pub enum Command {
         id: String,
         query: String,
     },
+    /// Add a picture file, by its absolute path.
+    LayerImage {
+        id: String,
+        path: String,
+    },
     /// Replace the source of this layer without changing its ID or order.
     LayerReplaceScreen {
         id: String,
@@ -149,6 +154,10 @@ pub enum Command {
     LayerReplaceCamera {
         id: String,
         device: String,
+    },
+    LayerReplaceImage {
+        id: String,
+        path: String,
     },
     /// Hide/show the layer's video without closing its capture.
     LayerVisible {
@@ -1183,6 +1192,13 @@ mod tests {
                 query: "tmux".into()
             }),
             "{\"cmd\":\"window\",\"query\":\"tmux\"}\n"
+        );
+        assert_eq!(
+            encode(&Command::LayerImage {
+                id: "logo".into(),
+                path: "/tmp/logo.png".into()
+            }),
+            "{\"cmd\":\"layer-image\",\"id\":\"logo\",\"path\":\"/tmp/logo.png\"}\n"
         );
         assert_eq!(
             encode(&Command::CameraPosition {

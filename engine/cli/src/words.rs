@@ -640,6 +640,12 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
     {
         return parse_scene_element(words);
     }
+    // The engine runs in a directory of its own: the file is named from here.
+    let image = |file: &[String]| -> Result<String, String> {
+        std::path::absolute(file.join(" "))
+            .map(|path| path.display().to_string())
+            .map_err(|e| format!("image: {e}"))
+    };
     match words {
         [mirror, name, on] if mirror == "mirror" => Ok(Command::LayerMirror { id: id(name)?, on: on_or(on)? }),
         [sound, name, setting @ ..] if sound == "screen-sound" && setting.len() <= 1 => Ok(Command::LayerScreenSound {
@@ -649,13 +655,19 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             id: id(name)?,
             display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
         }),
+        [set, kind, name, file @ ..] if set == "set" && kind == "image" && !file.is_empty() => Ok(Command::LayerReplaceImage {
+            id: id(name)?, path: image(file)?,
+        }),
+        [add, kind, name, file @ ..] if add == "add" && kind == "image" && !file.is_empty() => Ok(Command::LayerImage {
+            id: id(name)?, path: image(file)?,
+        }),
         [set, kind, name, query @ ..] if set == "set" && !query.is_empty() => {
             let id = id(name)?;
             let query = query.join(" ");
             match kind.as_str() {
                 "camera" => Ok(Command::LayerReplaceCamera { id, device: query }),
                 "window" => Ok(Command::LayerReplaceWindow { id, query }),
-                _ => Err("layer set expects screen, camera or window".into()),
+                _ => Err("layer set expects screen, camera, window or image".into()),
             }
         }
         [add, kind, name, display] if add == "add" && kind == "screen" => Ok(Command::LayerScreen {
@@ -668,7 +680,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             match kind.as_str() {
                 "camera" => Ok(Command::LayerCamera { id, device: query }),
                 "window" => Ok(Command::LayerWindow { id, query }),
-                _ => Err("layer add expects screen, camera or window".into()),
+                _ => Err("layer add expects screen, camera, window or image".into()),
             }
         }
         [crop, name, off] if crop == "crop" && off == "off" => Ok(Command::LayerCrop { id: id(name)?, crop: None }),
@@ -715,7 +727,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             transform.validate()?;
             Ok(Command::LayerTransform { id: id(name)?, transform })
         }
-        _ => Err("layer: add|set screen|camera|window <id> <display-id|name>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
+        _ => Err("layer: add|set screen|camera|window|image <id> <display-id|name|file>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
     }
 }
 
@@ -1213,6 +1225,26 @@ mod tests {
                 device: "FaceTime".into()
             })
         );
+        assert_eq!(
+            super::parse(&words("scene layer add image logo /tmp/my logo.png")),
+            Ok(remuxd_domain::protocol::Command::LayerImage {
+                id: "logo".into(),
+                path: "/tmp/my logo.png".into(),
+            })
+        );
+        assert_eq!(
+            super::parse(&words("scene layer set image logo badge.png")),
+            Ok(remuxd_domain::protocol::Command::LayerReplaceImage {
+                id: "logo".into(),
+                path: std::env::current_dir()
+                    .unwrap()
+                    .join("badge.png")
+                    .display()
+                    .to_string(),
+            }),
+            "the engine does not run where the file was named"
+        );
+        assert!(super::parse(&words("scene layer add image logo")).is_err());
         assert!(super::parse(&words("scene layer set screen desktop nope")).is_err());
         assert_eq!(
             super::parse(&words("scene layer hide desktop")),

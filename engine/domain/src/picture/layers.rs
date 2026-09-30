@@ -7,6 +7,8 @@ pub enum Kind {
     Camera,
     Window,
     Screen,
+    /// A picture file, drawn as it is: nothing to capture, nothing to hear.
+    Image,
 }
 
 /// A selected device or window: `handle` is its stable device ID or the
@@ -36,6 +38,40 @@ impl Source {
                 _ => self.handle == other.handle,
             }
     }
+}
+
+/// What libobs's image source reads, by extension.
+pub const IMAGE_FORMATS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tga", "psd"];
+
+/// A picture file as a layer's source. The path is the handle, whole: the
+/// engine runs as a service in a directory of its own, so a relative path
+/// would name another file there, or none.
+pub fn image(path: &str) -> Result<Source, String> {
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() {
+        return Err(format!("{} is not an absolute path", path.display()));
+    }
+    let known = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_FORMATS.contains(&e.to_lowercase().as_str()));
+    if !known {
+        return Err(format!(
+            "{} is not an image: {} are",
+            path.display(),
+            IMAGE_FORMATS.join(", ")
+        ));
+    }
+    Ok(Source {
+        kind: Kind::Image,
+        handle: path.display().to_string(),
+        name: path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        width: 0,
+        height: 0,
+        stable: None,
+    })
 }
 
 /// A rectangle in the source's native pixels, measured from its top-left.
@@ -281,6 +317,24 @@ mod tests {
         assert!(!desk("1", Some("A")).same_capture(&desk("1", Some("B"))));
         assert!(desk("1", None).same_capture(&desk("1", Some("A"))));
         assert!(!desk("1", None).same_capture(&desk("2", None)));
+    }
+
+    #[test]
+    fn an_image_is_its_whole_path_named_by_its_file() {
+        let source = image("/Users/me/Pictures/Logo.PNG").unwrap();
+        assert_eq!(source.kind, Kind::Image);
+        assert_eq!(source.handle, "/Users/me/Pictures/Logo.PNG");
+        assert_eq!(source.name, "Logo.PNG");
+    }
+
+    #[test]
+    fn an_image_the_engine_could_not_find_or_read_is_refused() {
+        assert!(
+            image("logo.png").is_err(),
+            "relative to what the service runs in"
+        );
+        assert!(image("/tmp/notes.txt").is_err());
+        assert!(image("/tmp/logo").is_err());
     }
 
     #[test]

@@ -326,7 +326,7 @@ const SCENE: &[Action] = &[
         name: "layer",
         target: "layer",
         prefix: &[],
-        args: "add|set screen|camera|window <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]",
+        args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]",
         summary: "Compose captures, text and timers in one back-to-front order.",
     },
     Action {

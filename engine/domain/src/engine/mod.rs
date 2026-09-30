@@ -118,6 +118,7 @@ impl Picture for NoPipeline {
             crate::picture::layers::Kind::Screen => (1920, 1080),
             crate::picture::layers::Kind::Camera => (1280, 720),
             crate::picture::layers::Kind::Window => (853, 479),
+            crate::picture::layers::Kind::Image => (640, 480),
         })
     }
     fn show(
@@ -708,6 +709,10 @@ impl Engine {
                     id: saved.id.clone(),
                     query: saved.source.name.clone(),
                 }),
+                crate::picture::layers::Kind::Image => Some(Command::LayerImage {
+                    id: saved.id.clone(),
+                    path: saved.source.handle.clone(),
+                }),
             };
             if let Some(command) = reply {
                 if matches!(self.handle(command), Reply::Status(_)) {
@@ -1210,6 +1215,8 @@ impl Engine {
             Command::LayerReplaceScreen { id, display } => self.layer_replace_screen(id, display),
             Command::LayerReplaceWindow { id, query } => self.layer_replace_window(id, query),
             Command::LayerReplaceCamera { id, device } => self.layer_replace_camera(id, device),
+            Command::LayerImage { id, path } => self.layer_image(id, path),
+            Command::LayerReplaceImage { id, path } => self.layer_replace_image(id, path),
             Command::LayerVisible { id, on } => self.layer_visible(id, on),
             Command::LayerRemove { id } => self.layer_remove(id),
             Command::LayerMove { id, index } => self.layer_move(id, index),
