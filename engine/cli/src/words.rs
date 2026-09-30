@@ -474,6 +474,22 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Delete { seq })
         }
+        // `remux chat say --to main valeu!`: a line in that chat, or in every
+        // chat the wire reads; whoever serves the wire posts it.
+        "say" => {
+            let (channel, words) = match rest {
+                [to, rest @ ..] if to == "--to" => {
+                    let (channel, words) = rest.split_first().ok_or("--to names a chat")?;
+                    (Some(channel.clone()), words)
+                }
+                words => (None, words),
+            };
+            let body = words.join(" ");
+            if body.is_empty() {
+                return Err("say needs the words, as in `remux chat say valeu!`".into());
+            }
+            Ok(Command::Say { body, channel })
+        }
         // `remux destination category 2 509670 Science & Technology`: file that destination's live.
         "category" => {
             let adapter = rest
@@ -1748,6 +1764,8 @@ mod tests {
             ("chat read", "chat"),
             ("chat hide 42", "hide 42"),
             ("chat delete 42", "delete 42"),
+            ("chat say valeu pessoal", "say valeu pessoal"),
+            ("chat say --to main oi", "say --to main oi"),
         ] {
             assert_eq!(typed(grouped), said(old), "{grouped}");
         }
@@ -1777,6 +1795,7 @@ mod tests {
             "title 2 words",
             "hide 42",
             "delete 42",
+            "say oi",
             "screen 3",
             "camera off",
             "shot",
@@ -2028,6 +2047,23 @@ mod tests {
         );
         assert!(said("category 2 509670").is_err(), "a category has a name");
         assert_eq!(said("delete 42"), Ok(Command::Delete { seq: 42 }));
+        assert_eq!(
+            said("say valeu, pessoal!"),
+            Ok(Command::Say {
+                body: "valeu, pessoal!".into(),
+                channel: None
+            })
+        );
+        assert_eq!(
+            said("say --to main oi"),
+            Ok(Command::Say {
+                body: "oi".into(),
+                channel: Some("main".into())
+            })
+        );
+        assert!(said("say").is_err(), "a line has words");
+        assert!(said("say --to main").is_err(), "a line has words");
+        assert!(said("say --to").is_err(), "--to names a chat");
         assert_eq!(said("disconnect 2"), Ok(Command::Disconnect { adapter: 2 }));
         assert_eq!(
             said("sandbox 2"),

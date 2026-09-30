@@ -413,6 +413,16 @@ pub enum Command {
     Delete {
         seq: u64,
     },
+    /// Say one line in the platform's chat, as the broadcaster: up the wire,
+    /// and whoever serves it posts it (`byo/bridge.py` with the account's
+    /// token). `channel` is a line's own (`ChatLine::channel`); none is every
+    /// chat the wire reads. The engine keeps no copy: the platform hands the
+    /// line back down like anybody's, and a face reads it there.
+    Say {
+        body: String,
+        #[serde(default)]
+        channel: Option<String>,
+    },
     /// The config changed where the chat comes from (`remux chat --url`):
     /// the daemon drops its wire and opens what the config says now. A live
     /// is untouched.
@@ -1357,6 +1367,25 @@ mod tests {
                 events: vec![],
             }),
             "{\"reply\":\"events\",\"gap\":{\"from\":3,\"to\":4},\"events\":[]}\n"
+        );
+    }
+
+    #[test]
+    fn a_line_is_said_in_these_bytes() {
+        assert_eq!(
+            encode(&Command::Say {
+                body: "oi".into(),
+                channel: Some("main".into())
+            }),
+            "{\"cmd\":\"say\",\"body\":\"oi\",\"channel\":\"main\"}\n"
+        );
+        assert_eq!(
+            decode("{\"cmd\":\"say\",\"body\":\"oi\"}"),
+            Ok(Command::Say {
+                body: "oi".into(),
+                channel: None
+            }),
+            "no channel is every chat"
         );
     }
 }

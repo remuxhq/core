@@ -21,6 +21,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; the panel uses its bytes. For one layer use `remux scene layer shot <id>`." },
     Topic { names: &["grants"], args: "", summary: "Show screen, camera and microphone permissions.", note: "" },
     Topic { names: &["chat"], args: "[-f|--follow|follow]", summary: "Read chat from the armed destinations.", note: "Follow keeps reading new lines until interrupted; `remux chat hide <n>` hides a line locally. `remux chat url ws://…` reads the chat from a wire of your own; `-` forgets it." },
+    Topic { names: &["say"], args: "[--to <chat>] <words>", summary: "Say a line in the platform's chat, as the broadcaster.", note: "Whoever serves the chat wire posts it (`remux-chat` with the account's token, see docs/byo.md); the line comes back in `remux chat read` and `remux events` like anybody's. `--to` takes a line's channel, as `remux events` shows it; without it, every chat the wire reads. Needs the wire up. One line: no newlines." },
     Topic { names: &["hide"], args: "<line number>", summary: "Hide a chat line on remux's faces.", note: "Does not delete it on the platform; use `remux chat delete <n>` for that." },
     Topic { names: &["sources"], args: "", summary: "List screens, windows, applications, cameras, microphones and music genres.", note: "This does not list destinations: `remux destination list` does." },
     Topic { names: &["live"], args: "[--confirm <plan>|--yes]", summary: "Go live on every armed destination.", note: "Alone, it prints the plan and asks a person at a terminal. A script runs `remux plan --json`, then `remux live --confirm <fingerprint>`, which goes only if nothing moved since the plan. Arm destinations first with `remux destination arm <id>`." },
@@ -138,6 +139,7 @@ The sound: muted, track-changed (title null when the music stopped),
 sound-complaint (mic, screen or app; null once over it).
 The room: app-reachable, chat (line, platform, channel, from, body, id),
 chat-hidden (line); line is what remux chat hide and delete take.
+remux chat say [--to <channel>] <words> answers; the line comes back as chat.
 Detail, said often and kept apart so it never pushes the rest out:
 audio-glitch, faders, gate, monitoring, music-to-stream, screen-sound,
 denoise, hearing, app-audio, mirrored, viewers.
@@ -325,7 +327,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 61, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 62, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
@@ -453,6 +455,7 @@ mod tests {
             "remux live",
             "on_air",
             "chat delete",
+            "remux chat say",
             "No video group or capture shortcuts",
             "remux scene layer move title 0",
             "remux help scene filter",

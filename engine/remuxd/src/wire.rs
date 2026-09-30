@@ -261,7 +261,7 @@ fn stay(source: &Source, shared: &Shared, generation: u64) -> Result<(), String>
         if shared.generation.load(Ordering::Relaxed) != generation {
             return Ok(());
         }
-        // The account's verbs go up the control half, the deletes up the
+        // The account's verbs go up the control half, the deletes and says up the
         // chat's: with two wires, each takes only its own.
         let mut waiting: Vec<Up> = Vec::new();
         if source.wire.control() {

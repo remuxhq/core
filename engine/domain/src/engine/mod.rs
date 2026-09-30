@@ -1452,6 +1452,7 @@ impl Engine {
             Command::Events { since, .. } => self.events(since),
             Command::Hide { seq } => self.hide(seq),
             Command::Delete { seq } => self.delete_chat(seq),
+            Command::Say { body, channel } => self.say(&body, channel),
             Command::Categorize { adapter, id, name } => self.categorize(adapter, &id, &name),
             Command::Categories { adapter, query } => self.search_categories(adapter, &query),
             Command::Grants => self.grants(),

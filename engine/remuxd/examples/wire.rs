@@ -20,7 +20,7 @@ fn main() {
             };
             socket.get_ref().set_nonblocking(true).ok();
             for n in 1.. {
-                // what the engine sends up: a delete, printed and ignored
+                // what the engine sends up: a delete, a say, printed and ignored
                 if let Ok(tungstenite::Message::Text(text)) = socket.read() {
                     eprintln!("wire: got {text}");
                 }

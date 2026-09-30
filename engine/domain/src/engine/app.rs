@@ -90,6 +90,15 @@ impl Engine {
             Err(message) => Reply::Error { message },
         }
     }
+
+    /// Up the wire to the platform's chat; the line comes back down from
+    /// there, so nothing is kept or told here.
+    pub(super) fn say(&mut self, body: &str, channel: Option<String>) -> Reply {
+        match self.chat.lock().expect("chat").say(body, channel) {
+            Ok(()) => Reply::Ok,
+            Err(message) => Reply::Error { message },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +543,41 @@ mod tests {
             ),
             "a line the engine no longer has cannot be deleted from here"
         );
+    }
+
+    // A face says a line: it goes up the wire to that chat, the engine keeps
+    // no copy (the platform hands it back), and a refusal is a sentence.
+    #[test]
+    fn a_line_said_goes_up_the_wire_to_the_chat_named() {
+        let mut told = told_engine();
+        assert_eq!(
+            told.handle(Command::Say {
+                body: "valeu!".into(),
+                channel: Some("tw".into()),
+            }),
+            Reply::Ok
+        );
+        let Reply::Chat { lines, .. } = told.handle(Command::Chat {
+            since: 0,
+            follow: false,
+        }) else {
+            panic!("chat answers with chat")
+        };
+        assert_eq!(lines.len(), 3, "no copy here: {lines:?}");
+        assert_eq!(
+            told.chat.lock().expect("chat").take_outgoing(),
+            vec![crate::app::wire::Up::Say(crate::app::wire::Say {
+                body: "valeu!".into(),
+                channel: Some("tw".into()),
+            })]
+        );
+        assert!(matches!(
+            told.handle(Command::Say {
+                body: "a\nb".into(),
+                channel: None,
+            }),
+            Reply::Error { .. }
+        ));
     }
 
     // Rewording a card re-shows it only when it is the one up: rewording the

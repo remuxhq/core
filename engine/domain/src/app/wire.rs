@@ -4,7 +4,7 @@
 //! Down, from the server: `{"line":{...}}`, `{"history":[...]}`,
 //! `{"destinations":[...]}`, `{"viewers":{...}}`, `{"categories":{...}}`,
 //! `{"notice":{...}}`. Up, from the engine: `{"open":"control"}`,
-//! `{"arm":{...}}`, `{"retitle":{...}}`, `{"delete":{...}}` and the rest of
+//! `{"arm":{...}}`, `{"retitle":{...}}`, `{"delete":{...}}`, `{"say":{...}}` and the rest of
 //! [`Up`]. The web serves it for an account (`/wire`); a chat source of
 //! one's own serves the `line` half and nothing else. The engine never knows
 //! a platform; it knows this. `docs/wire.md` is the contract.
@@ -51,6 +51,16 @@ pub struct Delete {
     pub channel: String,
 }
 
+/// A line the operator says in the platform's chat. `channel` is a line's
+/// own (`Line::channel`), the chat it goes to; none is every chat the server
+/// reads. The platform hands it back down as a `line` like anybody's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Say {
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
 /// One destination on the wire, up: by the id the server gave it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Adapter {
@@ -91,6 +101,7 @@ pub enum Up {
         query: String,
     },
     Delete(Delete),
+    Say(Say),
     /// Every twenty-five seconds; a server closes a wire that says nothing.
     Heartbeat(Value),
 }
@@ -107,7 +118,8 @@ pub enum Wire {
     /// The web's, for an account: the control half, and the chat half
     /// unless a chat wire of one's own carries it.
     Account { chat: bool },
-    /// A chat wire of one's own (`remux chat --url`): lines down, deletes up.
+    /// A chat wire of one's own (`remux chat --url`): lines down, deletes and
+    /// says up.
     Own,
 }
 
@@ -131,7 +143,7 @@ impl Wire {
         matches!(self, Wire::Account { .. })
     }
 
-    /// Whether the chat comes down it and deletes go up.
+    /// Whether the chat comes down it and deletes and says go up.
     pub fn chat(self) -> bool {
         matches!(self, Wire::Account { chat: true } | Wire::Own)
     }
@@ -470,6 +482,23 @@ mod tests {
             })
             .encode(),
             r#"{"delete":{"id":"m1","channel":"main"}}"#
+        );
+        assert_eq!(
+            Up::Say(Say {
+                body: "oi".into(),
+                channel: Some("main".into())
+            })
+            .encode(),
+            r#"{"say":{"body":"oi","channel":"main"}}"#
+        );
+        assert_eq!(
+            Up::Say(Say {
+                body: "oi".into(),
+                channel: None
+            })
+            .encode(),
+            r#"{"say":{"body":"oi"}}"#,
+            "no channel is every chat the server reads"
         );
     }
 

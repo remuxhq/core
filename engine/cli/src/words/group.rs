@@ -284,6 +284,13 @@ const CHAT: &[Action] = &[
         args: "<line number>",
         summary: "Delete a line on its platform.",
     },
+    Action {
+        name: "say",
+        target: "say",
+        prefix: &[],
+        args: "[--to <chat>] <words>",
+        summary: "Say a line in the platform's chat.",
+    },
 ];
 
 const SCENE: &[Action] = &[
