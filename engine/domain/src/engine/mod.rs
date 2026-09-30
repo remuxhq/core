@@ -417,6 +417,25 @@ impl From<Available> for Devices {
 /// The one place this crate reads a clock. It is `std`, not a dependency, and
 /// what it feeds is a timestamp on a log line: everything that decides
 /// anything takes its time as an argument and stays testable.
+/// Whether a command only reads. A read cannot move what the events follow,
+/// so no snapshot is taken after it: a panel's meter asks twelve times a
+/// second. One misfiled here costs a quarter of a second, not an event: the
+/// tick compares with what was seen last.
+fn only_reads(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Status
+            | Command::Levels
+            | Command::Devices
+            | Command::Plan
+            | Command::Shot { .. }
+            | Command::LayerShot { .. }
+            | Command::Grants
+            | Command::Chat { .. }
+            | Command::Events { .. }
+    )
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -445,6 +464,9 @@ pub struct Engine {
     /// daemon's socket, which hands it out without taking the engine's lock:
     /// a face that reads slowly must never hold up a command.
     events: std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>,
+    /// What the events saw last. `None` until the engine first does
+    /// anything, since a motor and an app are given after construction.
+    seen: Option<crate::app::events::Snapshot>,
     /// Where the picture goes when somebody presses Go live.
     ///
     /// It carries a credential, so the engine takes it from whoever started it
@@ -498,6 +520,7 @@ impl Engine {
             watching: Box::new(NoApp),
             chat: Default::default(),
             events: Default::default(),
+            seen: None,
             pipeline: Box::new(NoPipeline),
             library: Box::new(NoLibrary),
             playing: None,
@@ -1114,13 +1137,13 @@ impl Engine {
     /// It answers nothing. Whatever it changed is on the next status, which
     /// every face is already reading.
     pub fn tick(&mut self) {
-        let before = self.snapshot();
+        self.seen();
         self.ticked();
-        self.changed(&before);
+        self.notice();
     }
 
-    /// The tick's own work, between the two snapshots the events are taken
-    /// from; it returns early, and an early return must not skip them.
+    /// The tick's own work, before the events are taken; it returns early,
+    /// and an early return must not skip them.
     fn ticked(&mut self) {
         // The watching lease, counted down here because this is the one
         // thing that runs without a face asking. See `Command::Watching`.
@@ -1173,18 +1196,21 @@ impl Engine {
     /// missing from the forty-first. What is worth saying is
     /// [`crate::air::journal::said`], which is pure.
     pub fn handle(&mut self, command: Command) -> Reply {
-        let before = self.snapshot();
+        self.seen();
+        let reads = only_reads(&command);
         let reply = self.decide(command.clone());
         if let Some(line) = crate::air::journal::said(&command, &reply) {
             self.journal.note(now(), line);
         }
-        self.changed(&before);
+        if !reads {
+            self.notice();
+        }
         reply
     }
 
     /// What the events follow, as it is now. Built from the engine's own
     /// state and not from [`Self::reported`], which asks the pipeline a
-    /// dozen things and runs on either side of every command.
+    /// dozen things.
     fn snapshot(&self) -> crate::app::events::Snapshot {
         crate::app::events::Snapshot {
             on_air: self.status.on_air,
@@ -1205,9 +1231,26 @@ impl Engine {
         Reply::Events { gap, events }
     }
 
-    /// Keep what changed since `before` as events.
-    fn changed(&self, before: &crate::app::events::Snapshot) {
-        let changes = crate::app::events::between(before, &self.snapshot());
+    /// The first snapshot, before the first thing the engine ever does, so
+    /// that thing is an event like any other. Once.
+    fn seen(&mut self) {
+        if self.seen.is_none() {
+            self.seen = Some(self.snapshot());
+        }
+    }
+
+    /// Keep what changed since the last snapshot as events.
+    ///
+    /// Compared with what was seen last rather than with a snapshot taken
+    /// just before the command: a read takes none, and whatever changed
+    /// under one, or with no command at all, is still an event at the next
+    /// tick instead of lost between two snapshots that both have it.
+    fn notice(&mut self) {
+        let now_seen = self.snapshot();
+        let Some(before) = self.seen.replace(now_seen.clone()) else {
+            return;
+        };
+        let changes = crate::app::events::between(&before, &now_seen);
         if changes.is_empty() {
             return;
         }
@@ -2699,5 +2742,101 @@ mod tests {
             events.iter().map(|e| (e.seq, &e.event)).collect::<Vec<_>>(),
             [(2, &Event::LiveEnded)]
         );
+    }
+
+    /// An app whose reachability the test turns, and that counts how often
+    /// the engine asked: the one question a snapshot puts to a port.
+    #[derive(Clone, Default)]
+    struct Counted {
+        up: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Watching for Counted {
+        fn reachable(&self) -> bool {
+            use std::sync::atomic::Ordering;
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.up.load(Ordering::SeqCst)
+        }
+        fn destinations(&self) -> Vec<Destination> {
+            Vec::new()
+        }
+        fn viewers(&self) -> Option<u32> {
+            None
+        }
+        fn arm(&self, _: i64, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn sandbox(&self, _: i64, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn retitle(&self, _: i64, _: Option<&str>, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn announce(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn categorize(&self, _: i64, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn search_categories(&self, _: i64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    // A panel's meter asks twelve times a second; a snapshot on either side
+    // of each would be two dozen looks a second at what cannot have moved,
+    // and a field that costs something to look at (a file, the motor) would
+    // cost it that many times.
+    #[test]
+    fn a_read_looks_at_nothing_the_events_follow() {
+        use std::sync::atomic::Ordering;
+        let app = Counted::default();
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(followed());
+        engine.tick();
+        app.asked.store(0, Ordering::SeqCst);
+        for _ in 0..12 {
+            engine.handle(Command::Levels);
+            engine.handle(Command::Events {
+                since: 0,
+                follow: false,
+            });
+        }
+        assert_eq!(app.asked.load(Ordering::SeqCst), 0);
+    }
+
+    // Whatever changed with no command to say so, or under one that was
+    // taken for a read, is an event on the next tick, a quarter of a second
+    // at most: compared with what was seen last, never lost.
+    #[test]
+    fn what_changed_under_a_read_is_an_event_on_the_next_tick() {
+        use crate::app::events::Event;
+        use std::sync::atomic::Ordering;
+        let events = followed();
+        let app = Counted::default();
+        app.up.store(true, Ordering::SeqCst);
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        engine.tick();
+        app.up.store(false, Ordering::SeqCst);
+        engine.handle(Command::Levels);
+        assert_eq!(said(&events), vec![]);
+        engine.tick();
+        assert_eq!(said(&events), vec![Event::AppReachable { on: false }]);
+    }
+
+    #[test]
+    fn the_first_command_the_engine_ever_runs_is_an_event_too() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Mute { on: true });
+        assert_eq!(said(&events), vec![Event::Muted { on: true }]);
     }
 }
