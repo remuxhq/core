@@ -2604,6 +2604,20 @@ pub fn show(reply: &Reply, view: &View, format: Format, ink: Ink, now: i64) -> S
 }
 
 /// One line of text as a JSON string, for a stream of lines.
+/// What `events -f --json` prints for one reply: one object a line, which
+/// is what a `while read` or an agent wants, never a list to unwrap. The gap
+/// first, as `{"gap":…}`, since it came before the events after it; a reply
+/// with nothing in it, nothing. The wire keeps the reply whole.
+pub fn event_lines(reply: &Reply) -> Vec<String> {
+    let Reply::Events { gap, events } = reply else {
+        return vec![json(reply)];
+    };
+    gap.map(|gap| json(&serde_json::json!({ "gap": gap })))
+        .into_iter()
+        .chain(events.iter().map(json))
+        .collect()
+}
+
 pub fn json_line(line: &str) -> String {
     json(&line)
 }
@@ -3238,6 +3252,54 @@ mod reading {
         assert_eq!(
             asked("events now"),
             Err("events takes -f, --follow or follow".into())
+        );
+    }
+
+    #[test]
+    fn followed_events_go_out_one_object_a_line_the_gap_first() {
+        use remuxd_domain::app::events::{Event, Gap, Numbered};
+        let reply = Reply::Events {
+            gap: Some(Gap { from: 3, to: 7 }),
+            events: vec![
+                Numbered {
+                    seq: 8,
+                    at: 100,
+                    event: Event::LiveEnded,
+                },
+                Numbered {
+                    seq: 9,
+                    at: 100,
+                    event: Event::Muted { on: true },
+                },
+            ],
+        };
+        assert_eq!(
+            event_lines(&reply),
+            vec![
+                r#"{"gap":{"from":3,"to":7}}"#.to_string(),
+                r#"{"seq":8,"at":100,"event":"live-ended"}"#.to_string(),
+                r#"{"seq":9,"at":100,"event":"muted","on":true}"#.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_followed_prints_nothing() {
+        let quiet = Reply::Events {
+            gap: None,
+            events: vec![],
+        };
+        assert_eq!(event_lines(&quiet), Vec::<String>::new());
+    }
+
+    #[test]
+    fn anything_else_the_engine_says_while_followed_is_its_own_line() {
+        let refused = Reply::Error {
+            message: "no".into(),
+        };
+        assert_eq!(
+            event_lines(&refused),
+            vec![r#"{"reply":"error","message":"no"}"#.to_string()]
         );
     }
 }

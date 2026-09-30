@@ -65,7 +65,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["health"], args: "", summary: "Say what stands in the way of a live, one line each.", note: "Exit 1 when anything does." },
     Topic { names: &["wait"], args: "on-air|off-air|picture|recording|not-recording|live <id|name> [--for <seconds>]", summary: "Wait until the engine is so.", note: "Thirty seconds unless --for says otherwise; exit 1 when it runs out." },
     Topic { names: &["history"], args: "", summary: "Every live on record, newest first.", note: "" },
-    Topic { names: &["events"], args: "[-f|--follow|follow]", summary: "What changed: the live, the recording, the scene, the mic, the music, the app.", note: "One a line, numbered, with the time. Follow keeps the connection and prints each one as it happens, until interrupted; with --json, one reply per line. A line saying what was missed means the engine moved on without you: read `remux status`." },
+    Topic { names: &["events"], args: "[-f|--follow|follow]", summary: "What changed: the live, the recording, the scene, the mic, the music, the app.", note: "One a line, numbered, with the time. Follow keeps the connection and prints each one as it happens, until interrupted; with --json, one event per line, and `{\"gap\":…}` for what was missed. A line saying what was missed means the engine moved on without you: read `remux status`." },
     Topic { names: &["log"], args: "[-f]", summary: "The engine's journal, newest last.", note: "" },
     Topic { names: &["login"], args: "[--url <web>]", summary: "Sign in to the web with a code typed there.", note: "The token is kept in ~/.config/remux/session.json; restart the engine to use it." },
     Topic { names: &["logout"], args: "", summary: "Forget the web session.", note: "" },
@@ -279,7 +279,7 @@ pub fn usage() -> String {
             .expect("top-level help topic");
         text.push_str(&format!("  {:<18} {}\n", name, topic.summary));
     }
-    text.push_str("\nUse `remux help <group>` or `remux help <group> <command>` for details.\n`remux guide` is the local operating guide for agents.\n`--json` works before or after any command; replies (including errors) use the socket's JSON shape, help uses a `help` field, and chat follow emits one object per line.\nDestination IDs are in `remux destination list`, not in `remux sources`.");
+    text.push_str("\nUse `remux help <group>` or `remux help <group> <command>` for details.\n`remux guide` is the local operating guide for agents.\n`--json` works before or after any command; replies (including errors) use the socket's JSON shape, help uses a `help` field, and chat and events follow emit one object per line.\nDestination IDs are in `remux destination list`, not in `remux sources`.");
     text
 }
 

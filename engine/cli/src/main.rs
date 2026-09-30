@@ -561,6 +561,11 @@ fn follow_the_events(path: &std::path::Path, format: Format) -> ! {
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { break };
         match decode_reply(&line) {
+            Ok(reply) if format == Format::Json => {
+                for line in cli::event_lines(&reply) {
+                    println!("{line}");
+                }
+            }
             Ok(reply) => println!(
                 "{}",
                 cli::show(&reply, &View::Reply, format, Ink::Plain, now())
