@@ -10,6 +10,7 @@ chat half for themselves.
 
 ```json
 {"line":{"id":"m1","platform":"twitch","channel":"main","from":"ana","body":"hi"}}
+{"event":{"type":"sub","id":"u1","platform":"twitch","channel":"main","from":"ana","body":"six months!","badges":["member"],"reply":"","months":6,"tier":"1000"}}
 {"history":[{"id":"m0","from":"bob","body":"earlier"}]}
 {"destinations":[{"id":6,"name":"Youtube","platform":"youtube","status":"off","armed":true,"sandbox":true,"connected":true,"title":"teste"}]}
 {"viewers":{"total":12,"answered":true,"peak":40}}
@@ -23,6 +24,28 @@ chat half for themselves.
 `channel` is the destination's name. A frame the engine does not know is
 dropped; a row with less in it is read with defaults. The shapes are in
 `remux schema` under `wire_up` and `wire_line`.
+
+An `event` is what happened in a chat beyond a line, flat, keyed by `type`,
+with its own fields beside `id`, `platform`, `channel`, `from` and `body` (what
+was written with it), `badges` (broadcaster, moderator, vip, member, verified,
+first) and `reply` (the id it answers):
+
+| type | fields |
+|---|---|
+| `sub` | `months`, `tier` |
+| `gift` | `count`, `tier`, `to` (empty for a community gift) |
+| `tip` | `amount` as shown, `currency`, `micros` (millionths of it; bits count as a currency) |
+| `raid` | `viewers` |
+| `follow` | |
+| `deleted` | `target`, the id of the message taken down |
+| `banned` | `user`, `seconds` (0 is for good) |
+| `cleared` | |
+| `custom` | `name` (`<platform>.<what>`), `fields` (strings) |
+
+A chat message is a `line`, never an event; a tip's message comes as a line
+and as its event, with one id. The engine says each as `chat-event` in `remux
+events`, and `deleted`, `banned` and `cleared` take what they name off every
+face. An event of a type it does not know is dropped.
 
 ## Up, engine to server
 
@@ -68,7 +91,7 @@ The engine reconnects on its own, three seconds after a drop. `remux chat
 ## A chat bridge of your own
 
 Read the platform's chat however you like and write one `line` object per
-message to every connected client; act on `delete` and `say` or ignore them,
+message, and an `event` for the rest you can see, to every connected client; act on `delete` and `say` or ignore them,
 and tell the engine what went wrong with a `notice`. That is the
 whole of it: without an account the destinations are the engine's own file,
 and the control half is not used. The smallest bridge is

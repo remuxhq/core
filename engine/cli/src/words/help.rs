@@ -139,6 +139,9 @@ The sound: muted, track-changed (title null when the music stopped),
 sound-complaint (mic, screen or app; null once over it).
 The room: app-reachable, chat (line, platform, channel, from, body, id),
 chat-hidden (line); line is what remux chat hide and delete take.
+chat-event is the rest a bridge says, by type: sub, gift, tip (micros to add
+up), raid, follow, deleted, banned, cleared, custom (a platform's own, named
+<platform>.<what>); deleted, banned and cleared also hide what they took down.
 remux chat say [--to <channel>] <words> answers; the line comes back as chat.
 Detail, said often and kept apart so it never pushes the rest out:
 audio-glitch, faders, gate, monitoring, music-to-stream, screen-sound,
@@ -427,6 +430,7 @@ mod tests {
             "one event per line",
             "live-started",
             "chat-hidden",
+            "chat-event",
             "{\"gap\"",
             "wait for an event, not a time",
             "destination-ended",

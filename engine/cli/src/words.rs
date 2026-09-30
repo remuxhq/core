@@ -887,6 +887,7 @@ fn render_events(
                 plain(body)
             ),
             Event::ChatHidden { line } => format!("chat #{line} hidden"),
+            Event::ChatEvent { happened } => happening(happened),
             Event::DestinationLive { id } => format!("destination {id} on air"),
             Event::DestinationEnded { id, why: None } => format!("destination {id} off air"),
             Event::DestinationEnded { id, why: Some(why) } => {
@@ -1260,6 +1261,41 @@ fn render_devices(devices: &Devices) -> String {
 /// left standing as words nobody typed: a CSI to its final byte, an OSC to
 /// its BEL or ST, any other to the character after it. Every other control
 /// but the tab is dropped, the 8-bit C1 controls with them.
+/// A bridge's event, one line: the platform, who, what happened, and what they
+/// wrote with it. Every word from the wire is a stranger's and goes through
+/// `plain`.
+fn happening(happened: &remuxd_domain::app::wire::Happening) -> String {
+    use remuxd_domain::app::wire::What;
+    let who = plain(&happened.from);
+    let what = match &happened.what {
+        What::Chat => format!("{who} said"),
+        What::Sub { months, tier } => {
+            format!("{who} subscribed, {months} months, {}", plain(tier))
+        }
+        What::Gift { count, tier, to } if to.is_empty() => {
+            format!("{who} gave {count} subs, {}", plain(tier))
+        }
+        What::Gift { tier, to, .. } => {
+            format!("{who} gave a sub to {}, {}", plain(to), plain(tier))
+        }
+        What::Tip { amount, .. } => format!("{who} tipped {}", plain(amount)),
+        What::Raid { viewers } => format!("{who} raided with {viewers}"),
+        What::Follow => format!("{who} followed"),
+        What::Deleted { target } => format!("message {} deleted", plain(target)),
+        What::Banned { user, seconds: 0 } => format!("{} banned", plain(user)),
+        What::Banned { user, seconds } => {
+            format!("{} timed out for {seconds} s", plain(user))
+        }
+        What::Cleared => "chat cleared".into(),
+        What::Custom { name, .. } => format!("{} {who}", plain(name)),
+    };
+    let said = match (&happened.what, happened.body.is_empty()) {
+        (What::Deleted { .. }, _) | (_, true) => String::new(),
+        _ => format!(": {}", plain(&happened.body)),
+    };
+    format!("{} {what}{said}", plain(&happened.platform))
+}
+
 fn plain(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -3483,6 +3519,132 @@ mod reading {
                 plain("ana\u{1b}[31m"),
                 plain("oi\u{1b}[2J")
             )
+        );
+    }
+
+    // A bridge's events read one a line: who, what, and what they wrote, with
+    // a stranger's words stripped like a line's.
+    #[test]
+    fn a_chat_event_reads_as_what_happened_in_the_chat() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        use remuxd_domain::app::wire::{Happening, What};
+        let at = |seq, what, from: &str, body: &str| Numbered {
+            seq,
+            at: 0,
+            event: Event::ChatEvent {
+                happened: Happening {
+                    what,
+                    id: "e1".into(),
+                    platform: "twitch".into(),
+                    channel: "kartths".into(),
+                    from: from.into(),
+                    body: body.into(),
+                    badges: Vec::new(),
+                    reply: String::new(),
+                },
+            },
+        };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    What::Sub {
+                        months: 6,
+                        tier: "1000".into(),
+                    },
+                    "Ana",
+                    "six months!",
+                ),
+                at(
+                    2,
+                    What::Gift {
+                        count: 5,
+                        tier: "1000".into(),
+                        to: String::new(),
+                    },
+                    "Bob",
+                    "",
+                ),
+                at(
+                    3,
+                    What::Gift {
+                        count: 1,
+                        tier: "1000".into(),
+                        to: "Cid".into(),
+                    },
+                    "Bob",
+                    "",
+                ),
+                at(
+                    4,
+                    What::Tip {
+                        amount: "$5.00".into(),
+                        currency: "USD".into(),
+                        micros: 5_000_000,
+                    },
+                    "Ana",
+                    "gg\u{1b}[2J",
+                ),
+                at(5, What::Raid { viewers: 42 }, "Cid", ""),
+                at(6, What::Follow, "Dan", ""),
+                at(
+                    7,
+                    What::Deleted {
+                        target: "m1".into(),
+                    },
+                    "",
+                    "",
+                ),
+                at(
+                    8,
+                    What::Banned {
+                        user: "troll".into(),
+                        seconds: 600,
+                    },
+                    "",
+                    "",
+                ),
+                at(
+                    9,
+                    What::Banned {
+                        user: "troll".into(),
+                        seconds: 0,
+                    },
+                    "",
+                    "",
+                ),
+                at(10, What::Cleared, "", ""),
+                at(
+                    11,
+                    What::Custom {
+                        name: "twitch.announcement".into(),
+                        fields: Default::default(),
+                    },
+                    "Cid",
+                    "hello all",
+                ),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            [
+                "00:00:00 #1 twitch Ana subscribed, 6 months, 1000: six months!",
+                "00:00:00 #2 twitch Bob gave 5 subs, 1000",
+                "00:00:00 #3 twitch Bob gave a sub to Cid, 1000",
+                &format!(
+                    "00:00:00 #4 twitch Ana tipped $5.00: {}",
+                    plain("gg\u{1b}[2J")
+                ),
+                "00:00:00 #5 twitch Cid raided with 42",
+                "00:00:00 #6 twitch Dan followed",
+                "00:00:00 #7 twitch message m1 deleted",
+                "00:00:00 #8 twitch troll timed out for 600 s",
+                "00:00:00 #9 twitch troll banned",
+                "00:00:00 #10 twitch chat cleared",
+                "00:00:00 #11 twitch twitch.announcement Cid: hello all",
+            ]
+            .join("\n")
         );
     }
 

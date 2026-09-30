@@ -1,7 +1,7 @@
 //! The wire: what the engine and whoever serves it say to each other, over
 //! one WebSocket, one JSON object per text frame, keyed by what it is.
 //!
-//! Down, from the server: `{"line":{...}}`, `{"history":[...]}`,
+//! Down, from the server: `{"line":{...}}`, `{"event":{...}}`, `{"history":[...]}`,
 //! `{"destinations":[...]}`, `{"viewers":{...}}`, `{"categories":{...}}`,
 //! `{"notice":{...}}`. Up, from the engine: `{"open":"control"}`,
 //! `{"arm":{...}}`, `{"retitle":{...}}`, `{"delete":{...}}`, `{"say":{...}}` and the rest of
@@ -12,6 +12,8 @@
 //! Reading is lenient on purpose: a frame the engine does not know is
 //! dropped, a row with less in it than expected is read with defaults, and
 //! nothing here trusts a server to be well-behaved.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -42,6 +44,94 @@ impl From<Line> for ChatLine {
             channel: line.channel,
         }
     }
+}
+
+/// Something that happened in a platform's chat beyond a line: who, where, what
+/// they wrote with it (a resub's message, a Super Chat's comment), and `what`,
+/// flat beside the rest and keyed by `type`. `id` is the platform's own; the
+/// line that carries a tip's message has the same one. `badges` say who `from`
+/// is in words every platform shares (broadcaster, moderator, vip, member,
+/// verified, first); `reply` is the id of the message it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Happening {
+    #[serde(flatten)]
+    pub what: What,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub badges: Vec<String>,
+    #[serde(default)]
+    pub reply: String,
+}
+
+/// What happened, in words every platform shares, and a platform's own kind for
+/// the rest (`custom`, named `<platform>.<what>`), so a bridge says something new
+/// without this engine learning it first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum What {
+    /// A chat message: the wire carries those as lines, so one never comes
+    /// down as an event.
+    Chat,
+    /// A subscription or a membership, new or renewed.
+    Sub {
+        #[serde(default)]
+        months: u32,
+        #[serde(default)]
+        tier: String,
+    },
+    /// Subscriptions or memberships given; `to` is empty for a community gift.
+    Gift {
+        #[serde(default)]
+        count: u32,
+        #[serde(default)]
+        tier: String,
+        #[serde(default)]
+        to: String,
+    },
+    /// Money, or bits: `amount` as the platform shows it, `micros` in
+    /// millionths of `currency`, to add up and rank.
+    Tip {
+        #[serde(default)]
+        amount: String,
+        #[serde(default)]
+        currency: String,
+        #[serde(default)]
+        micros: u64,
+    },
+    Raid {
+        #[serde(default)]
+        viewers: u32,
+    },
+    Follow,
+    /// A message taken down on its platform: `target` is its id.
+    Deleted {
+        #[serde(default)]
+        target: String,
+    },
+    /// A viewer banned (`seconds` 0) or timed out.
+    Banned {
+        #[serde(default)]
+        user: String,
+        #[serde(default)]
+        seconds: u32,
+    },
+    /// The whole chat cleared.
+    Cleared,
+    Custom {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        fields: BTreeMap<String, String>,
+    },
 }
 
 /// Which message to take out of the platform's chat, on which destination.
@@ -152,7 +242,7 @@ impl Wire {
     /// the account's state from the account's. A notice from either.
     pub fn carries(self, down: &Down) -> bool {
         match down {
-            Down::Line(_) | Down::History(_) => self.chat(),
+            Down::Line(_) | Down::Event(_) | Down::History(_) => self.chat(),
             Down::Notice(_) => true,
             _ => self.control(),
         }
@@ -186,6 +276,8 @@ pub fn url(base: &str, token: &str) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Down {
     Line(ChatLine),
+    /// A sub, a gift, a tip, a raid, a moderator's hand: anything but a line.
+    Event(Happening),
     /// Everything said before this engine opened, oldest first.
     History(Vec<ChatLine>),
     /// The whole list, replacing what was known.
@@ -207,6 +299,7 @@ impl Down {
         let (key, payload) = object.iter().next()?;
         match key.as_str() {
             "line" => Some(Down::Line(line(payload)?)),
+            "event" => Some(Down::Event(happening(payload)?)),
             "history" => Some(Down::History(history(payload)?)),
             "destinations" => Some(Down::Destinations(rows(payload)?)),
             "viewers" => Some(Down::Viewers(serde_json::from_value(payload.clone()).ok()?)),
@@ -235,6 +328,13 @@ fn line(payload: &Value) -> Option<ChatLine> {
         return None;
     }
     Some(said.into())
+}
+
+/// An event, unless it is one this engine cannot read or a chat message, which
+/// is a line's to carry.
+fn happening(payload: &Value) -> Option<Happening> {
+    let happened: Happening = serde_json::from_value(payload.clone()).ok()?;
+    (happened.what != What::Chat).then_some(happened)
 }
 
 /// The last `CHAT_LINES` of them, oldest first.
@@ -706,5 +806,99 @@ mod tests {
             Some(Down::Notice("! ".into())),
             "a notice nobody can read is still an alarm"
         );
+    }
+
+    // A bridge says more than lines: subs, gifts, tips, raids, and what a
+    // moderator took down. Each comes as one event, flat, keyed by its type.
+    #[test]
+    fn an_event_is_read_by_its_type_with_its_own_fields() {
+        let Some(Down::Event(sub)) = Down::read(
+            r#"{"event":{"type":"sub","id":"u1","platform":"twitch","channel":"kartths","from":"Ana","body":"six months!","badges":["member"],"reply":"","months":6,"tier":"1000"}}"#,
+        ) else {
+            panic!("no event")
+        };
+        assert_eq!(
+            sub.what,
+            What::Sub {
+                months: 6,
+                tier: "1000".into()
+            }
+        );
+        assert_eq!(
+            (sub.from.as_str(), sub.body.as_str()),
+            ("Ana", "six months!")
+        );
+        assert_eq!(sub.badges, vec!["member".to_string()]);
+        let Some(Down::Event(tip)) = read(
+            "event",
+            json!({"type": "tip", "id": "s1", "from": "Bob", "body": "gg",
+                   "amount": "$5.00", "currency": "USD", "micros": 5_000_000}),
+        ) else {
+            panic!("no tip")
+        };
+        assert_eq!(
+            tip.what,
+            What::Tip {
+                amount: "$5.00".into(),
+                currency: "USD".into(),
+                micros: 5_000_000
+            }
+        );
+        let Some(Down::Event(own)) = read(
+            "event",
+            json!({"type": "custom", "id": "w1", "name": "twitch.viewermilestone",
+                   "fields": {"category": "watch-streak", "value": "5"}}),
+        ) else {
+            panic!("no custom")
+        };
+        let What::Custom { name, fields } = own.what else {
+            panic!("not custom")
+        };
+        assert_eq!(name, "twitch.viewermilestone");
+        assert_eq!(fields.get("value").map(String::as_str), Some("5"));
+    }
+
+    #[test]
+    fn an_event_with_less_in_it_is_read_with_defaults() {
+        let Some(Down::Event(cleared)) = read("event", json!({"type": "cleared"})) else {
+            panic!("no event")
+        };
+        assert_eq!(cleared.what, What::Cleared);
+        assert!(cleared.id.is_empty() && cleared.badges.is_empty());
+        let Some(Down::Event(banned)) = read("event", json!({"type": "banned", "user": "troll"}))
+        else {
+            panic!("no ban")
+        };
+        assert_eq!(
+            banned.what,
+            What::Banned {
+                user: "troll".into(),
+                seconds: 0
+            },
+            "no seconds is for good"
+        );
+    }
+
+    #[test]
+    fn an_event_this_engine_cannot_read_is_dropped_and_chat_is_a_line() {
+        assert_eq!(read("event", json!({"type": "hype-train"})), None);
+        assert_eq!(read("event", json!({"id": "no type"})), None);
+        assert_eq!(read("event", json!("sub")), None);
+        assert_eq!(
+            read(
+                "event",
+                json!({"type": "chat", "id": "m1", "from": "a", "body": "hi"})
+            ),
+            None,
+            "a chat message comes down as a line"
+        );
+    }
+
+    #[test]
+    fn an_event_is_heard_on_the_wire_that_carries_the_chat() {
+        let event = read("event", json!({"type": "raid", "viewers": 42})).unwrap();
+        assert!(Wire::Own.carries(&event));
+        assert!(Wire::Account { chat: true }.carries(&event));
+        assert!(!Wire::Account { chat: false }.carries(&event));
     }
 }

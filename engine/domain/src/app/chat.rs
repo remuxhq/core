@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::app::wire::{Delete, Line, Say, Up};
+use crate::app::wire::{Delete, Happening, Line, Say, Up, What};
 use crate::protocol::{ChatLine, CHAT_LINES};
 
 /// The last of the chat, as the engine holds it for every face: numbered as
@@ -67,6 +67,34 @@ impl Feed {
 
     pub fn hide(&mut self, seq: u64) {
         self.hidden.insert(seq);
+    }
+
+    /// What a moderator took down on a platform, off every face here: a
+    /// deleted message by its id, a banned viewer's lines in that chat, or the
+    /// whole chat cleared. The numbers of the lines it took, for the events.
+    /// A ban matches the name without case: a platform bans by login and the
+    /// line says the display name, which differ in case and, for names in
+    /// other scripts, altogether.
+    pub fn take_down(&mut self, happened: &Happening) -> Vec<u64> {
+        let here = |line: &ChatLine| {
+            line.platform == happened.platform && line.channel == happened.channel
+        };
+        let taken: Vec<u64> = self
+            .lines
+            .iter()
+            .filter(|line| !self.hidden.contains(&line.seq))
+            .filter(|line| match &happened.what {
+                What::Deleted { target } => {
+                    line.platform == happened.platform && &line.id == target
+                }
+                What::Banned { user, .. } => here(line) && line.from.eq_ignore_ascii_case(user),
+                What::Cleared => here(line),
+                _ => false,
+            })
+            .map(|line| line.seq)
+            .collect();
+        self.hidden.extend(&taken);
+        taken
     }
 
     /// Off every face here, and a delete on the wire for the platform. A line
@@ -227,5 +255,101 @@ mod tests {
         }
         assert_eq!(feed.since(0).len(), CHAT_LINES);
         assert_eq!(feed.since(0)[0].seq, 6);
+    }
+
+    fn from(id: &str, who: &str, channel: &str) -> Line {
+        Line {
+            id: id.into(),
+            platform: "twitch".into(),
+            channel: channel.into(),
+            from: who.into(),
+            body: "words".into(),
+        }
+    }
+
+    fn moderated(what: What, channel: &str) -> Happening {
+        Happening {
+            what,
+            id: String::new(),
+            platform: "twitch".into(),
+            channel: channel.into(),
+            from: String::new(),
+            body: String::new(),
+            badges: Vec::new(),
+            reply: String::new(),
+        }
+    }
+
+    // A moderator took a message down on its platform, and every face here
+    // kept showing it.
+    #[test]
+    fn what_a_moderator_took_down_leaves_every_face() {
+        let mut feed = Feed::default();
+        feed.push(from("m1", "Ana", "main"));
+        feed.push(from("m2", "Troll", "main"));
+        feed.push(from("m3", "troll", "main"));
+        feed.push(from("m4", "Troll", "other"));
+        feed.push(from("m5", "Bob", "other"));
+        let deleted = moderated(
+            What::Deleted {
+                target: "m1".into(),
+            },
+            "main",
+        );
+        assert_eq!(feed.take_down(&deleted), vec![1]);
+        let banned = moderated(
+            What::Banned {
+                user: "troll".into(),
+                seconds: 600,
+            },
+            "main",
+        );
+        assert_eq!(
+            feed.take_down(&banned),
+            vec![2, 3],
+            "a ban takes the viewer's lines in that chat, whatever the case of the name"
+        );
+        assert_eq!(
+            feed.since(0).iter().map(|l| l.seq).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(
+            feed.take_down(&moderated(What::Cleared, "other")),
+            vec![4, 5]
+        );
+        assert!(feed.since(0).is_empty());
+        assert_eq!(
+            feed.take_down(&deleted),
+            Vec::<u64>::new(),
+            "a line already off is not taken off again"
+        );
+    }
+
+    #[test]
+    fn an_event_that_is_not_a_moderators_takes_nothing_down() {
+        let mut feed = Feed::default();
+        feed.push(from("m1", "Ana", "main"));
+        let sub = moderated(
+            What::Sub {
+                months: 1,
+                tier: "1000".into(),
+            },
+            "main",
+        );
+        assert!(feed.take_down(&sub).is_empty());
+        let elsewhere = Happening {
+            platform: "youtube".into(),
+            ..moderated(
+                What::Deleted {
+                    target: "m1".into(),
+                },
+                "main",
+            )
+        };
+        assert!(
+            feed.take_down(&elsewhere).is_empty(),
+            "an id is its platform's own"
+        );
+        assert_eq!(feed.since(0).len(), 1);
     }
 }

@@ -188,6 +188,14 @@ pub enum Event {
     ChatHidden {
         line: u64,
     },
+    /// Something happened in a platform's chat beyond a line (`docs/wire.md`):
+    /// a sub, a gift, a tip, a raid, a moderator's hand, or the platform's own
+    /// kind. Its `type` and fields are the wire's. Text from strangers, like a
+    /// line's.
+    ChatEvent {
+        #[serde(flatten)]
+        happened: crate::app::wire::Happening,
+    },
 }
 
 impl Event {
@@ -207,7 +215,7 @@ impl Event {
     /// Which ring keeps it.
     fn ring(&self) -> Ring {
         match self {
-            Self::Chat { .. } | Self::ChatHidden { .. } => Ring::Chat,
+            Self::Chat { .. } | Self::ChatHidden { .. } | Self::ChatEvent { .. } => Ring::Chat,
             Self::AudioGlitch { .. }
             | Self::Faders { .. }
             | Self::Gate { .. }
@@ -1030,6 +1038,37 @@ mod tests {
             hidden,
             r#"{"seq":10,"at":1,"event":"chat-hidden","line":7}"#
         );
+    }
+
+    // What a bridge says beyond a line reaches a face as one flat event, the
+    // wire's own type and fields beside its number, and reads back the same.
+    #[test]
+    fn a_chat_event_reads_as_one_flat_object_with_the_wires_type() {
+        let happened = crate::app::wire::Happening {
+            what: crate::app::wire::What::Sub {
+                months: 6,
+                tier: "1000".into(),
+            },
+            id: "u1".into(),
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "Ana".into(),
+            body: "six months!".into(),
+            badges: vec!["member".into()],
+            reply: String::new(),
+        };
+        let numbered = Numbered {
+            seq: 11,
+            at: 1,
+            event: Event::ChatEvent { happened },
+        };
+        let said = serde_json::to_string(&numbered).unwrap();
+        assert_eq!(
+            said,
+            r#"{"seq":11,"at":1,"event":"chat-event","type":"sub","months":6,"tier":"1000","id":"u1","platform":"twitch","channel":"kartths","from":"Ana","body":"six months!","badges":["member"],"reply":""}"#
+        );
+        assert_eq!(serde_json::from_str::<Numbered>(&said).unwrap(), numbered);
+        assert!(matches!(numbered.event.ring(), Ring::Chat));
     }
 
     #[test]

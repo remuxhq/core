@@ -84,6 +84,15 @@ impl Shared {
                 self.ring();
                 self.events.tell([said]);
             }
+            // Said as it came, and what a moderator took down on the platform
+            // (a message, a viewer's lines, the chat) leaves every face here.
+            Down::Event(happened) => {
+                let taken = self.feed.lock().take_down(&happened);
+                self.ring();
+                let hidden = taken.into_iter().map(|line| Event::ChatHidden { line });
+                self.events
+                    .tell(std::iter::once(Event::ChatEvent { happened }).chain(hidden));
+            }
             // Not events: what was said before this engine opened comes
             // again on every connect, and a bridge that dropped and came back
             // would say it all twice to every face that follows.
@@ -393,6 +402,7 @@ mod tests {
     use super::*;
     use crate::events::Followed;
     use remuxd_domain::app::events::Event;
+    use remuxd_domain::app::wire::{Happening, What};
     use remuxd_domain::protocol::ChatLine;
     use std::time::Instant;
 
@@ -432,6 +442,64 @@ mod tests {
                 body: "oi".into(),
                 id: "m1".into(),
             }
+        );
+    }
+
+    fn happened(what: What) -> Happening {
+        Happening {
+            what,
+            id: "e1".into(),
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "ana".into(),
+            body: String::new(),
+            badges: Vec::new(),
+            reply: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_event_off_the_wire_is_said_as_it_came() {
+        let (shared, followed) = shared();
+        let raid = happened(What::Raid { viewers: 42 });
+        shared.fold(Down::Event(raid.clone()));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter().map(|n| n.event.clone()).collect::<Vec<_>>(),
+            vec![Event::ChatEvent { happened: raid }]
+        );
+    }
+
+    // A moderator deleted a message on Twitch and remux kept showing it.
+    #[test]
+    fn what_a_moderator_took_down_is_said_and_leaves_every_face() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Line(said("m1", "spam")));
+        shared.fold(Down::Line(said("m2", "fine")));
+        let deleted = happened(What::Deleted {
+            target: "m1".into(),
+        });
+        shared.fold(Down::Event(deleted.clone()));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter()
+                .skip(2)
+                .map(|n| n.event.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Event::ChatEvent { happened: deleted },
+                Event::ChatHidden { line: 1 }
+            ]
+        );
+        assert_eq!(
+            shared
+                .feed
+                .lock()
+                .since(0)
+                .iter()
+                .map(|l| l.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["m2".to_string()]
         );
     }
 
