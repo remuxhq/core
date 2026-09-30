@@ -39,7 +39,7 @@ twitch = "<channel>"
 youtube = "<video id>"
 ```
 
-`remux chat --url -` turns the chat off. `remux chat delete` only reaches the bridge: deleting on the platform needs a moderator token.
+The bridge takes only the chat. With an account (`remux login`), the destinations, the title and the rest stay the account's. `remux chat --url -` turns the bridge off, back to the account's chat if you have one. `remux chat delete` only reaches the bridge: deleting on the platform needs a moderator token.
 
 ## Going live
 

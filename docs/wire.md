@@ -27,7 +27,7 @@ dropped; a row with less in it is read with defaults. The shapes are in
 ## Up, engine to server
 
 ```json
-{"open":"control"}                 once; then {"open":"chat"}
+{"open":"control"}                 once; then {"open":"chat"}, unless a bridge has the chat
 {"arm":{"adapter":6,"on":true}}
 {"sandbox":{"adapter":6,"on":true}}
 {"retitle":{"adapter":6,"title":"...","description":"..."}}   only the fields given
@@ -44,13 +44,19 @@ with a reply; an engine reads state, never acknowledgements.
 
 ## Where the engine looks
 
-1. `[chat] url` in `~/.config/remux/config.toml`, kept by `remux chat --url
-   ws://…` (0600, the URL may carry a token; `REMUX_CHAT_URL` overrides it):
-   the `line` half alone, nothing is sent up but deletes. The destinations
-   are this machine's file. `remux chat --url -` forgets it.
-2. Else the session (`remux login`): the web's wire, both halves; the
-   destinations are the account's.
-3. Else nothing: `remux chat` says `no chat wire`.
+The chat and the destinations are looked up apart.
+
+- The chat: `[chat] url` in `~/.config/remux/config.toml`, kept by `remux chat
+  --url ws://…` (0600, the URL may carry a token; `REMUX_CHAT_URL` overrides
+  it): the `line` half alone, nothing is sent up but deletes. `remux chat
+  --url -` forgets it. Else the session's wire, its `chat` half. Else nothing:
+  `remux chat` says `no chat wire`.
+- The destinations: with a session (`remux login`), the account's, over the
+  web's wire, its `control` half, whoever serves the chat. Else this machine's
+  file.
+
+With both, the engine keeps two sockets: the web's opens `control` alone and
+the chat is the bridge's.
 
 The engine reconnects on its own, three seconds after a drop. `remux chat
 --url` tells a running engine to open the new wire at once, a live untouched;

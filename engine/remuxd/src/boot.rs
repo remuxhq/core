@@ -29,12 +29,12 @@ fn recordings() -> Option<String> {
     Some(remuxd_domain::config::record_dir().display().to_string())
 }
 
-/// The wire and who is watching. With a session (`remux login`) the wire is
-/// the web's, both halves, and the web's rows are what a face sees; with a
-/// chat source of one's own (`remux chat --url`) the wire carries lines and
-/// the destinations file on this machine is what a face sees; with neither,
-/// the file alone. The feed starts numbering at the clock so a restart never
-/// hands a face a number below one it has.
+/// The wires and who is watching. With a session (`remux login`) the web's
+/// rows are what a face sees and its verbs go up the web's wire; without
+/// one, the destinations file on this machine. A chat source of one's own
+/// (`remux chat --url`) takes the chat and nothing else. The feed starts
+/// numbering at the clock so a restart never hands a face a number below one
+/// it has.
 fn wire() -> (
     Arc<crate::wire::Shared>,
     Box<dyn remuxd_domain::engine::Watching>,
@@ -47,14 +47,11 @@ fn wire() -> (
         .map(|since| since.as_millis() as u64)
         .unwrap_or(1);
     let shared = Shared::new(Arc::new(Mutex::new(chat::Feed::starting_at(started))));
-    let watching: Box<dyn remuxd_domain::engine::Watching> = match (
-        remuxd_domain::config::chat_url(),
-        session::read(&session::path()),
-    ) {
-        (None, Some(session)) => Box::new(App::new(session.base, Arc::clone(&shared))),
-        _ => Box::new(destinations::Local::new(destinations::path())),
+    let watching: Box<dyn remuxd_domain::engine::Watching> = match session::read(&session::path()) {
+        Some(session) => Box::new(App::new(session.base, Arc::clone(&shared))),
+        None => Box::new(destinations::Local::new(destinations::path())),
     };
-    if let Some(source) = Source::from_files() {
+    for source in Source::from_files() {
         keep(source, Arc::clone(&shared));
     }
     (shared, watching)
