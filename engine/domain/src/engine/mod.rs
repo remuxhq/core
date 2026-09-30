@@ -1175,7 +1175,8 @@ impl Engine {
             Command::Watching { on } => self.watch(on),
             Command::Present => self.present(),
             Command::Levels => self.levels(),
-            Command::Devices => self.devices(),
+            Command::Sources => self.sources(Reply::Sources),
+            Command::Devices => self.sources(Reply::Devices),
             Command::Quit => self.quit(),
             // the daemon acts on it beside the engine; here it is a fact
             Command::Rewire => Reply::Ok,
@@ -1424,7 +1425,9 @@ impl Engine {
         self.sound()
     }
 
-    pub(super) fn devices(&mut self) -> Reply {
+    /// What can be captured, answered as the face asked: `answer` is the
+    /// reply's name, [`Reply::Sources`] or the old [`Reply::Devices`].
+    pub(super) fn sources(&mut self, answer: fn(Devices) -> Reply) -> Reply {
         match self.sources.available() {
             Ok(available) => {
                 let mut devices: Devices = available.into();
@@ -1437,7 +1440,7 @@ impl Engine {
                         name: playlist.title,
                     })
                     .collect();
-                Reply::Devices(devices)
+                answer(devices)
             }
             // The overwhelmingly likely reason is the screen recording
             // grant, which macOS ties to a code signature, so it comes
@@ -1710,10 +1713,10 @@ mod tests {
     }
 
     #[test]
-    fn devices_come_from_whatever_is_plugged_in() {
+    fn sources_come_from_whatever_is_plugged_in() {
         let mut engine = Engine::with_sources(Box::new(ThisMachine));
-        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
-            panic!("devices answers with devices")
+        let Reply::Sources(devices) = engine.handle(Command::Sources) else {
+            panic!("sources answers with sources")
         };
         assert_eq!(devices.screens.len(), 2);
         assert_eq!(devices.screens[1].name, "VG2791R");
@@ -1723,13 +1726,24 @@ mod tests {
         assert_eq!(devices.windows[1].name, "Brave Browser — remux");
     }
 
+    // A face from before the rename asks `devices` and reads the reply it
+    // always read: the same lists, under the old name.
+    #[test]
+    fn devices_is_answered_under_its_old_name_with_the_same_lists() {
+        let mut engine = Engine::with_sources(Box::new(ThisMachine));
+        let Reply::Sources(sources) = engine.handle(Command::Sources) else {
+            panic!("sources answers with sources")
+        };
+        assert_eq!(engine.handle(Command::Devices), Reply::Devices(sources));
+    }
+
     // An empty list would read as "you have no monitors", which sends a person
     // looking at their cables instead of at System Settings.
     #[test]
     fn a_refused_grant_comes_back_as_a_sentence_not_an_empty_list() {
         let mut engine = Engine::with_sources(Box::new(Refused));
         assert_eq!(
-            engine.handle(Command::Devices),
+            engine.handle(Command::Sources),
             Reply::Error {
                 message: "macOS refused: screen recording".into()
             }
@@ -1740,8 +1754,8 @@ mod tests {
     fn an_engine_with_nothing_plugged_in_says_so_truthfully() {
         let mut engine = engine();
         assert_eq!(
-            engine.handle(Command::Devices),
-            Reply::Devices(Devices::default())
+            engine.handle(Command::Sources),
+            Reply::Sources(Devices::default())
         );
     }
 
@@ -1797,6 +1811,7 @@ mod tests {
         let (mut engine, _) = publishing_engine(None);
         for command in [
             Command::Status,
+            Command::Sources,
             Command::Devices,
             Command::Grants,
             Command::Chat {
@@ -2285,11 +2300,11 @@ mod tests {
     }
 
     #[test]
-    fn the_music_a_panel_can_offer_comes_back_with_the_devices() {
+    fn the_music_a_panel_can_offer_comes_back_with_the_sources() {
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_library(Box::new(ThreeGenres));
-        let Reply::Devices(devices) = engine.handle(Command::Devices) else {
-            panic!("devices answers with devices")
+        let Reply::Sources(devices) = engine.handle(Command::Sources) else {
+            panic!("sources answers with sources")
         };
         assert_eq!(
             devices

@@ -202,7 +202,7 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Hide { seq })
         }
-        "sources" => Ok(Command::Devices),
+        "sources" => Ok(Command::Sources),
         // `remux plan` says what live would do; `remux live --confirm <plan>`
         // does it only if that is still true. `remux live` alone asks a
         // person at a terminal, or is refused where there is nobody to ask.
@@ -768,7 +768,7 @@ pub fn render(reply: &Reply) -> String {
         Reply::Error { message } => format!("no: {message}"),
         Reply::Status(status) => render_status(status),
         Reply::Plan(plan) => render_plan(plan),
-        Reply::Devices(devices) => render_devices(devices),
+        Reply::Sources(devices) | Reply::Devices(devices) => render_devices(devices),
         // dB, because that is what the meters are marked in and what a person
         // reading this in a terminal is comparing against them.
         // The panel's meters on one line: bar and held peak for the mic, the
@@ -1532,7 +1532,7 @@ mod tests {
                 message: "refused".into(),
             },
             Reply::Status(Box::default()),
-            Reply::Devices(Devices::default()),
+            Reply::Sources(Devices::default()),
             Reply::Chat {
                 reachable: false,
                 lines: vec![],
@@ -1755,7 +1755,7 @@ mod tests {
                 name: "Lofi".into(),
             }],
         };
-        let said = render(&Reply::Devices(devices));
+        let said = render(&Reply::Sources(devices));
         assert!(said.starts_with("screens:"), "{said}");
         assert!(said.contains("VG2791R"), "{said}");
         assert!(
@@ -1804,7 +1804,7 @@ mod tests {
     #[test]
     fn the_short_ones_are_themselves() {
         assert_eq!(said("status"), Ok(Command::Status));
-        assert_eq!(typed("sources"), Ok(Command::Devices));
+        assert_eq!(typed("sources"), Ok(Command::Sources));
         assert_eq!(said("live"), Ok(Command::GoLive));
         assert_eq!(said("stop"), Ok(Command::Stop));
         assert_eq!(said("cut"), Ok(Command::HideEverything));

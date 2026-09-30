@@ -93,7 +93,11 @@ pub enum Command {
     /// window this replaces feel dead, and asking twelve times a second for
     /// everything is how you make the engine feel it.
     Levels,
-    /// Everything capturable right now: screens, windows, cameras, mics.
+    /// Everything capturable right now: screens, windows, cameras, mics,
+    /// apps, and the music's genres.
+    Sources,
+    /// [`Command::Sources`] under its old name, answered under the old name
+    /// too, for a face from before the rename.
     Devices,
 
     // ---- the two levers ---------------------------------------------------
@@ -423,6 +427,8 @@ pub enum Reply {
     /// bytes wide. It serialises exactly the same, so the wire does not know.
     Status(Box<Status>),
     Plan(crate::air::plan::Plan),
+    Sources(Devices),
+    /// The answer to [`Command::Devices`].
     Devices(Devices),
     Error {
         message: String,
@@ -1173,6 +1179,26 @@ mod tests {
     // wire format and only one of them is written in this language, so the
     // exact bytes matter and a rename that serde would happily carry across a
     // round trip has to fail here instead.
+    // What can be captured is asked as `sources`; a face from before asks
+    // `devices` and reads the reply it always read, tag and all (the 0.2
+    // CLI refuses a reply it does not know).
+    #[test]
+    fn what_can_be_captured_is_asked_as_sources_and_devices_is_still_answered() {
+        assert_eq!(encode(&Command::Sources), "{\"cmd\":\"sources\"}\n");
+        assert_eq!(decode("{\"cmd\":\"sources\"}"), Ok(Command::Sources));
+        assert_eq!(decode("{\"cmd\":\"devices\"}"), Ok(Command::Devices));
+        let lists =
+            "\"screens\":[],\"windows\":[],\"cameras\":[],\"mics\":[],\"apps\":[],\"genres\":[]";
+        assert_eq!(
+            encode(&Reply::Sources(Devices::default())),
+            format!("{{\"reply\":\"sources\",{lists}}}\n")
+        );
+        assert_eq!(
+            encode(&Reply::Devices(Devices::default())),
+            format!("{{\"reply\":\"devices\",{lists}}}\n")
+        );
+    }
+
     #[test]
     fn the_verbs_go_out_on_the_wire_under_the_names_the_cli_already_uses() {
         assert_eq!(encode(&Command::GoLive), "{\"cmd\":\"go-live\"}\n");
