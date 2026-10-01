@@ -1,0 +1,6 @@
+# What the maintainers' agents read as instructions, and what runs with this
+# repository's tokens: a change to either needs one of us.
+/AGENTS.md   @leandronsp @molvrr
+/CLAUDE.md   @leandronsp @molvrr
+/.claude/    @leandronsp @molvrr
+/.github/    @leandronsp @molvrr

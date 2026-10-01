@@ -64,9 +64,11 @@ the documentation; a measurement behind a decision goes in the comment beside it
 
 ## Commands
 
-- `make remuxd.check`: the gate, `remuxd.lint` (seam, fmt, clippy, both workspaces) then
-  `remuxd.tests` then `remuxd.cover` (domain ≥ 90%). CI calls the same targets.
-  `make remuxd.test F=name` mid-loop. `make security` the scanners.
+- `make remuxd.check`: the gate, `remuxd.lint` (seam, fmt, clippy, no OBS) then
+  `remuxd.tests` (`remuxd.unit`, no OBS, then `remuxd.integration`, the libobs motor)
+  then `remuxd.cover` (domain ≥ 90%). CI calls the same targets: lint, unit and sec on
+  every pull request, integration on a release one. `make remuxd.test F=name` mid-loop.
+  `make security` the scanners.
 - Setup is README's "Development setup", per OS, then `make setup` (macOS: `brew
   install simde`, `make obs.fetch`, and `make remuxd.identity` before running a build;
   Linux: `obs-studio libobs-dev clang`). It is the one list: a
@@ -75,12 +77,14 @@ the documentation; a measurement behind a decision goes in the comment beside it
 - `make remuxd.start` / `remuxd.run`: the engine here. `make release`,
   `release.install`, `release.uninstall`: the tarball for this machine and the install
   a person gets, from `dist/`, to try a release before it is published.
-- A release is a pull request: `docs/release.md` is the whole process and the `release`
-  skill walks it. A person names the version; it and its notes
+- A release is a pull request, cut by an owner (`.github/CODEOWNERS`) from a
+  `release/<version>` branch: `docs/release.md` is the whole process and the `release`
+  skill walks it. The owner names the version; it and its notes
   (`docs/releases/<version>.md`, what changed and why, for a person) land in one pull
-  request. Its merge, once `ci` is green on main, runs `release.yml`, which refuses a
-  version without notes, leaves one already released alone, builds every target, and
-  makes the tag and the release. Nothing else publishes.
+  request, which also runs `integration`, and the other owner approves. Its merge runs
+  `release.yml`, which builds every target, attests it, and makes the tag and the
+  release; a version like `0.3.0-rc.1` is a pre-release and never the latest. Nothing
+  else publishes.
 
 ## Conventions
 

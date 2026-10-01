@@ -1,21 +1,26 @@
 # Releasing remux
 
-A release is a pull request. A person decides to cut one and names the version, the
-`release` skill walks the steps below, and merging the pull request publishes it:
-`release.yml` runs after every green `ci` on main, and publishes the version
-`engine/cli/Cargo.toml` says unless it is already released. A red main publishes
-nothing.
+A release is a pull request, and only an owner cuts one: the people named in
+`.github/CODEOWNERS`. The owner names the version, the `release` skill walks the
+steps below and opens the pull request from a `release/<version>` branch, and the
+merge publishes it.
 
-A release is three things: every crate at the new version, the notes for people in
-`docs/releases/<version>.md`, and the published release. On that run,
-`release.yml` checks the version, builds the tarball for every target (macOS on Apple silicon,
-Linux x86_64 and aarch64), then tags the commit it built as `v<version>` and publishes
-the release with each tarball, its `.sha256`, and the notes as its body.
-`install.sh` installs the latest release by default.
+A release pull request runs more than any other. Every pull request runs `lint`,
+`unit` (macOS and Linux) and `sec`, none of which needs OBS. A `release/` branch also
+runs `integration`: the libobs motor, its clippy and its tests, and the daemon the
+socket tests spawn, on macOS against the OBS the release builds with and on Linux
+against the distribution's. `release guard` refuses it when the author is not an
+owner, the version does not move, or the notes are missing. The other owner approves,
+and the merge is the release.
 
-The workflow refuses a version whose `docs/releases/<version>.md` is missing or
-empty, and leaves one already released alone.
-That refusal is the gate: the notes are the record of why a release is what it is.
+The merge touches `engine/cli/Cargo.toml`, which runs `release.yml`: it checks the
+version and the notes, builds the tarball for every target (macOS on Apple silicon,
+Linux x86_64 and aarch64) from the commit that set the version, attests each one,
+tags that commit as `v<version>` and publishes the release with each tarball, its
+`.sha256`, `install.sh` stamped with the version, and the notes as its body. A version already released is left alone.
+`releases/latest/download/install.sh`, which the README and the site give, installs
+the latest release, which GitHub defines as the newest one that is neither a draft nor
+a pre-release; `releases/download/v<version>/install.sh` installs that version.
 
 ## 1. What changed since the last release
 
@@ -43,6 +48,21 @@ Versions only go up, and a version on main is fixed once merged, published or no
 its number and its notes are never renamed or rewritten. What comes after it is the
 next version, with notes of its own.
 
+### A pre-release
+
+For people to try a version before it is the one everybody gets, the version carries a
+pre-release part, as semver orders them: `0.3.0-beta.1` while it still changes,
+`0.3.0-rc.1` when it is meant to be the release. It goes through the same pull
+request, the same `integration` and the same notes, and `release.yml` publishes it as
+a pre-release that never becomes the latest: `install.sh` and the site keep the stable
+one. Whoever tries it asks for it by its URL:
+
+```sh
+curl -fsSL https://github.com/remuxhq/core/releases/download/v0.3.0-rc.1/install.sh | sh
+```
+
+The stable `0.3.0` that follows is a release of its own, with its own notes.
+
 ## 3. The bump
 
 Every crate in `engine/` moves to the new version together, whatever version it was
@@ -51,7 +71,7 @@ at, and so does the example in `install.sh`:
 ```sh
 new=0.1.2
 for f in engine/*/Cargo.toml; do sed -i '' "3s/^version = \".*\"/version = \"$new\"/" "$f"; done
-sed -i '' "s/instead of the latest ([0-9.]*)/instead of the latest ($new)/" install.sh
+sed -i '' "s/instead of the latest ([0-9.]*)/instead of the latest ($new)/" install.sh   # a stable version only
 (cd engine && cargo update -w --offline -q && cargo update -w --offline -q --manifest-path motor-obs/Cargo.toml)
 grep -n '^version = ' engine/*/Cargo.toml        # every line says $new
 ```
@@ -83,6 +103,8 @@ one bullet per change, and end with "Nothing changes for a person using remux."
 
 ## 5. The pull request
 
+By an owner, from a `release/` branch: anything else fails `release guard`.
+
 ```sh
 git switch -c release/$new
 make remuxd.check && make security
@@ -90,23 +112,25 @@ git add engine/*/Cargo.toml engine/Cargo.lock engine/motor-obs/Cargo.lock instal
 git commit -m "remux $new"
 git push -u origin release/$new
 gh pr create --title "remux $new" --body-file docs/releases/$new.md
-gh pr checks --watch
+gh pr checks --watch     # lint, unit, sec, integration (macos, linux), release guard
 ```
+
+The other owner reads the notes against the diff and approves.
 
 ## 6. Publishing
 
-Merging the pull request publishes it once `ci` is green on main. Then watch the run:
+Merging the pull request publishes it. Then watch the run:
 
 ```sh
 git fetch -q origin main; sha=$(git rev-parse origin/main)   # the merge
-# The run starts once ci on that commit is green, minutes later.
-until run=$(gh run list -w release.yml -c "$sha" --json databaseId --jq '.[0].databaseId') && [ -n "$run" ]; do sleep 30; done
+until run=$(gh run list -w release.yml -c "$sha" --json databaseId --jq '.[0].databaseId') && [ -n "$run" ]; do sleep 10; done
 gh run watch "$run" --exit-status
-gh release view v$new --json assets --jq '.assets[].name'   # a tarball and a .sha256 per target
+gh release view v$new --json assets,isPrerelease --jq '.isPrerelease, .assets[].name'   # a tarball and a .sha256 per target
+gh attestation verify remux-$new-aarch64-apple-darwin.tar.gz -R remuxhq/core   # after gh release download v$new
 ```
 
 A run that failed (a runner, the network) runs again with
-`gh workflow run release.yml --ref main`, which publishes the version on main unless
-it is already released. The workflow makes the tag; nobody tags by hand. `make
+`gh workflow run release.yml --ref main`, by an owner, which publishes the version on
+main unless it is already released. The workflow makes the tag; nobody tags by hand. `make
 release` builds this machine's tarball into `dist/` and `make release.install`
 installs it, for trying a release before publishing it.

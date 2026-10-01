@@ -1,7 +1,13 @@
 #!/bin/sh
 # Install remux (the CLI and the engine) from a release, on macOS or Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | sh
+#   curl -fsSL https://github.com/remuxhq/core/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/remuxhq/core/releases/download/v0.3.0-rc.1/install.sh | sh
+#
+# Each release carries this script with its own version in RELEASE below, so
+# a release's URL installs that release, and `latest` the newest stable one
+# (GitHub's latest is never a pre-release). The copy on main has no version:
+# it installs the latest.
 #
 # What it does, and says before doing: downloads the release for this
 # machine, checks its sha256, unpacks it under ~/.local/share/remux, links
@@ -11,7 +17,7 @@
 # to install with your package manager. Safe to run again: the same version
 # is reinstalled in place, a newer one takes over.
 #
-#   REMUX_VERSION           a version instead of the latest (0.2.1)
+#   REMUX_VERSION           a version instead of this script's (0.2.1)
 #   REMUX_RELEASE_URL       where the tarballs are (file:///…/dist for a local `make release`)
 #   REMUX_HOME              where versions live (~/.local/share/remux)
 #   REMUX_YES=1  or -y      do not ask
@@ -20,6 +26,7 @@
 set -eu
 
 REPO="remuxhq/core"
+RELEASE=""
 HOME_DIR="${REMUX_HOME:-$HOME/.local/share/remux}"
 BIN_DIR="${REMUX_BIN:-$HOME/.local/bin}"
 YES="${REMUX_YES:-}"
@@ -47,7 +54,7 @@ case "$OS-$ARCH" in
 esac
 command -v curl >/dev/null || die "curl is needed"
 
-VERSION="${REMUX_VERSION:-}"
+VERSION="${REMUX_VERSION:-$RELEASE}"
 if [ -z "$VERSION" ]; then
   VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
     | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)

@@ -1,6 +1,9 @@
-# The gate on every pull request and on main: the engine on the two operating
-# systems it ships for, and the scanners, each under a timeout. What needs a
-# display and a grant cannot run on a hosted runner and stays on the machine.
+# The gate. Every pull request and every push to main run lint, unit and
+# sec: none of them needs OBS. A release pull request (a release/ branch,
+# opened by an owner) also runs integration, the libobs motor on the two
+# operating systems it ships for; elsewhere those jobs are skipped, which a
+# required check reads as passed. What needs a display and a grant cannot
+# run on a hosted runner and stays on the machine.
 #
 # Every action is pinned by commit, with the release beside it.
 name: ci
@@ -21,10 +24,10 @@ env:
   RUST_TOOLCHAIN: "1.98.0"
 
 jobs:
-  engine:
-    name: lint+tests / engine (fmt, clippy, seam, nextest, coverage)
-    runs-on: macos-15
-    timeout-minutes: 25
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: the toolchain the repository pins
@@ -34,37 +37,78 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy, rustfmt, llvm-tools-preview
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: engine
+      - run: make remuxd.lint
+
+  # The decisions on both operating systems, where a default of one shows.
+  # Coverage once, on Linux: the decisions are the same code on both.
+  unit:
+    name: unit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: engine
       - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: cargo-nextest,cargo-llvm-cov
-      - name: the OBS the engine links, pinned
-        run: make obs.fetch
-      # OBS's headers reach for simde on ARM; the bindings are generated from them.
-      - name: simde, for the libobs bindings
-        run: brew install simde
-      # remuxd.lint, remuxd.tests, remuxd.cover: what a person runs
-      - run: make remuxd.check
+      - run: make remuxd.unit
+      - if: runner.os == 'Linux'
+        run: make remuxd.cover
 
-  # The same engine on the other OS it ships for: the seam, the domain and
-  # the CLI tests, the libobs motor built against the distribution's OBS.
-  # LIBOBS_PATH links it straight from the multiarch folder: the bindings'
-  # own pkg-config check asks for the OBS their headers are from (32.1),
-  # which the distribution's is not.
-  # This is the compile and the decisions, where a macOS-only default shows.
-  engine-linux:
-    name: lint+tests / engine on linux (seam, clippy, nextest, obs motor)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+  # The libobs motor, linked against the OBS release.sh builds with on macOS.
+  integration-macos:
+    name: integration (macos)
+    if: startsWith(github.head_ref, 'release/')
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy, rustfmt
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: engine
+      - uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-nextest
+      - name: the OBS the engine links, pinned
+        run: make obs.fetch
+      # OBS's headers reach for simde on ARM; the bindings are generated from them.
+      - name: simde, for the libobs bindings
+        run: brew install simde
+      - run: make remuxd.integration
+
+  # The same motor against the distribution's OBS. LIBOBS_PATH links it
+  # straight from the multiarch folder: the bindings' own pkg-config check
+  # asks for the OBS their headers are from (32.1), which the distribution's
+  # is not.
+  integration-linux:
+    name: integration (linux)
+    if: startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master, 2026-09
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: engine
@@ -72,14 +116,47 @@ jobs:
         with:
           tool: cargo-nextest
       - name: libobs, the distribution's, and a display for the daemon the socket tests spawn
+        timeout-minutes: 10
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq obs-studio libobs-dev xvfb
           echo "LIBOBS_PATH=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" >> "$GITHUB_ENV"
-      - run: make remuxd.lint
-      - run: xvfb-run -a make remuxd.tests
+      - run: xvfb-run -a make remuxd.integration
+
+  # Only an owner moves the version, and only from a release/ branch: the
+  # merge of that pull request publishes it (release.yml). The owners are the
+  # base branch's CODEOWNERS, never the pull request's own copy. The branch
+  # name is read from the environment, never spliced into the script.
+  release-guard:
+    name: release guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          BASE: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          version() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+          was=$(git show "origin/$BASE:engine/cli/Cargo.toml" | version)
+          now=$(version < engine/cli/Cargo.toml)
+          notes=$(git diff --name-only "origin/$BASE...HEAD" -- docs/releases/)
+          case "$HEAD_REF" in release/*) branch=yes ;; *) branch=no ;; esac
+          if [ "$was" = "$now" ] && [ -z "$notes" ] && [ "$branch" = no ]; then
+            echo "not a release: $now stays"; exit 0
+          fi
+          owners=$(git show "origin/$BASE:.github/CODEOWNERS" | awk '$1 == "/.github/" { for (i = 2; i <= NF; i++) print substr($i, 2) }')
+          echo "$owners" | grep -qx "$AUTHOR" || { echo "$AUTHOR is not an owner; only an owner opens a release"; exit 1; }
+          [ "$branch" = yes ] || { echo "the version moves from $was to $now: a release comes from a release/ branch"; exit 1; }
+          [ "$was" != "$now" ] || { echo "a release/ branch moves the version; it is still $now"; exit 1; }
+          git show "HEAD:docs/releases/$now.md" | grep -q . || { echo "no notes: write docs/releases/$now.md"; exit 1; }
+          echo "release $was -> $now by $AUTHOR"
 
   security:
-    name: sec / secrets, advisories, deny
+    name: sec
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

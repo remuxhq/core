@@ -13,7 +13,7 @@ All these fundamental pieces make Remux a composable tool for live streaming wit
 Needs OBS installed. The engine is powered by libobs.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | sh
+curl -fsSL https://github.com/remuxhq/core/releases/latest/download/install.sh | sh
 remux destination add youtube yt --key-file ~/yt-streaming.key
 
 remux sources                             # screens, windows, apps, cameras and mics

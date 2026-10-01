@@ -3,7 +3,7 @@
 Remux **core** works without an account. You can run your own relay and chat bridge on this machine, with three scripts. Each one asks before doing anything and is safe to run again.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | sh
+curl -fsSL https://github.com/remuxhq/core/releases/latest/download/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-relay.sh | sh
 curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-chat.sh | sh
 ```

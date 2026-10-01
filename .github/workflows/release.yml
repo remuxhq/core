@@ -1,29 +1,31 @@
-# The release, published once ci is green on main: every green run of ci on
-# main runs it, and it publishes the version engine/cli/Cargo.toml says unless
-# that version is already released, so only a merge that moves the version
-# publishes. A dispatch runs it again for a version whose run failed. It checks the
-# notes and the version, builds one tarball per target on a machine of that
-# target (scripts/release.sh) from the commit that set the version, then tags
-# that commit and publishes the release with the notes as its body. ci.yml is
-# what checks a pull request.
+# The release. It runs when a merge to main touches engine/cli/Cargo.toml,
+# which only a release pull request does (ci.yml's release guard: an owner, a
+# release/ branch, the notes), after that pull request passed lint, unit, sec
+# and integration on both operating systems. It publishes the version
+# engine/cli/Cargo.toml says unless it is already released. An owner can
+# dispatch it again for a version whose run failed; nobody else can.
+#
+# It checks the notes and the version, builds one tarball per target on a
+# machine of that target (scripts/release.sh) from the commit that set the
+# version, attests each tarball, then tags that commit and publishes the
+# release with the notes as its body. A version with a pre-release part
+# (0.3.0-rc.1) is published as a pre-release and never becomes the latest,
+# so install.sh and the site, which read the latest, keep the stable one.
 #
 # Every action is pinned by commit, with the release beside it.
 name: release
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
+  push:
     branches: [main]
+    paths: [engine/cli/Cargo.toml]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# One run that can publish at a time, so two never race to the same tag. A run
-# that cannot publish (ci red, a pull request) takes a group of its own and never
-# evicts one waiting to.
+# One run at a time, so two never race to the same tag.
 concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && 'release' || github.run_id }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -33,24 +35,26 @@ jobs:
   # commit that set the version (one per pull request, squashed), not the one
   # ci checked: a merge that lands after it, before it is published, stays out.
   notes:
+    # The owners, as .github/CODEOWNERS names them.
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      github.event_name == 'push' ||
+      (github.ref == 'refs/heads/main' && contains(fromJSON('["leandronsp", "molvrr"]'), github.actor))
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       released: ${{ steps.version.outputs.released }}
       sha: ${{ steps.version.outputs.sha }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The commit ci checked, or main's head on a dispatch.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/cli/Cargo.toml | head -1)
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in *-*) echo "prerelease=true" ;; *) echo "prerelease=false" ;; esac >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --tags origin "v$version" >/dev/null; then
             echo "v$version is already released"; echo "released=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
@@ -71,6 +75,13 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
+    # The attestation is signed with this run's identity (id-token) and kept
+    # by GitHub (attestations): `gh attestation verify` proves a tarball came
+    # from this workflow, on this commit.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,6 +101,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install simde
       - run: sh scripts/release.sh
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: remux-${{ matrix.target }}
@@ -99,6 +113,10 @@ jobs:
   publish:
     needs: [notes, build]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,6 +125,17 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # install.sh with this release's version in it: the release's URL installs
+      # this release, and `latest/download/install.sh` the newest stable one.
+      - name: install.sh, stamped with the version
+        env:
+          VERSION: ${{ needs.notes.outputs.version }}
+        run: |
+          sed "s/^RELEASE=\"\"$/RELEASE=\"$VERSION\"/" install.sh > dist/install.sh
+          grep -qx "RELEASE=\"$VERSION\"" dist/install.sh || { echo "install.sh has no RELEASE line to stamp"; exit 1; }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/install.sh
       # The tag is made here, on the commit that was built, never by hand.
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -114,6 +143,9 @@ jobs:
           target_commitish: ${{ needs.notes.outputs.sha }}
           name: remux ${{ needs.notes.outputs.version }}
           body_path: docs/releases/${{ needs.notes.outputs.version }}.md
+          prerelease: ${{ needs.notes.outputs.prerelease }}
+          make_latest: ${{ needs.notes.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/install.sh

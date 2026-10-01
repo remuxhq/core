@@ -1,0 +1,16 @@
+# Weekly pull requests that move the pinned actions to their next release
+# (the commit and the comment beside it) and the crates of both workspaces.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /engine
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /engine/motor-obs
+    schedule:
+      interval: weekly
