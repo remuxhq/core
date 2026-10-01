@@ -1,24 +1,15 @@
-# A relay of your own
+# Your own relay
 
-The engine sends one RTMP stream wherever you point it. A relay is anything that
-takes that stream and sends it on: a destination like any other, from the engine's
-side.
+The engine sends one RTMP stream to each destination. A relay is a destination that takes that stream and sends it on to the platforms, so only one stream leaves your machine.
 
 ```
 echo scene | remux destination add custom relay --url rtmp://127.0.0.1:1935 --key -
 ```
 
-The key goes in on stdin (or `--key-file`), never on the command line. One ffmpeg from
-your machine to the relay; the relay fans out.
+The key goes in on stdin or with `--key-file`, never on the command line.
 
 ## The one in `byo/`
 
-`byo/mediamtx.yml` is mediamtx on loopback: RTMP in on 1935, RTSP for its own egress
-on 8554, everything else off. When the `scene` path is up it runs one `ffmpeg -c copy`
-per platform whose key is set in the environment (`TWITCH_KEY`, `YOUTUBE_KEY`, from
-`~/.config/remux/byo.env`). `install-relay.sh` installs mediamtx and ffmpeg and puts
-`remux-relay` on the PATH, which runs it with those keys; `docs/byo.md` is the
-walk-through.
+`byo/mediamtx.yml` runs mediamtx on this machine, taking RTMP on port 1935. When the stream arrives, it runs one `ffmpeg -c copy` for each platform whose key is in `~/.config/remux/byo.env` (`TWITCH_KEY`, `YOUTUBE_KEY`). `install-relay.sh` sets it up; `docs/byo.md` walks through it.
 
-Any other RTMP server works the same way, on this machine or elsewhere: give the
-engine its URL and its key.
+Any other RTMP server works the same way, here or elsewhere: give the engine its URL and key.
