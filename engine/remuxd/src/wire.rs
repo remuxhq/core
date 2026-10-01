@@ -136,7 +136,7 @@ impl Shared {
     }
 }
 
-/// Where a wire is: a URL the shell kept (`remux chat --url`, the `line`
+/// Where a wire is: a URL the shell kept (`remux chat url`, the `line`
 /// half), or the web's for an account, asked for at every connect because
 /// the token on it is the session's.
 enum Door {
@@ -230,7 +230,7 @@ pub fn keep(source: Source, shared: Arc<Shared>) {
     });
 }
 
-/// `remux chat --url` changed the config: drop the wires and open what the
+/// `remux chat url` changed the config: drop the wires and open what the
 /// files say now, the live untouched.
 pub fn rewire(shared: &Arc<Shared>) {
     shared.generation.fetch_add(1, Ordering::Relaxed);
@@ -239,7 +239,7 @@ pub fn rewire(shared: &Arc<Shared>) {
     shared.ring();
     let sources = Source::from_files();
     if sources.is_empty() {
-        remuxd_domain::log::note("wire: none now; remux chat --url, or remux login");
+        remuxd_domain::log::note("wire: none now; remux chat url, or remux login");
     }
     for source in sources {
         remuxd_domain::log::note("wire: opening again, as the config says now");

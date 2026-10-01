@@ -112,7 +112,7 @@ pub fn render_with(reply: &Reply, ink: Ink) -> String {
         // "Not signed in" rather than an empty screen: a room can be quiet
         // and a server can be down and they look the same until one says so.
         Reply::Chat { reachable, .. } if !reachable => {
-            "no chat wire: remux login, or remux chat --url ws://...".into()
+            "no chat wire: remux login, or remux chat url ws://...".into()
         }
         Reply::Chat { lines, .. } if lines.is_empty() => "nobody has said anything".into(),
         // One message, two lines: where it came from and who, then what was
@@ -2391,8 +2391,8 @@ pub enum View {
     },
     /// `logout`: the session file forgotten.
     Logout,
-    /// `chat --url <ws>`: where the engine reads its chat from, kept in the
-    /// config by the shell and taken up by the engine at once; `chat --url -`
+    /// `chat url <ws>`: where the engine reads its chat from, kept in the
+    /// config by the shell and taken up by the engine at once; `chat url -`
     /// forgets it (the account's wire again, or none).
     ChatKeep(String),
     /// `config`: what is in effect and where each value came from.
@@ -2538,7 +2538,7 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         let url = words
             .get(2)
             .cloned()
-            .ok_or("chat --url takes a ws:// or wss:// address, or - to forget it")?;
+            .ok_or("chat url takes a ws:// or wss:// address, or - to forget it")?;
         return Ok(Ask {
             command: None,
             view: View::ChatKeep(url),

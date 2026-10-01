@@ -10,7 +10,7 @@ What never goes anywhere, and what every change has to keep true.
 - They live in `~/.config/remux/` (0600, written whole and renamed into place by
   `destinations::keep`): `destinations.json`, `session.json`, `config.toml`, `byo.env`.
   The shell writes them (`destination add --key -`, `--key-file`, `remux login`,
-  `chat --url`); a key is never on argv, which `ps` lists, and never crosses the socket.
+  `chat url`); a key is never on argv, which `ps` lists, and never crosses the socket.
 - `Key` prints stars. A `Debug` of a row is safe; a `.0` reaching a log is a finding.
 - Files the engine writes beside the socket (`prefs.json`, the log) hold no secret.
   `remux bug` redacts before it prints.

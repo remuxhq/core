@@ -32,7 +32,7 @@ fn recordings() -> Option<String> {
 /// The wires and who is watching. With a session (`remux login`) the web's
 /// rows are what a face sees and its verbs go up the web's wire; without
 /// one, the destinations file on this machine. A chat source of one's own
-/// (`remux chat --url`) takes the chat and nothing else. The feed starts
+/// (`remux chat url`) takes the chat and nothing else. The feed starts
 /// numbering at the clock so a restart never hands a face a number below one
 /// it has.
 /// Milliseconds past the epoch, where the chat's and the events' numbers

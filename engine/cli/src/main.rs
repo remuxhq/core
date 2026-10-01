@@ -312,7 +312,7 @@ fn log_in(base: &str) -> ! {
     }
 }
 
-/// `remux chat --url`: where the engine reads its chat from, written to the
+/// `remux chat url`: where the engine reads its chat from, written to the
 /// config by the shell; a running engine is told to take it up at once, a
 /// live untouched.
 fn keep_a_chat_source(path: &std::path::Path, url: &str) -> ! {

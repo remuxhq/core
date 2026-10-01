@@ -3,7 +3,7 @@
 
     set -a; . ~/.config/remux/platforms.env; set +a      # YOUTUBE_API_KEY
     python3 byo/bridge.py [--twitch <channel>] [--youtube <video id>] [--port 9999]
-    remux chat --url ws://127.0.0.1:9999
+    remux chat url ws://127.0.0.1:9999
 
 What is not on the command line is read from ~/.config/remux/config.toml
 (REMUX_CONFIG names another), the `[byo]` table: `twitch`, `youtube`.
@@ -226,7 +226,7 @@ def serve(port, lines):
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("127.0.0.1", port))
     server.listen(8)
-    log(f"wire: ws://127.0.0.1:{port}  (remux chat --url ws://127.0.0.1:{port})")
+    log(f"wire: ws://127.0.0.1:{port}  (remux chat url ws://127.0.0.1:{port})")
     while True:
         conn, addr = server.accept()
         threading.Thread(target=serve_client, args=(conn, f"{addr[0]}:{addr[1]}"), daemon=True).start()
