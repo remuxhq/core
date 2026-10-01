@@ -18,7 +18,7 @@ description = "Everything the engine decides. No Apple framework reaches this cr
 # adapters (remux-shader, remux-mixer) depend on this crate, never the other
 # way: the domain owns the contracts, the daemon injects the adapters.
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
