@@ -17,9 +17,10 @@ The merge touches `engine/cli/Cargo.toml`, which runs `release.yml`: it checks t
 version and the notes, builds the tarball for every target (macOS on Apple silicon,
 Linux x86_64 and aarch64) from the commit that set the version, attests each one,
 tags that commit as `v<version>` and publishes the release with each tarball, its
-`.sha256` and the notes as its body. A version already released is left alone.
-`install.sh` and the site install the latest release, which GitHub defines as the
-newest one that is neither a draft nor a pre-release.
+`.sha256`, `install.sh` stamped with the version, and the notes as its body. A version already released is left alone.
+`releases/latest/download/install.sh`, which the README and the site give, installs
+the latest release, which GitHub defines as the newest one that is neither a draft nor
+a pre-release; `releases/download/v<version>/install.sh` installs that version.
 
 ## 1. What changed since the last release
 
@@ -54,10 +55,10 @@ pre-release part, as semver orders them: `0.3.0-beta.1` while it still changes,
 `0.3.0-rc.1` when it is meant to be the release. It goes through the same pull
 request, the same `integration` and the same notes, and `release.yml` publishes it as
 a pre-release that never becomes the latest: `install.sh` and the site keep the stable
-one. Whoever tries it asks for it by name:
+one. Whoever tries it asks for it by its URL:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install.sh | REMUX_VERSION=0.3.0-rc.1 sh
+curl -fsSL https://github.com/remuxhq/core/releases/download/v0.3.0-rc.1/install.sh | sh
 ```
 
 The stable `0.3.0` that follows is a release of its own, with its own notes.
