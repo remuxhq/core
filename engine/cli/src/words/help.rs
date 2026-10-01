@@ -18,7 +18,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["scene-switch"], args: "<name>", summary: "Switch to a saved scene without stopping the live.", note: "New sources are prepared first; shared physical captures stay open even when their layer IDs differ. Use `remux scene list` to see names." },
     Topic { names: &["scene-delete"], args: "<name>", summary: "Delete an inactive scene.", note: "The active scene cannot be deleted; switch first." },
     Topic { names: &["levels"], args: "", summary: "Read microphone, mix and music levels in dB.", note: "" },
-    Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; the panel uses its bytes. For one layer use `remux scene layer shot <id>`." },
+    Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; --out file.jpg writes it and --out - sends it to stdout. --json carries the JPEG as base64, so to get the image use --out, not --json. For one layer use `remux scene layer shot <id>`." },
     Topic { names: &["grants"], args: "", summary: "Show screen, camera and microphone permissions.", note: "" },
     Topic { names: &["chat"], args: "[-f|--follow|follow]", summary: "Read chat from the armed destinations.", note: "Follow keeps reading new lines until interrupted; `remux chat hide <n>` hides a line locally. `remux chat url ws://…` reads the chat from a wire of your own; `-` forgets it." },
     Topic { names: &["hide"], args: "<line number>", summary: "Hide a chat line on remux's faces.", note: "Does not delete it on the platform; use `remux chat delete <n>` for that." },
@@ -142,7 +142,8 @@ require degrees 0; crop, shape, mirror and screen-sound apply only to captures
 remux scene layer hide editor and remux scene layer show editor preserve capture and layout;
 screen sound is paused until shown. remux scene layer remove editor closes it.
 remux scene layer shot editor reads a source; remux scene shot reads the
-composed picture; --out file.jpg writes it.
+composed picture; --out file.jpg writes it, --out - to stdout. To get the
+image use --out: --json carries it as base64, which only fills a context.
 Layer choices, layout and visibility survive a restart.
 Use remux audio screen-sound on for a unique display, or remux scene layer
 screen-sound <id> on with multiple displays. remux audio hear Spotify keeps

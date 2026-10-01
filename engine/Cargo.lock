@@ -1105,6 +1105,7 @@ name = "remux"
 version = "0.2.1"
 dependencies = [
  "base64",
+ "libc",
  "remux-wire",
  "remuxd-domain",
  "schemars",
