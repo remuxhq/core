@@ -13,7 +13,7 @@ description = "The engine, from a shell. One of the faces: the words (`words`), 
 [dependencies]
 remuxd-domain = { path = "../domain" }
 remux-wire = { path = "../wire" }
-base64 = "0.22"
+base64 = "0.23"
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
