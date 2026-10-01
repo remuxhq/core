@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "motor-obs"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "jpeg-encoder",
  "libc",
@@ -1102,7 +1102,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remux"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "base64",
  "remux-wire",
@@ -1114,14 +1114,14 @@ dependencies = [
 
 [[package]]
 name = "remux-mixer"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "remuxd-domain",
 ]
 
 [[package]]
 name = "remux-shader"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "naga",
  "remuxd-domain",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "remux-wire"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "remuxd-domain",
  "reqwest",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "remuxd"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "motor-obs",
  "remux-mixer",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "remuxd-domain"
-version = "0.2.1"
+version = "0.3.0-rc.1"
 dependencies = [
  "base64",
  "schemars",
