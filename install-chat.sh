@@ -58,7 +58,7 @@ cat > "$BIN_DIR/remux-chat" <<EOF
 set -eu
 ENV_FILE="\${REMUX_BYO_ENV:-$ENV_FILE}"
 if [ -f "\$ENV_FILE" ]; then set -a; . "\$ENV_FILE"; set +a; fi
-"$HOME_DIR/current/bin/remux" chat --url ws://127.0.0.1:9999 >/dev/null 2>&1 || true
+"$HOME_DIR/current/bin/remux" chat url ws://127.0.0.1:9999 >/dev/null 2>&1 || true
 exec python3 "$HOME_DIR/current/byo/bridge.py" "\$@"
 EOF
 chmod 755 "$BIN_DIR/remux-chat"
