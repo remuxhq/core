@@ -1,26 +1,17 @@
 # Bring your own relay and chat
 
-Remux **core** works without an account. You can run your own relay and chat bridge on this machine, with three scripts. Each one asks before doing anything and is safe to run again.
+Remux **core** works without an account. A relay and a chat bridge are yours to build or pick: `docs/relay.md` and `docs/wire.md` are their contracts, and this page walks through the ones in `byo/`. Each script asks before doing anything and is safe to run again.
 
 ```
 curl -fsSL https://github.com/remuxhq/core/releases/latest/download/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-relay.sh | sh
-curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-chat.sh | sh
+curl -fsSL https://raw.githubusercontent.com/remuxhq/core/main/install-chat.sh | sh   # optional, the Python bridge
 ```
 
 `install.sh` installs `remux` and starts the engine as a service. Needs OBS installed; the script offers to install it. To remove everything, run `~/.local/share/remux/current/uninstall.sh` (`--purge` also removes the config).
 
 ## Relay
 
-The engine already sends to every armed destination, one stream each. The relay is optional: one stream leaves your machine, and the relay sends it on to each platform, which spares your upload. `install-relay.sh` installs mediamtx and ffmpeg, and writes `~/.config/remux/byo.env` (0600) for your keys.
-
-```
-$EDITOR ~/.config/remux/byo.env      # TWITCH_KEY=…  YOUTUBE_KEY=…
-remux-relay                          # keep it running in its own pane
-echo scene | remux destination add custom relay --url rtmp://127.0.0.1:1935 --key -
-```
-
-The keys reach ffmpeg's command line, visible to `ps` on this machine. Any other RTMP server works the same way (`docs/relay.md`).
+The engine already sends to every armed destination, one stream each, and that is enough for most lives. A relay is optional, and it belongs on a host with upload to spare, not on this machine: here it would still upload one stream per platform. `docs/relay.md` is what a relay does, what the engine sends it, and the commands that switch to it.
 
 ## Chat
 
