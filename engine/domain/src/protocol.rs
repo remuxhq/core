@@ -64,7 +64,7 @@ pub enum Command {
     /// Whether a window is drawing the preview.
     ///
     /// The engine renders the preview into shared memory on a clock, and that
-    /// costs about two points of a core whether or not anybody has the region
+    /// costs about ten points of a core whether or not anybody has the region
     /// mapped. A panel says so when a window that draws opens and says so again
     /// when the last one closes, exactly the way it already does for the
     /// meters, and an engine nobody is looking at costs what it did before

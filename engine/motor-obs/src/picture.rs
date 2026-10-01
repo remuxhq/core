@@ -695,16 +695,19 @@ impl Picture for ObsPipeline {
         ring.watch(true);
         ring.render(true);
         let until = Instant::now() + Duration::from_secs(1);
-        let shot = loop {
-            std::thread::sleep(Duration::from_millis(20));
-            let shot = self.preview.as_deref().and_then(taken);
-            if shot.is_some() || Instant::now() >= until {
-                break shot;
+        let shot = self.preview.as_deref().and_then(|ring| {
+            let mut seen = ring.landed.count();
+            loop {
+                if let Some(shot) = taken(ring) {
+                    return Some(shot);
+                }
+                seen = ring.landed.after(seen, until)?;
             }
-        };
-        // Back to sleep unless a face is watching: left awake, libobs scaled
-        // every frame into the ring on the CPU for nobody, 45% of a core of
-        // an idle engine at 1080p30 (`sample`, all of it in swscale).
+        });
+        // Back to sleep unless a face is watching: left awake, the three rings
+        // cost 10 points of a core of an idle engine at 1080p30 for nobody
+        // (29 while libobs scaled the scene on the CPU; 30 s awake against
+        // 20 asleep, three rounds each).
         let watched = self.previewing;
         if let Some(ring) = self.preview.as_deref_mut() {
             ring.watch(watched);
