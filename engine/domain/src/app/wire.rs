@@ -208,7 +208,7 @@ pub enum Wire {
     /// The web's, for an account: the control half, and the chat half
     /// unless a chat wire of one's own carries it.
     Account { chat: bool },
-    /// A chat wire of one's own (`remux chat --url`): lines down, deletes and
+    /// A chat wire of one's own (`remux chat url`): lines down, deletes and
     /// says up.
     Own,
 }

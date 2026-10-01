@@ -1,7 +1,7 @@
 //! A chat source of your own, the smallest one: serves the `line` half of
 //! the wire on ws://127.0.0.1:9999 and says a line a second to whoever is
 //! connected. `cargo run -p remuxd --example wire [port]`, then
-//! `remux chat --url ws://127.0.0.1:9999`. See docs/wire.md.
+//! `remux chat url ws://127.0.0.1:9999`. See docs/wire.md.
 
 use std::net::TcpListener;
 use std::time::Duration;

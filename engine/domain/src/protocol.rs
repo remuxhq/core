@@ -423,7 +423,7 @@ pub enum Command {
         #[serde(default)]
         channel: Option<String>,
     },
-    /// The config changed where the chat comes from (`remux chat --url`):
+    /// The config changed where the chat comes from (`remux chat url`):
     /// the daemon drops its wire and opens what the config says now. A live
     /// is untouched.
     Rewire,
