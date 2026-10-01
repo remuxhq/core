@@ -71,6 +71,41 @@ fn size_of(source: *mut sys::obs_source_t) -> (u32, u32) {
     }
 }
 
+/// `set` with the scene locked the way its render and its tick lock it.
+///
+/// libobs (32.1) rebuilds an item's draw matrix in place on every setter,
+/// from the caller's thread, outside that lock: a frame drawn mid-rebuild has
+/// the item's size but not its position, at the scene's origin. Measured: one
+/// such frame per 20 to 30 s of image layers moved at 150 transforms a second.
+/// Only setters go in here: a mask or a filter swapped under the lock would
+/// hold the render (and the scene's sound) for as long as it takes.
+fn atomically(scene: *mut sys::obs_scene_t, set: impl FnOnce()) {
+    type Slot<'a> = (
+        Option<Box<dyn FnOnce() + 'a>>,
+        Option<Box<dyn std::any::Any + Send>>,
+    );
+    unsafe extern "C" fn run(data: *mut c_void, _scene: *mut sys::obs_scene_t) {
+        // SAFETY: `data` is the slot below, alive for the call.
+        let slot = unsafe { &mut *data.cast::<Slot>() };
+        if let Some(set) = slot.0.take() {
+            // A panic does not cross into C: it is carried out and resumed.
+            slot.1 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(set)).err();
+        }
+    }
+    let mut slot: Slot = (Some(Box::new(set)), None);
+    // SAFETY: the scene is ours; the slot outlives the call.
+    unsafe {
+        sys::obs_scene_atomic_update(scene, Some(run), (&raw mut slot).cast());
+    }
+    if let Some(panic) = slot.1 {
+        std::panic::resume_unwind(panic);
+    }
+    // No scene to lock (it is going): set anyway, as before.
+    if let Some(set) = slot.0.take() {
+        set();
+    }
+}
+
 fn clock(left: Duration) -> String {
     remuxd_domain::picture::timer::clock(left.as_secs_f64().ceil() as i64)
 }
@@ -93,27 +128,25 @@ impl Drawing {
     fn place(&mut self) {
         self.size = size_of(self.source);
         let placed = placement(&self.layer, self.size);
-        // SAFETY: the item, the source and the mask are this drawing's own.
-        unsafe {
-            sys::obs_sceneitem_set_alignment(self.item, sys::OBS_ALIGN_CENTER);
-            sys::obs_sceneitem_set_bounds_alignment(self.item, sys::OBS_ALIGN_CENTER);
-            sys::obs_sceneitem_set_bounds_type(
-                self.item,
-                sys::obs_bounds_type_OBS_BOUNDS_SCALE_INNER,
-            );
-            sys::obs_sceneitem_set_bounds(
-                self.item,
-                &crate::vec2(placed.bounds.0, placed.bounds.1),
-            );
+        let item = self.item;
+        // SAFETY: the item is this drawing's own, in the one scene.
+        let scene = unsafe { sys::obs_sceneitem_get_scene(item) };
+        // Deferred, the matrix is rebuilt once, at the end, still locked.
+        atomically(scene, || unsafe {
+            sys::obs_sceneitem_defer_update_begin(item);
+            sys::obs_sceneitem_set_alignment(item, sys::OBS_ALIGN_CENTER);
+            sys::obs_sceneitem_set_bounds_alignment(item, sys::OBS_ALIGN_CENTER);
+            sys::obs_sceneitem_set_bounds_type(item, sys::obs_bounds_type_OBS_BOUNDS_SCALE_INNER);
+            sys::obs_sceneitem_set_bounds(item, &crate::vec2(placed.bounds.0, placed.bounds.1));
             // Mirroring is a negative scale; the bounds decide the size.
             sys::obs_sceneitem_set_scale(
-                self.item,
+                item,
                 &crate::vec2(if placed.mirrored { -1.0 } else { 1.0 }, 1.0),
             );
-            sys::obs_sceneitem_set_pos(self.item, &crate::vec2(placed.centre.0, placed.centre.1));
-            sys::obs_sceneitem_set_rot(self.item, placed.degrees);
+            sys::obs_sceneitem_set_pos(item, &crate::vec2(placed.centre.0, placed.centre.1));
+            sys::obs_sceneitem_set_rot(item, placed.degrees);
             sys::obs_sceneitem_set_crop(
-                self.item,
+                item,
                 &sys::obs_sceneitem_crop {
                     left: placed.crop.0,
                     top: placed.crop.1,
@@ -121,8 +154,10 @@ impl Drawing {
                     bottom: placed.crop.3,
                 },
             );
-            sys::obs_sceneitem_set_visible(self.item, placed.visible);
-        }
+            sys::obs_sceneitem_defer_update_end(item);
+        });
+        // SAFETY: the item is this drawing's own.
+        unsafe { sys::obs_sceneitem_set_visible(item, placed.visible) };
         let wanted = placed.circle.map(|region| (self.size, region));
         if wanted != self.masked {
             self.remask(wanted);
@@ -459,12 +494,14 @@ impl ObsPipeline {
     /// An item for a source, hidden until it is placed.
     fn item(&mut self, source: *mut sys::obs_source_t) -> *mut sys::obs_sceneitem_t {
         let scene = self.scene();
+        // An item is added shown, at the origin: hidden before a frame sees it.
+        let mut item = std::ptr::null_mut();
         // SAFETY: the scene takes its own reference to the source.
-        unsafe {
-            let item = sys::obs_scene_add(scene, source);
+        atomically(scene, || unsafe {
+            item = sys::obs_scene_add(scene, source);
             sys::obs_sceneitem_set_visible(item, false);
-            item
-        }
+        });
+        item
     }
 
     fn drawn(&self) -> std::sync::MutexGuard<'_, Drawn> {
@@ -607,14 +644,14 @@ impl Picture for ObsPipeline {
             written.words = words;
             written.deadline = deadline;
             written.element = element.clone();
+            let item = written.item;
+            let at = crate::vec2(element.x as f32, element.y as f32);
+            // SAFETY: the item is this element's, in the one scene.
+            atomically(self.scene, || unsafe {
+                sys::obs_sceneitem_set_pos(item, &at)
+            });
             // SAFETY: the item is this element's.
-            unsafe {
-                sys::obs_sceneitem_set_pos(
-                    written.item,
-                    &crate::vec2(element.x as f32, element.y as f32),
-                );
-                sys::obs_sceneitem_set_visible(written.item, element.visible);
-            }
+            unsafe { sys::obs_sceneitem_set_visible(item, element.visible) };
             if written.filter.as_ref().map(|(p, _)| p) != wanted.as_ref() {
                 let made = wanted.as_deref().map(effect::filter).transpose();
                 match made {
