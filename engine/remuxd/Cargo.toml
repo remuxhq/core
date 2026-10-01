@@ -12,9 +12,17 @@ description = "The remux engine: captures, mixes, encodes, publishes and records
 default = ["obs"]
 obs = ["dep:motor-obs", "dep:remux-shader", "dep:remux-mixer"]
 
+# The daemon and the socket tests that spawn it need the libobs motor; the
+# library and its unit tests do not, so `--no-default-features` builds and
+# tests the engine on a machine with no OBS.
 [[bin]]
 name = "remuxd"
 path = "src/main.rs"
+required-features = ["obs"]
+
+[[test]]
+name = "socket"
+required-features = ["obs"]
 
 [dependencies]
 remuxd-domain = { path = "../domain" }

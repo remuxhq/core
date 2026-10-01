@@ -1,6 +1,6 @@
 ##@ remuxd (the engine, Rust, runs on the host)
 
-.PHONY: remuxd.lint remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
+.PHONY: remuxd.lint remuxd.unit remuxd.integration remuxd.tests obs.fetch remuxd.build.obs remuxd.start remuxd.identity remuxd.check remuxd.test remuxd.cover remuxd.seam  remuxd.build remuxd.run
 
 # Signing with our own certificate is not a nicety. **macOS ties a screen
 # recording grant to the code signature.** Left ad hoc, cargo's linker-signed
@@ -67,18 +67,27 @@ remuxd.check: ## The gate: remuxd.lint, remuxd.tests, remuxd.cover
 	@$(MAKE) remuxd.cover
 
 # The gate's parts, which CI calls by name so a job runs what a person runs.
-# motor-obs is a workspace of its own (it links the machine's OBS), so
-# `--all` never reaches it: it is formatted, linted and tested by its manifest.
-remuxd.lint: ## Seam, format and clippy as errors, the engine's workspace and motor-obs's
+# lint and unit need no OBS: every commit runs them. integration links the
+# machine's libobs: a release runs it. motor-obs is a workspace of its own, so
+# `--all` never reaches it: integration lints and tests it by its manifest.
+remuxd.lint: ## Seam, format, and clippy as errors on everything but the libobs motor
 	@$(MAKE) remuxd.seam
 	@$(CARGO) fmt --all -- --check
 	@$(CARGO) fmt --manifest-path motor-obs/Cargo.toml -- --check
+	@$(CARGO) clippy --locked --workspace --all-targets --no-default-features -- -D warnings
+
+remuxd.unit: ## Every test that needs no OBS: the engine's workspace without the libobs motor
+	@$(CARGO) nextest run --locked --workspace --no-default-features
+
+remuxd.integration: ## The libobs motor: its clippy, its tests, and the daemon the socket tests spawn
 	@$(CARGO) clippy --locked --all-targets --all-features -- -D warnings
 	@$(CARGO) clippy --locked --manifest-path motor-obs/Cargo.toml --all-targets -- -D warnings
-
-remuxd.tests: ## Every test, the engine's workspace and motor-obs's
 	@$(CARGO) nextest run --locked --all-targets
 	@$(CARGO) test --locked --manifest-path motor-obs/Cargo.toml
+
+remuxd.tests: ## Every test: remuxd.unit, then remuxd.integration
+	@$(MAKE) remuxd.unit
+	@$(MAKE) remuxd.integration
 
 # The seam, asserted rather than trusted. remuxd-domain holds every decision
 # and must never learn what an Apple framework is; keeping that true is the
