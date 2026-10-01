@@ -5,7 +5,9 @@
 //! `remuxd-domain`, a crate that sees no framework; the machine is a motor
 //! behind the domain's ports; the seam is a fact of the build.
 
+pub mod bell;
 pub mod boot;
+pub mod events;
 pub mod library;
 pub mod prefs;
 pub mod server;

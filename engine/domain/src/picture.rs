@@ -10,4 +10,5 @@ pub mod scene;
 pub mod scenes;
 pub mod shader;
 pub mod sources;
+pub mod stall;
 pub mod timer;

@@ -2,6 +2,7 @@
 //! the session and the login.
 
 pub mod chat;
+pub mod events;
 pub mod login;
 pub mod session;
 pub mod wire;

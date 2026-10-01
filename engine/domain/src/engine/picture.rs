@@ -278,7 +278,7 @@ impl Engine {
         self.render_scene();
     }
 
-    fn active_elements(&self) -> Vec<Element> {
+    pub(super) fn active_elements(&self) -> Vec<Element> {
         self.status
             .scenes
             .iter()

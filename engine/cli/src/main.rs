@@ -62,6 +62,9 @@ fn main() {
         (View::Reply, true) if matches!(ask.command, Some(Command::Levels)) => {
             follow_the_levels(&path, ask.format)
         }
+        (View::Reply, true) if matches!(ask.command, Some(Command::Events { .. })) => {
+            follow_the_events(&path, ask.format)
+        }
         (View::Reply, true) => follow_the_chat(&path, ask.format, ink),
         (View::Log, true) => follow_the_log(&path, ask.format),
         _ => {}
@@ -531,6 +534,50 @@ fn ask(path: &std::path::Path, command: &Command) -> Result<Reply, String> {
     }
     decode_reply(&line)
         .map_err(|why| format!("the engine said something this does not understand: {why}"))
+}
+
+/// `events -f`: what the engine still holds, then every change as the engine
+/// pushes it, on one connection, until the shell says stop. Never returns.
+fn follow_the_events(path: &std::path::Path, format: Format) -> ! {
+    let stream = UnixStream::connect(path).unwrap_or_else(|_| {
+        eprintln!(
+            "no engine is listening on {}. Start one with `remuxd`.",
+            path.display()
+        );
+        std::process::exit(1);
+    });
+    let mut out = stream.try_clone().unwrap_or_else(|e| {
+        eprintln!("the socket would not answer: {e}");
+        std::process::exit(1);
+    });
+    let asked = Command::Events {
+        since: 0,
+        follow: true,
+    };
+    if out.write_all(encode(&asked).as_bytes()).is_err() {
+        eprintln!("the engine went away while being asked");
+        std::process::exit(1);
+    }
+    for line in BufReader::new(stream).lines() {
+        let Ok(line) = line else { break };
+        match decode_reply(&line) {
+            Ok(reply) if format == Format::Json => {
+                for line in cli::event_lines(&reply) {
+                    println!("{line}");
+                }
+            }
+            Ok(reply) => println!(
+                "{}",
+                cli::show(&reply, &View::Reply, format, Ink::Plain, now())
+            ),
+            Err(why) => {
+                eprintln!("the engine said something this does not understand: {why}");
+                std::process::exit(1);
+            }
+        }
+    }
+    eprintln!("the engine went away");
+    std::process::exit(1);
 }
 
 /// `chat -f`: what has been said, then every line as the engine pushes it,

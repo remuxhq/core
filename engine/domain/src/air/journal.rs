@@ -37,6 +37,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Shot { .. }
             | Command::LayerShot { .. }
             | Command::Chat { .. }
+            | Command::Events { .. }
             | Command::Plan
             | Command::Hide { .. }
             | Command::Categories { .. }
@@ -104,6 +105,12 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::LayerShader { id, path } => format!("layer {id} shader: {}", named(path)),
         Command::Hide { seq } => format!("chat: line {seq} hidden"),
         Command::Delete { seq } => format!("chat: line {seq} deleted on the platform"),
+        // Not the words: they come back down as a line, and the journal is
+        // what the engine did, not a second copy of the chat.
+        Command::Say { channel, .. } => match channel {
+            Some(channel) => format!("chat: said on {channel}"),
+            None => "chat: said".into(),
+        },
         Command::Mic { device } => format!("mic: {}", named(device)),
         Command::Mirror { on: flipped } => format!("mirror {}", on(flipped)),
         Command::Share { on: shared } => format!("screen {}", on(shared)),
@@ -171,6 +178,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::LayerShot { .. }
         | Command::Grants
         | Command::Chat { .. }
+        | Command::Events { .. }
         | Command::Categories { .. }
         | Command::Rewire
         | Command::Quit => return None,
@@ -253,9 +261,11 @@ fn verb(command: &Command) -> &'static str {
         | Command::Shot { .. }
         | Command::Plan
         | Command::LayerShot { .. }
-        | Command::Chat { .. } => "read",
+        | Command::Chat { .. }
+        | Command::Events { .. } => "read",
         Command::Hide { .. } => "hide",
         Command::Delete { .. } => "delete",
+        Command::Say { .. } => "say",
         Command::Present => "present",
     }
 }

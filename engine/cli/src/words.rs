@@ -43,7 +43,7 @@ pub fn follow(words: &[String]) -> (bool, Vec<String>) {
     let follows = |w: &String| matches!(w.as_str(), "-f" | "--follow" | "follow");
     if matches!(
         words.first().map(String::as_str),
-        Some("chat") | Some("levels") | Some("meters")
+        Some("chat") | Some("levels") | Some("meters") | Some("events")
     ) && words[1..].iter().any(follows)
     {
         (
@@ -186,6 +186,13 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "shot" if rest.is_empty() => Ok(Command::Shot { of: Framed::Scene }),
         "shot" => Err("scene shot takes no arguments; use scene layer shot <id>".into()),
         "grants" => Ok(Command::Grants),
+        // `remux events -f`: the flag is the shell's (`follow`), and asks
+        // the engine to keep the connection.
+        "events" if rest.is_empty() => Ok(Command::Events {
+            since: 0,
+            follow: false,
+        }),
+        "events" => Err("events takes -f, --follow or follow".into()),
         "chat" => Ok(Command::Chat {
             since: 0,
             follow: false,
@@ -466,6 +473,22 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
                 .parse()
                 .map_err(|_| "a line's number is a number".to_string())?;
             Ok(Command::Delete { seq })
+        }
+        // `remux chat say --to main valeu!`: a line in that chat, or in every
+        // chat the wire reads; whoever serves the wire posts it.
+        "say" => {
+            let (channel, words) = match rest {
+                [to, rest @ ..] if to == "--to" => {
+                    let (channel, words) = rest.split_first().ok_or("--to names a chat")?;
+                    (Some(channel.clone()), words)
+                }
+                words => (None, words),
+            };
+            let body = words.join(" ");
+            if body.is_empty() {
+                return Err("say needs the words, as in `remux chat say valeu!`".into());
+            }
+            Ok(Command::Say { body, channel })
         }
         // `remux destination category 2 509670 Science & Technology`: file that destination's live.
         "category" => {
@@ -809,6 +832,7 @@ pub fn render(reply: &Reply) -> String {
         ),
         // The chat, plain: what a pipe or a test reads. See `render_with`.
         chat @ Reply::Chat { .. } => render_with(chat, Ink::Plain),
+        Reply::Events { gap, events } => render_events(*gap, events),
         // A shell prints what it can read. The bytes are for a panel; here
         // the useful thing is that a picture exists and how big it is.
         Reply::Shot {
@@ -819,6 +843,156 @@ pub fn render(reply: &Reply) -> String {
             format!("{width}x{height}, {} bytes of jpeg", jpeg.len() * 3 / 4)
         }
     }
+}
+
+/// What changed, one a line, oldest first.
+fn render_events(
+    gap: Option<remuxd_domain::app::events::Gap>,
+    events: &[remuxd_domain::app::events::Numbered],
+) -> String {
+    use remuxd_domain::app::events::{Event, Heard};
+    if gap.is_none() && events.is_empty() {
+        return "nothing has happened yet".into();
+    }
+    let on = |on: bool, yes: &str, no: &str| if on { yes } else { no }.to_string();
+    // Said before what came after, so a face that reads only the first line
+    // knows its picture is stale.
+    let missed = gap.map(|gap| {
+        format!(
+            "some of #{} to #{} are gone: remux status says where things are",
+            gap.from, gap.to
+        )
+    });
+    let happened = events.iter().map(|numbered| {
+        let what = match &numbered.event {
+            Event::LiveStarted => "on air".into(),
+            Event::LiveEnded => "off air".into(),
+            Event::RecordStarted => "recording".into(),
+            Event::RecordStopped => "recording stopped".into(),
+            Event::SceneSwitched { name } => format!("scene {}", plain(name)),
+            Event::Muted { on: muted } => on(*muted, "mic muted", "mic open"),
+            Event::TrackChanged { title: Some(title) } => format!("playing {}", plain(title)),
+            Event::TrackChanged { title: None } => "music stopped".into(),
+            Event::AppReachable { on: up } => on(*up, "app reachable", "app unreachable"),
+            Event::Chat {
+                line,
+                platform,
+                from,
+                body,
+                ..
+            } => format!(
+                "chat #{line} {} {}: {}",
+                plain(platform),
+                plain(from),
+                plain(body)
+            ),
+            Event::ChatHidden { line } => format!("chat #{line} hidden"),
+            Event::ChatEvent { happened } => happening(happened),
+            Event::DestinationLive { id } => format!("destination {id} on air"),
+            Event::DestinationEnded { id, why: None } => format!("destination {id} off air"),
+            Event::DestinationEnded { id, why: Some(why) } => {
+                format!("destination {id} dropped: {}", plain(why))
+            }
+            Event::DestinationArmed { id, on: armed } => {
+                format!("destination {id} {}", on(*armed, "armed", "disarmed"))
+            }
+            Event::DestinationSandbox { id, on: rehearsal } => format!(
+                "destination {id} {}",
+                on(*rehearsal, "in the sandbox", "out of the sandbox")
+            ),
+            Event::DestinationRetitled { id, title, .. } => format!(
+                "destination {id} titled {}",
+                title.as_deref().map_or_else(|| "nothing".into(), plain)
+            ),
+            Event::DestinationCategorized { id, category } => match category {
+                Some(category) => format!("destination {id} filed under {}", plain(category)),
+                None => format!("destination {id} has no category"),
+            },
+            Event::Refused { verb, message } => format!("{verb} refused: {}", plain(message)),
+            Event::Notice { text } => format!("notice: {}", plain(text)),
+            Event::SceneCreated { name } => format!("scene {} created", plain(name)),
+            Event::SceneDeleted { name } => format!("scene {} deleted", plain(name)),
+            Event::LayerAdded { id, kind } => format!("layer {} added ({kind})", plain(id)),
+            Event::LayerRemoved { id } => format!("layer {} removed", plain(id)),
+            Event::LayerVisible { id, on: shown } => {
+                format!("layer {} {}", plain(id), on(*shown, "shown", "hidden"))
+            }
+            Event::FilterSet { layer, file } => format!(
+                "{} filter {}",
+                layer
+                    .as_deref()
+                    .map_or_else(|| "scene".into(), |id| format!("layer {}", plain(id))),
+                file.as_deref().map_or_else(|| "off".into(), plain)
+            ),
+            Event::TimerFinished { id } => format!("timer {} at zero", plain(id)),
+            Event::LayerStalled { id } => format!("camera {} stopped delivering", plain(id)),
+            Event::LayerFlowing { id } => format!("camera {} delivering again", plain(id)),
+            Event::SoundComplaint { source, complaint } => {
+                let what = match source {
+                    Heard::Mic => "mic",
+                    Heard::Screen => "screen sound",
+                    Heard::App => "app sound",
+                };
+                match complaint {
+                    Some(why) => format!("{what}: {}", plain(why)),
+                    None => format!("{what} fine again"),
+                }
+            }
+            Event::AudioGlitch { starved, dropped } => {
+                format!("voice glitched: {starved} holes, {dropped} dropped so far")
+            }
+            Event::Faders {
+                mic,
+                music,
+                duck_db,
+            } => format!(
+                "faders: mic {:.0}%, music {:.0}%, duck {duck_db:.0} dB",
+                mic * 100.0,
+                music * 100.0
+            ),
+            Event::Gate { .. } => "gate changed (remux audio gate)".into(),
+            Event::Monitoring { on: up } => on(*up, "speakers on", "speakers off"),
+            Event::MusicToStream { on: out } => {
+                on(*out, "music in the stream", "music off the stream")
+            }
+            Event::ScreenSound { on: true, layer } => format!(
+                "screen sound on{}",
+                layer
+                    .as_deref()
+                    .map_or_else(String::new, |id| format!(" ({})", plain(id)))
+            ),
+            Event::ScreenSound { on: false, .. } => "screen sound off".into(),
+            Event::Denoise { on: up } => on(*up, "denoise on", "denoise off"),
+            Event::Hearing { apps } if apps.is_empty() => "hearing the whole screen".into(),
+            Event::Hearing { apps } => format!(
+                "hearing only {}",
+                apps.iter()
+                    .map(|app| plain(app))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Event::AppAudio {
+                app: Some(app),
+                volume,
+            } => format!("app sound {} at {:.0}%", plain(app), volume * 100.0),
+            Event::AppAudio { app: None, .. } => "app sound off".into(),
+            Event::Mirrored { on: flipped } => {
+                on(*flipped, "self-view mirrored", "self-view not mirrored")
+            }
+            Event::Viewers { total: Some(total) } => format!("{total} watching"),
+            Event::Viewers { total: None } => "viewers unknown".into(),
+        };
+        format!(
+            "{} #{} {what}",
+            remuxd_domain::air::journal::clock_of(numbered.at),
+            numbered.seq
+        )
+    });
+    missed
+        .into_iter()
+        .chain(happened)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn grant(grant: &Grant) -> &'static str {
@@ -1087,6 +1261,41 @@ fn render_devices(devices: &Devices) -> String {
 /// left standing as words nobody typed: a CSI to its final byte, an OSC to
 /// its BEL or ST, any other to the character after it. Every other control
 /// but the tab is dropped, the 8-bit C1 controls with them.
+/// A bridge's event, one line: the platform, who, what happened, and what they
+/// wrote with it. Every word from the wire is a stranger's and goes through
+/// `plain`.
+fn happening(happened: &remuxd_domain::app::wire::Happening) -> String {
+    use remuxd_domain::app::wire::What;
+    let who = plain(&happened.from);
+    let what = match &happened.what {
+        What::Chat => format!("{who} said"),
+        What::Sub { months, tier } => {
+            format!("{who} subscribed, {months} months, {}", plain(tier))
+        }
+        What::Gift { count, tier, to } if to.is_empty() => {
+            format!("{who} gave {count} subs, {}", plain(tier))
+        }
+        What::Gift { tier, to, .. } => {
+            format!("{who} gave a sub to {}, {}", plain(to), plain(tier))
+        }
+        What::Tip { amount, .. } => format!("{who} tipped {}", plain(amount)),
+        What::Raid { viewers } => format!("{who} raided with {viewers}"),
+        What::Follow => format!("{who} followed"),
+        What::Deleted { target } => format!("message {} deleted", plain(target)),
+        What::Banned { user, seconds: 0 } => format!("{} banned", plain(user)),
+        What::Banned { user, seconds } => {
+            format!("{} timed out for {seconds} s", plain(user))
+        }
+        What::Cleared => "chat cleared".into(),
+        What::Custom { name, .. } => format!("{} {who}", plain(name)),
+    };
+    let said = match (&happened.what, happened.body.is_empty()) {
+        (What::Deleted { .. }, _) | (_, true) => String::new(),
+        _ => format!(": {}", plain(&happened.body)),
+    };
+    format!("{} {what}{said}", plain(&happened.platform))
+}
+
 fn plain(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -1591,6 +1800,8 @@ mod tests {
             ("chat read", "chat"),
             ("chat hide 42", "hide 42"),
             ("chat delete 42", "delete 42"),
+            ("chat say valeu pessoal", "say valeu pessoal"),
+            ("chat say --to main oi", "say --to main oi"),
         ] {
             assert_eq!(typed(grouped), said(old), "{grouped}");
         }
@@ -1620,6 +1831,7 @@ mod tests {
             "title 2 words",
             "hide 42",
             "delete 42",
+            "say oi",
             "screen 3",
             "camera off",
             "shot",
@@ -1871,6 +2083,23 @@ mod tests {
         );
         assert!(said("category 2 509670").is_err(), "a category has a name");
         assert_eq!(said("delete 42"), Ok(Command::Delete { seq: 42 }));
+        assert_eq!(
+            said("say valeu, pessoal!"),
+            Ok(Command::Say {
+                body: "valeu, pessoal!".into(),
+                channel: None
+            })
+        );
+        assert_eq!(
+            said("say --to main oi"),
+            Ok(Command::Say {
+                body: "oi".into(),
+                channel: Some("main".into())
+            })
+        );
+        assert!(said("say").is_err(), "a line has words");
+        assert!(said("say --to main").is_err(), "a line has words");
+        assert!(said("say --to").is_err(), "--to names a chat");
         assert_eq!(said("disconnect 2"), Ok(Command::Disconnect { adapter: 2 }));
         assert_eq!(
             said("sandbox 2"),
@@ -2553,6 +2782,20 @@ pub fn show(reply: &Reply, view: &View, format: Format, ink: Ink, now: i64) -> S
 }
 
 /// One line of text as a JSON string, for a stream of lines.
+/// What `events -f --json` prints for one reply: one object a line, which
+/// is what a `while read` or an agent wants, never a list to unwrap. The gap
+/// first, as `{"gap":…}`, since it came before the events after it; a reply
+/// with nothing in it, nothing. The wire keeps the reply whole.
+pub fn event_lines(reply: &Reply) -> Vec<String> {
+    let Reply::Events { gap, events } = reply else {
+        return vec![json(reply)];
+    };
+    gap.map(|gap| json(&serde_json::json!({ "gap": gap })))
+        .into_iter()
+        .chain(events.iter().map(json))
+        .collect()
+}
+
 pub fn json_line(line: &str) -> String {
     json(&line)
 }
@@ -3081,5 +3324,532 @@ mod reading {
             "{shown}"
         );
         assert_eq!(elapsed(None, 5), "");
+    }
+
+    #[test]
+    fn the_events_read_one_a_line_with_the_time_they_happened() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, at, event| Numbered { seq, at, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(1, 3_600, Event::LiveStarted),
+                at(
+                    2,
+                    3_661,
+                    Event::SceneSwitched {
+                        name: "code".into(),
+                    },
+                ),
+                at(3, 3_662, Event::Muted { on: true }),
+                at(
+                    4,
+                    3_663,
+                    Event::TrackChanged {
+                        title: Some("lofi 2".into()),
+                    },
+                ),
+                at(5, 3_664, Event::TrackChanged { title: None }),
+                at(6, 3_665, Event::RecordStarted),
+                at(7, 3_666, Event::RecordStopped),
+                at(8, 3_667, Event::AppReachable { on: false }),
+                at(9, 3_668, Event::Muted { on: false }),
+                at(10, 3_669, Event::LiveEnded),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "01:00:00 #1 on air\n\
+             01:01:01 #2 scene code\n\
+             01:01:02 #3 mic muted\n\
+             01:01:03 #4 playing lofi 2\n\
+             01:01:04 #5 music stopped\n\
+             01:01:05 #6 recording\n\
+             01:01:06 #7 recording stopped\n\
+             01:01:07 #8 app unreachable\n\
+             01:01:08 #9 mic open\n\
+             01:01:09 #10 off air"
+        );
+    }
+
+    #[test]
+    fn a_face_that_fell_behind_is_told_before_what_came_after() {
+        use remuxd_domain::app::events::{Event, Gap, Numbered};
+        let reply = Reply::Events {
+            gap: Some(Gap { from: 3, to: 7 }),
+            events: vec![Numbered {
+                seq: 8,
+                at: 0,
+                event: Event::LiveEnded,
+            }],
+        };
+        assert_eq!(
+            render(&reply),
+            "some of #3 to #7 are gone: remux status says where things are\n00:00:00 #8 off air"
+        );
+    }
+
+    #[test]
+    fn no_events_say_so() {
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![],
+        };
+        assert_eq!(render(&reply), "nothing has happened yet");
+    }
+
+    #[test]
+    fn a_name_in_an_event_reaches_the_terminal_without_its_control_characters() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![Numbered {
+                seq: 1,
+                at: 0,
+                event: Event::TrackChanged {
+                    title: Some("lofi\u{1b}[2J 2".into()),
+                },
+            }],
+        };
+        assert!(!render(&reply).contains('\u{1b}'));
+    }
+
+    #[test]
+    fn the_events_are_read_once_or_followed_and_the_flag_never_reaches_the_engine() {
+        let asked = |line: &str| read(&w(line));
+        let events = Some(Command::Events {
+            since: 0,
+            follow: false,
+        });
+        for line in ["events -f", "events --follow", "events follow"] {
+            let ask = asked(line).unwrap();
+            assert_eq!((ask.command, ask.follow), (events.clone(), true), "{line}");
+        }
+        let ask = asked("events").unwrap();
+        assert_eq!((ask.command, ask.follow), (events, false));
+        assert_eq!(
+            asked("events now"),
+            Err("events takes -f, --follow or follow".into())
+        );
+    }
+
+    #[test]
+    fn followed_events_go_out_one_object_a_line_the_gap_first() {
+        use remuxd_domain::app::events::{Event, Gap, Numbered};
+        let reply = Reply::Events {
+            gap: Some(Gap { from: 3, to: 7 }),
+            events: vec![
+                Numbered {
+                    seq: 8,
+                    at: 100,
+                    event: Event::LiveEnded,
+                },
+                Numbered {
+                    seq: 9,
+                    at: 100,
+                    event: Event::Muted { on: true },
+                },
+            ],
+        };
+        assert_eq!(
+            event_lines(&reply),
+            vec![
+                r#"{"gap":{"from":3,"to":7}}"#.to_string(),
+                r#"{"seq":8,"at":100,"event":"live-ended"}"#.to_string(),
+                r#"{"seq":9,"at":100,"event":"muted","on":true}"#.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_followed_prints_nothing() {
+        let quiet = Reply::Events {
+            gap: None,
+            events: vec![],
+        };
+        assert_eq!(event_lines(&quiet), Vec::<String>::new());
+    }
+
+    #[test]
+    fn anything_else_the_engine_says_while_followed_is_its_own_line() {
+        let refused = Reply::Error {
+            message: "no".into(),
+        };
+        assert_eq!(
+            event_lines(&refused),
+            vec![r#"{"reply":"error","message":"no"}"#.to_string()]
+        );
+    }
+
+    #[test]
+    fn a_line_of_chat_in_the_events_reads_like_the_chat_stripped() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                Numbered {
+                    seq: 9,
+                    at: 0,
+                    event: Event::Chat {
+                        line: 7,
+                        platform: "twitch".into(),
+                        channel: "kartths".into(),
+                        from: "ana\u{1b}[31m".into(),
+                        body: "oi\u{1b}[2J".into(),
+                        id: "m1".into(),
+                    },
+                },
+                Numbered {
+                    seq: 10,
+                    at: 0,
+                    event: Event::ChatHidden { line: 7 },
+                },
+            ],
+        };
+        let shown = render(&reply);
+        assert_eq!(
+            shown.replace(|c: char| c.is_control() && c != '\n', ""),
+            shown,
+            "no control character reaches the terminal"
+        );
+        assert_eq!(
+            shown,
+            format!(
+                "00:00:00 #9 chat #7 twitch {}: {}\n00:00:00 #10 chat #7 hidden",
+                plain("ana\u{1b}[31m"),
+                plain("oi\u{1b}[2J")
+            )
+        );
+    }
+
+    // A bridge's events read one a line: who, what, and what they wrote, with
+    // a stranger's words stripped like a line's.
+    #[test]
+    fn a_chat_event_reads_as_what_happened_in_the_chat() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        use remuxd_domain::app::wire::{Happening, What};
+        let at = |seq, what, from: &str, body: &str| Numbered {
+            seq,
+            at: 0,
+            event: Event::ChatEvent {
+                happened: Happening {
+                    what,
+                    id: "e1".into(),
+                    platform: "twitch".into(),
+                    channel: "kartths".into(),
+                    from: from.into(),
+                    body: body.into(),
+                    badges: Vec::new(),
+                    reply: String::new(),
+                },
+            },
+        };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    What::Sub {
+                        months: 6,
+                        tier: "1000".into(),
+                    },
+                    "Ana",
+                    "six months!",
+                ),
+                at(
+                    2,
+                    What::Gift {
+                        count: 5,
+                        tier: "1000".into(),
+                        to: String::new(),
+                    },
+                    "Bob",
+                    "",
+                ),
+                at(
+                    3,
+                    What::Gift {
+                        count: 1,
+                        tier: "1000".into(),
+                        to: "Cid".into(),
+                    },
+                    "Bob",
+                    "",
+                ),
+                at(
+                    4,
+                    What::Tip {
+                        amount: "$5.00".into(),
+                        currency: "USD".into(),
+                        micros: 5_000_000,
+                    },
+                    "Ana",
+                    "gg\u{1b}[2J",
+                ),
+                at(5, What::Raid { viewers: 42 }, "Cid", ""),
+                at(6, What::Follow, "Dan", ""),
+                at(
+                    7,
+                    What::Deleted {
+                        target: "m1".into(),
+                    },
+                    "",
+                    "",
+                ),
+                at(
+                    8,
+                    What::Banned {
+                        user: "troll".into(),
+                        seconds: 600,
+                    },
+                    "",
+                    "",
+                ),
+                at(
+                    9,
+                    What::Banned {
+                        user: "troll".into(),
+                        seconds: 0,
+                    },
+                    "",
+                    "",
+                ),
+                at(10, What::Cleared, "", ""),
+                at(
+                    11,
+                    What::Custom {
+                        name: "twitch.announcement".into(),
+                        fields: Default::default(),
+                    },
+                    "Cid",
+                    "hello all",
+                ),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            [
+                "00:00:00 #1 twitch Ana subscribed, 6 months, 1000: six months!",
+                "00:00:00 #2 twitch Bob gave 5 subs, 1000",
+                "00:00:00 #3 twitch Bob gave a sub to Cid, 1000",
+                &format!(
+                    "00:00:00 #4 twitch Ana tipped $5.00: {}",
+                    plain("gg\u{1b}[2J")
+                ),
+                "00:00:00 #5 twitch Cid raided with 42",
+                "00:00:00 #6 twitch Dan followed",
+                "00:00:00 #7 twitch message m1 deleted",
+                "00:00:00 #8 twitch troll timed out for 600 s",
+                "00:00:00 #9 twitch troll banned",
+                "00:00:00 #10 twitch chat cleared",
+                "00:00:00 #11 twitch twitch.announcement Cid: hello all",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn what_goes_out_and_what_was_refused_read_one_a_line() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(1, Event::DestinationLive { id: 2 }),
+                at(
+                    2,
+                    Event::DestinationEnded {
+                        id: 6,
+                        why: Some("connection reset".into()),
+                    },
+                ),
+                at(3, Event::DestinationEnded { id: 2, why: None }),
+                at(4, Event::DestinationArmed { id: 2, on: true }),
+                at(5, Event::DestinationSandbox { id: 2, on: false }),
+                at(
+                    6,
+                    Event::DestinationRetitled {
+                        id: 6,
+                        title: Some("Rust at midnight".into()),
+                        description: None,
+                    },
+                ),
+                at(
+                    7,
+                    Event::DestinationCategorized {
+                        id: 6,
+                        category: None,
+                    },
+                ),
+                at(
+                    8,
+                    Event::Refused {
+                        verb: "go-live".into(),
+                        message: "the scene is empty".into(),
+                    },
+                ),
+                at(
+                    9,
+                    Event::Notice {
+                        text: "Twitch refused the title".into(),
+                    },
+                ),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 destination 2 on air\n\
+             00:00:00 #2 destination 6 dropped: connection reset\n\
+             00:00:00 #3 destination 2 off air\n\
+             00:00:00 #4 destination 2 armed\n\
+             00:00:00 #5 destination 2 out of the sandbox\n\
+             00:00:00 #6 destination 6 titled Rust at midnight\n\
+             00:00:00 #7 destination 6 has no category\n\
+             00:00:00 #8 go-live refused: the scene is empty\n\
+             00:00:00 #9 notice: Twitch refused the title"
+        );
+    }
+
+    #[test]
+    fn what_changed_in_the_picture_reads_one_a_line() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    Event::SceneCreated {
+                        name: "break".into(),
+                    },
+                ),
+                at(2, Event::SceneDeleted { name: "old".into() }),
+                at(
+                    3,
+                    Event::LayerAdded {
+                        id: "face".into(),
+                        kind: "camera".into(),
+                    },
+                ),
+                at(4, Event::LayerRemoved { id: "logo".into() }),
+                at(
+                    5,
+                    Event::LayerVisible {
+                        id: "face".into(),
+                        on: false,
+                    },
+                ),
+                at(
+                    6,
+                    Event::FilterSet {
+                        layer: Some("face".into()),
+                        file: Some("/tmp/warm.wgsl".into()),
+                    },
+                ),
+                at(
+                    7,
+                    Event::FilterSet {
+                        layer: None,
+                        file: None,
+                    },
+                ),
+                at(8, Event::TimerFinished { id: "clock".into() }),
+                at(9, Event::LayerStalled { id: "face".into() }),
+                at(10, Event::LayerFlowing { id: "face".into() }),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 scene break created\n\
+             00:00:00 #2 scene old deleted\n\
+             00:00:00 #3 layer face added (camera)\n\
+             00:00:00 #4 layer logo removed\n\
+             00:00:00 #5 layer face hidden\n\
+             00:00:00 #6 layer face filter /tmp/warm.wgsl\n\
+             00:00:00 #7 scene filter off\n\
+             00:00:00 #8 timer clock at zero\n\
+             00:00:00 #9 camera face stopped delivering\n\
+             00:00:00 #10 camera face delivering again"
+        );
+    }
+
+    #[test]
+    fn what_changed_in_the_sound_and_the_room_reads_one_a_line() {
+        use remuxd_domain::app::events::{Event, Heard, Numbered};
+        let at = |seq, event| Numbered { seq, at: 0, event };
+        let reply = Reply::Events {
+            gap: None,
+            events: vec![
+                at(
+                    1,
+                    Event::SoundComplaint {
+                        source: Heard::Mic,
+                        complaint: Some("speaks 8-bit".into()),
+                    },
+                ),
+                at(
+                    2,
+                    Event::SoundComplaint {
+                        source: Heard::Screen,
+                        complaint: None,
+                    },
+                ),
+                at(
+                    3,
+                    Event::AudioGlitch {
+                        starved: 5,
+                        dropped: 1,
+                    },
+                ),
+                at(
+                    4,
+                    Event::Faders {
+                        mic: 0.8,
+                        music: 0.85,
+                        duck_db: -18.0,
+                    },
+                ),
+                at(5, Event::Monitoring { on: true }),
+                at(6, Event::MusicToStream { on: false }),
+                at(
+                    7,
+                    Event::ScreenSound {
+                        on: true,
+                        layer: Some("desk".into()),
+                    },
+                ),
+                at(8, Event::Denoise { on: true }),
+                at(
+                    9,
+                    Event::Hearing {
+                        apps: vec!["Spotify".into(), "Brave".into()],
+                    },
+                ),
+                at(
+                    10,
+                    Event::AppAudio {
+                        app: Some("Safari".into()),
+                        volume: 1.0,
+                    },
+                ),
+                at(11, Event::Mirrored { on: true }),
+                at(12, Event::Viewers { total: Some(12) }),
+            ],
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 mic: speaks 8-bit\n\
+             00:00:00 #2 screen sound fine again\n\
+             00:00:00 #3 voice glitched: 5 holes, 1 dropped so far\n\
+             00:00:00 #4 faders: mic 80%, music 85%, duck -18 dB\n\
+             00:00:00 #5 speakers on\n\
+             00:00:00 #6 music off the stream\n\
+             00:00:00 #7 screen sound on (desk)\n\
+             00:00:00 #8 denoise on\n\
+             00:00:00 #9 hearing only Spotify, Brave\n\
+             00:00:00 #10 app sound Safari at 100%\n\
+             00:00:00 #11 self-view mirrored\n\
+             00:00:00 #12 12 watching"
+        );
     }
 }

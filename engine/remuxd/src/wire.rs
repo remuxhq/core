@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use remuxd_domain::app::chat::Feed;
@@ -19,14 +19,19 @@ use remuxd_domain::app::wire::{wires, Adapter, Down, Up, Wire};
 use remuxd_domain::protocol::{Destination, Found};
 use serde_json::json;
 
+use crate::bell::Bell;
+use crate::events::Followed;
+use remuxd_domain::app::events::Event;
+use remuxd_domain::protocol::ChatLine;
+
 /// What the wire has said, readable without waiting, and what waits to be
 /// said. Shared between the socket's thread, the engine and the daemon's
-/// socket (a follower wakes on `changed`).
+/// socket (a follower wakes on the feed's bell).
 pub struct Shared {
-    pub feed: Arc<Mutex<Feed>>,
-    /// Rung whenever the feed changed, for a follower to wake on.
-    pub changed: Condvar,
-    pub bell: Mutex<()>,
+    /// The chat, rung whenever it changed, for a follower to wake on.
+    pub feed: Bell<Feed>,
+    /// The events, where a line off the wire is said too.
+    events: Arc<Followed>,
     /// Whether the wire carrying the control half is up right now.
     pub connected: AtomicBool,
     pub destinations: Mutex<Vec<Destination>>,
@@ -47,11 +52,10 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(feed: Arc<Mutex<Feed>>) -> Arc<Self> {
+    pub fn new(feed: Arc<Mutex<Feed>>, events: Arc<Followed>) -> Arc<Self> {
         Arc::new(Self {
-            feed,
-            changed: Condvar::new(),
-            bell: Mutex::new(()),
+            feed: Bell::new(feed),
+            events,
             connected: AtomicBool::new(false),
             destinations: Mutex::new(Vec::new()),
             viewers: AtomicU64::new(0),
@@ -66,24 +70,50 @@ impl Shared {
     }
 
     fn ring(&self) {
-        let _held = self.bell.lock().expect("bell");
-        self.changed.notify_all();
+        self.feed.ring();
     }
 
     fn fold(&self, down: Down) {
         match down {
             Down::Line(line) => {
-                self.feed.lock().expect("feed").push_line(line);
+                let said = {
+                    let mut feed = self.feed.lock();
+                    let seq = feed.push_line(line.clone());
+                    Event::said(&ChatLine { seq, ..line })
+                };
                 self.ring();
+                self.events.tell([said]);
             }
+            // Said as it came, and what a moderator took down on the platform
+            // (a message, a viewer's lines, the chat) leaves every face here.
+            Down::Event(happened) => {
+                let taken = self.feed.lock().take_down(&happened);
+                self.ring();
+                let hidden = taken.into_iter().map(|line| Event::ChatHidden { line });
+                self.events
+                    .tell(std::iter::once(Event::ChatEvent { happened }).chain(hidden));
+            }
+            // Not events: what was said before this engine opened comes
+            // again on every connect, and a bridge that dropped and came back
+            // would say it all twice to every face that follows.
             Down::History(lines) => {
-                let mut feed = self.feed.lock().expect("feed");
+                let mut feed = self.feed.lock();
                 for line in lines {
                     feed.push_line(line);
                 }
                 self.ring();
             }
-            Down::Destinations(rows) => *self.destinations.lock().expect("destinations") = rows,
+            Down::Destinations(rows) => {
+                let moved = {
+                    let mut kept = self.destinations.lock().expect("destinations");
+                    let moved = remuxd_domain::app::events::rows_between(&kept, &rows);
+                    *kept = rows;
+                    moved
+                };
+                if !moved.is_empty() {
+                    self.events.tell(moved);
+                }
+            }
             Down::Viewers(watchers) => {
                 if let (true, Some(total)) = (watchers.answered, watchers.total) {
                     self.viewers.store(total, Ordering::Relaxed);
@@ -174,7 +204,7 @@ impl Source {
             shared.connected.store(up, Ordering::Relaxed);
         }
         if self.wire.chat() {
-            shared.feed.lock().expect("feed").reachable = up;
+            shared.feed.lock().reachable = up;
         }
         shared.ring();
     }
@@ -205,7 +235,7 @@ pub fn keep(source: Source, shared: Arc<Shared>) {
 pub fn rewire(shared: &Arc<Shared>) {
     shared.generation.fetch_add(1, Ordering::Relaxed);
     shared.connected.store(false, Ordering::Relaxed);
-    shared.feed.lock().expect("feed").reachable = false;
+    shared.feed.lock().reachable = false;
     shared.ring();
     let sources = Source::from_files();
     if sources.is_empty() {
@@ -240,14 +270,14 @@ fn stay(source: &Source, shared: &Shared, generation: u64) -> Result<(), String>
         if shared.generation.load(Ordering::Relaxed) != generation {
             return Ok(());
         }
-        // The account's verbs go up the control half, the deletes up the
+        // The account's verbs go up the control half, the deletes and says up the
         // chat's: with two wires, each takes only its own.
         let mut waiting: Vec<Up> = Vec::new();
         if source.wire.control() {
             waiting.extend(shared.outgoing.lock().expect("outgoing").drain(..));
         }
         if source.wire.chat() {
-            waiting.extend(shared.feed.lock().expect("feed").take_outgoing());
+            waiting.extend(shared.feed.lock().take_outgoing());
         }
         // A server closes a wire that says nothing for a minute.
         if beat.elapsed() > Duration::from_secs(25) {
@@ -364,5 +394,177 @@ impl remuxd_domain::engine::Watching for App {
     }
     fn notices(&mut self) -> Vec<String> {
         std::mem::take(&mut *self.shared.notices.lock().expect("notices"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::Followed;
+    use remuxd_domain::app::events::Event;
+    use remuxd_domain::app::wire::{Happening, What};
+    use remuxd_domain::protocol::ChatLine;
+    use std::time::Instant;
+
+    fn said(id: &str, body: &str) -> ChatLine {
+        ChatLine {
+            seq: 0,
+            from: "ana".into(),
+            body: body.into(),
+            platform: "twitch".into(),
+            id: id.into(),
+            channel: "kartths".into(),
+        }
+    }
+
+    fn shared() -> (Arc<Shared>, Arc<Followed>) {
+        let followed = Followed::starting_at(1);
+        let shared = Shared::new(
+            Arc::new(Mutex::new(Feed::starting_at(1))),
+            Arc::clone(&followed),
+        );
+        (shared, followed)
+    }
+
+    #[test]
+    fn a_line_off_the_wire_is_an_event_with_the_chats_number() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Line(said("m1", "oi")));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0].event,
+            Event::Chat {
+                line: 1,
+                platform: "twitch".into(),
+                channel: "kartths".into(),
+                from: "ana".into(),
+                body: "oi".into(),
+                id: "m1".into(),
+            }
+        );
+    }
+
+    fn happened(what: What) -> Happening {
+        Happening {
+            what,
+            id: "e1".into(),
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "ana".into(),
+            body: String::new(),
+            badges: Vec::new(),
+            reply: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_event_off_the_wire_is_said_as_it_came() {
+        let (shared, followed) = shared();
+        let raid = happened(What::Raid { viewers: 42 });
+        shared.fold(Down::Event(raid.clone()));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter().map(|n| n.event.clone()).collect::<Vec<_>>(),
+            vec![Event::ChatEvent { happened: raid }]
+        );
+    }
+
+    // A moderator deleted a message on Twitch and remux kept showing it.
+    #[test]
+    fn what_a_moderator_took_down_is_said_and_leaves_every_face() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Line(said("m1", "spam")));
+        shared.fold(Down::Line(said("m2", "fine")));
+        let deleted = happened(What::Deleted {
+            target: "m1".into(),
+        });
+        shared.fold(Down::Event(deleted.clone()));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter()
+                .skip(2)
+                .map(|n| n.event.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                Event::ChatEvent { happened: deleted },
+                Event::ChatHidden { line: 1 }
+            ]
+        );
+        assert_eq!(
+            shared
+                .feed
+                .lock()
+                .since(0)
+                .iter()
+                .map(|l| l.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["m2".to_string()]
+        );
+    }
+
+    // What was said before the engine opened comes again on every connect:
+    // as events, a bridge that dropped and came back would say it all twice.
+    #[test]
+    fn the_history_a_wire_opens_with_is_not_an_event() {
+        let (shared, followed) = shared();
+        shared.fold(Down::History(vec![said("m0", "earlier")]));
+        assert_eq!(shared.feed.lock().since(0).len(), 1, "the chat has it");
+        assert_eq!(followed.after(0, Duration::ZERO).events, vec![]);
+    }
+
+    #[test]
+    fn a_face_following_the_events_is_woken_by_a_line() {
+        let (shared, followed) = shared();
+        let waiting = Arc::clone(&followed);
+        let began = Instant::now();
+        let follower = std::thread::spawn(move || waiting.after(0, Duration::from_secs(10)).events);
+        while followed.asleep() == 0 {
+            std::thread::yield_now();
+        }
+        shared.fold(Down::Line(said("m1", "oi")));
+        assert_eq!(follower.join().expect("the follower returns").len(), 1);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "woken by its patience, after {:?}",
+            began.elapsed()
+        );
+    }
+
+    fn row(id: i64, armed: bool) -> Destination {
+        Destination {
+            id,
+            name: "twitch".into(),
+            platform: "twitch".into(),
+            status: "off".into(),
+            armed,
+            sandbox: false,
+            connected: true,
+            account: None,
+            category: None,
+            category_id: None,
+            viewers: None,
+            viewers_peak: None,
+            trouble: None,
+            title: None,
+            description: None,
+            channel: None,
+        }
+    }
+
+    // With an account the server owns the rows: armed from the site, from
+    // another machine, or by this engine asking, the change is the list it
+    // sends down, and only the rows that moved are said.
+    #[test]
+    fn a_row_the_server_changed_is_an_event_and_the_first_list_is_not() {
+        let (shared, followed) = shared();
+        shared.fold(Down::Destinations(vec![row(2, false), row(6, true)]));
+        assert_eq!(followed.after(0, Duration::ZERO).events, vec![]);
+        shared.fold(Down::Destinations(vec![row(2, true), row(6, true)]));
+        let held = followed.after(0, Duration::ZERO).events;
+        assert_eq!(
+            held.iter().map(|e| &e.event).collect::<Vec<_>>(),
+            [&Event::DestinationArmed { id: 2, on: true }]
+        );
     }
 }

@@ -417,6 +417,38 @@ impl From<Available> for Devices {
 /// The one place this crate reads a clock. It is `std`, not a dependency, and
 /// what it feeds is a timestamp on a log line: everything that decides
 /// anything takes its time as an argument and stays testable.
+/// Whether a command only reads. A read cannot move what the events follow,
+/// so no snapshot is taken after it: a panel's meter asks twelve times a
+/// second. One misfiled here costs a quarter of a second, not an event: the
+/// tick compares with what was seen last.
+fn only_reads(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Status
+            | Command::Levels
+            | Command::Sources
+            | Command::Plan
+            | Command::Shot { .. }
+            | Command::LayerShot { .. }
+            | Command::Grants
+            | Command::Chat { .. }
+            | Command::Events { .. }
+    )
+}
+
+/// Whether a command changes a destination's row: armed, rehearsed,
+/// retitled, recategorized. With an account the row changes when the server
+/// says so, on the wire; with none, here, in the file.
+fn moves_a_row(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Arm { .. }
+            | Command::Sandbox { .. }
+            | Command::Retitle { .. }
+            | Command::Categorize { .. }
+    )
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -441,6 +473,15 @@ pub struct Engine {
     /// The chat, off whatever wire the daemon opened. Shared with that wire's
     /// thread, which pushes lines in and takes deletes out.
     chat: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
+    /// What changed, for every face that follows it. Shared with the
+    /// daemon's socket, which hands it out without taking the engine's lock:
+    /// a face that reads slowly must never hold up a command.
+    events: std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>,
+    /// What the events saw last. `None` until the engine first does
+    /// anything, since a motor and an app are given after construction.
+    seen: Option<crate::app::events::Snapshot>,
+    /// The cameras shown, watched for a count that stops.
+    stalls: crate::picture::stall::Stalls,
     /// Where the picture goes when somebody presses Go live.
     ///
     /// It carries a credential, so the engine takes it from whoever started it
@@ -493,6 +534,9 @@ impl Engine {
             sources,
             watching: Box::new(NoApp),
             chat: Default::default(),
+            events: Default::default(),
+            seen: None,
+            stalls: Default::default(),
             pipeline: Box::new(NoPipeline),
             library: Box::new(NoLibrary),
             playing: None,
@@ -566,6 +610,15 @@ impl Engine {
         chat: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
     ) -> Self {
         self.chat = chat;
+        self
+    }
+
+    /// The events the daemon's socket hands out. See [`crate::app::events`].
+    pub fn with_events(
+        mut self,
+        events: std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>,
+    ) -> Self {
+        self.events = events;
         self
     }
 
@@ -1100,6 +1153,30 @@ impl Engine {
     /// It answers nothing. Whatever it changed is on the next status, which
     /// every face is already reading.
     pub fn tick(&mut self) {
+        self.seen();
+        self.ticked();
+        let cameras: Vec<(String, u64)> = self
+            .status
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.visible && layer.source.kind == crate::picture::layers::Kind::Camera
+            })
+            .map(|layer| {
+                (
+                    layer.id.clone(),
+                    self.pipeline.layer_flowing(&layer.id).captured,
+                )
+            })
+            .collect();
+        let stalled = self.stalls.observe(cameras);
+        self.keep(stalled);
+        self.notice();
+    }
+
+    /// The tick's own work, before the events are taken; it returns early,
+    /// and an early return must not skip them.
+    fn ticked(&mut self) {
         // The watching lease, counted down here because this is the one
         // thing that runs without a face asking. See `Command::Watching`.
         if self.watch_lease > 0 {
@@ -1122,7 +1199,8 @@ impl Engine {
         // What the app said out loud, into the log: a platform that refused
         // a title names itself here, where the sheet and the info window read.
         for notice in self.watching.notices() {
-            self.journal.note(now(), notice);
+            self.journal.note(now(), notice.clone());
+            self.keep([crate::app::events::Event::Notice { text: notice }]);
         }
         self.air_lapsed();
         self.sample_the_live();
@@ -1151,11 +1229,128 @@ impl Engine {
     /// missing from the forty-first. What is worth saying is
     /// [`crate::air::journal::said`], which is pure.
     pub fn handle(&mut self, command: Command) -> Reply {
+        self.seen();
+        let reads = only_reads(&command);
+        // The rows, around the few verbs that change one. Only those: with no
+        // account they are a file on disk, read whole.
+        let rows = moves_a_row(&command).then(|| self.watching.destinations());
         let reply = self.decide(command.clone());
         if let Some(line) = crate::air::journal::said(&command, &reply) {
             self.journal.note(now(), line);
         }
+        if let Some(refused) = crate::app::events::refused(&command, &reply) {
+            self.keep([refused]);
+        }
+        if let Some(before) = rows {
+            let after = self.watching.destinations();
+            self.keep(crate::app::events::rows_between(&before, &after));
+        }
+        if !reads {
+            self.notice();
+        }
         reply
+    }
+
+    /// What the events follow, as it is now. Built from the engine's own
+    /// state and not from [`Self::reported`], which asks the pipeline a
+    /// dozen things.
+    fn snapshot(&self) -> crate::app::events::Snapshot {
+        use crate::app::events::LayerSeen;
+        let heard = self.pipeline.hearing();
+        crate::app::events::Snapshot {
+            on_air: self.status.on_air,
+            recording: self.status.recording,
+            active_scene: self.status.active_scene.clone(),
+            muted: self.status.muted,
+            music: self.status.music.clone(),
+            app: self.watching.reachable(),
+            sending: self.pipeline.publishing().into_iter().collect(),
+            troubles: self.pipeline.troubles().into_iter().collect(),
+            scenes: self
+                .status
+                .scenes
+                .iter()
+                .map(|scene| scene.name.clone())
+                .collect(),
+            layers: self
+                .status
+                .layers
+                .iter()
+                .map(LayerSeen::of_layer)
+                .chain(self.active_elements().iter().map(LayerSeen::of_element))
+                .collect(),
+            filter: self.status.shader.clone(),
+            timers_done: self
+                .counting
+                .iter()
+                .filter(|(_, deadline)| **deadline <= Instant::now())
+                .map(|(id, _)| id.clone())
+                .collect(),
+            mic_complaint: heard.complaint,
+            screen_complaint: heard.screen_complaint,
+            app_complaint: heard.app_complaint,
+            starved: heard.starved,
+            dropped: heard.dropped,
+            faders: self.status.faders,
+            gate: self.status.gate,
+            monitoring: self.status.monitoring,
+            music_to_stream: self.status.music_to_stream,
+            screen_sound: self.status.screen_sound,
+            screen_sound_layer: self.status.screen_sound_layer.clone(),
+            denoise: self.status.denoise,
+            hearing_apps: self.status.hearing_apps.clone(),
+            app_audio: self.status.app_audio.clone(),
+            app_audio_volume: self.status.app_audio_volume,
+            mirrored: self.status.mirrored,
+            viewers: self.watching.viewers(),
+        }
+    }
+
+    /// The events after `since`. See [`Command::Events`].
+    fn events(&self, since: u64) -> Reply {
+        let crate::app::events::Since { gap, events } = match self.events.lock() {
+            Ok(events) => events.since(since),
+            Err(poisoned) => poisoned.into_inner().since(since),
+        };
+        Reply::Events { gap, events }
+    }
+
+    /// The first snapshot, before the first thing the engine ever does, so
+    /// that thing is an event like any other. Once.
+    fn seen(&mut self) {
+        if self.seen.is_none() {
+            self.seen = Some(self.snapshot());
+        }
+    }
+
+    /// Keep what changed since the last snapshot as events.
+    ///
+    /// Compared with what was seen last rather than with a snapshot taken
+    /// just before the command: a read takes none, and whatever changed
+    /// under one, or with no command at all, is still an event at the next
+    /// tick instead of lost between two snapshots that both have it.
+    fn notice(&mut self) {
+        let now_seen = self.snapshot();
+        let Some(before) = self.seen.replace(now_seen.clone()) else {
+            return;
+        };
+        let changes = crate::app::events::between(&before, &now_seen);
+        if changes.is_empty() {
+            return;
+        }
+        self.keep(changes);
+    }
+
+    /// Keep these events, now, in the order given.
+    fn keep(&self, changes: impl IntoIterator<Item = crate::app::events::Event>) {
+        let at = now();
+        let mut events = match self.events.lock() {
+            Ok(events) => events,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for event in changes {
+            events.push(at, event);
+        }
     }
 
     /// One verb, one hand: every arm is a call into the context that owns the
@@ -1254,8 +1449,10 @@ impl Engine {
             Command::Announce { adapter } => self.announce(adapter),
             Command::Disconnect { adapter } => self.disconnect(adapter),
             Command::Chat { since, .. } => self.chat(since),
+            Command::Events { since, .. } => self.events(since),
             Command::Hide { seq } => self.hide(seq),
             Command::Delete { seq } => self.delete_chat(seq),
+            Command::Say { body, channel } => self.say(&body, channel),
             Command::Categorize { adapter, id, name } => self.categorize(adapter, &id, &name),
             Command::Categories { adapter, query } => self.search_categories(adapter, &query),
             Command::Grants => self.grants(),
@@ -1721,6 +1918,13 @@ mod tests {
         // browser window is titled after the page and neither half alone
         // tells you which one it is.
         assert_eq!(devices.windows[1].name, "Brave Browser — remux");
+    }
+
+    // Asking what can be captured moves nothing the events follow: no
+    // snapshot after it.
+    #[test]
+    fn asking_what_can_be_captured_only_reads() {
+        assert!(only_reads(&Command::Sources));
     }
 
     // An empty list would read as "you have no monitors", which sends a person
@@ -2546,5 +2750,402 @@ mod tests {
             panic!("status answers with a status")
         };
         assert_eq!(status.devices_generation, 0);
+    }
+
+    fn followed() -> std::sync::Arc<std::sync::Mutex<crate::app::events::Events>> {
+        Default::default()
+    }
+
+    fn said(
+        events: &std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>,
+    ) -> Vec<crate::app::events::Event> {
+        let events = events.lock().expect("events");
+        events
+            .since(0)
+            .events
+            .into_iter()
+            .map(|e| e.event)
+            .collect()
+    }
+
+    #[test]
+    fn a_command_that_changed_what_the_feed_follows_is_an_event() {
+        use crate::app::events::Event;
+        let events = followed();
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Screen { display: 1 });
+        let added = Event::LayerAdded {
+            id: "source-1".into(),
+            kind: "screen".into(),
+        };
+        assert_eq!(said(&events), vec![added.clone()], "a capture is a layer");
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        assert_eq!(engine.handle(Command::Stop), Reply::Ok);
+        assert_eq!(
+            said(&events),
+            vec![added, Event::LiveStarted, Event::LiveEnded]
+        );
+    }
+
+    #[test]
+    fn what_changes_with_nobody_asking_is_an_event_on_the_tick() {
+        use crate::app::events::Event;
+        let events = followed();
+        let (engine, published) = publishing_engine(None);
+        let mut engine = engine.with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Screen { display: 1 });
+        let from = events.lock().expect("events").last();
+        let since = |events: &std::sync::Arc<std::sync::Mutex<crate::app::events::Events>>| {
+            let events = events.lock().expect("events");
+            events
+                .since(from)
+                .events
+                .into_iter()
+                .map(|e| e.event)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
+        engine.tick();
+        assert_eq!(since(&events), vec![Event::LiveStarted]);
+        // The relay hung up.
+        published.lock().expect("published").push(None);
+        engine.tick();
+        assert_eq!(since(&events), vec![Event::LiveStarted, Event::LiveEnded]);
+    }
+
+    #[test]
+    fn an_event_carries_the_moment_it_happened() {
+        let events = followed();
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Screen { display: 1 });
+        let before = now();
+        engine.handle(Command::GoLive);
+        let events = events.lock().expect("events").since(0).events;
+        let live = events.last().expect("the live");
+        assert!(live.at >= before && live.at <= now());
+    }
+
+    #[test]
+    fn a_face_asks_for_the_events_after_the_last_it_saw() {
+        use crate::app::events::Event;
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(followed());
+        engine.handle(Command::Screen { display: 1 });
+        engine.handle(Command::GoLive);
+        engine.handle(Command::Stop);
+        // 1 the screen added, 2 the live started, 3 the live ended.
+        let Reply::Events { gap, events } = engine.handle(Command::Events {
+            since: 2,
+            follow: false,
+        }) else {
+            panic!("events answers with events")
+        };
+        assert_eq!(gap, None);
+        assert_eq!(
+            events.iter().map(|e| (e.seq, &e.event)).collect::<Vec<_>>(),
+            [(3, &Event::LiveEnded)]
+        );
+    }
+
+    /// An app whose reachability the test turns, and that counts how often
+    /// the engine asked: the one question a snapshot puts to a port.
+    #[derive(Clone, Default)]
+    struct Counted {
+        up: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        rows: std::sync::Arc<std::sync::Mutex<Vec<Destination>>>,
+        said: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl Watching for Counted {
+        fn reachable(&self) -> bool {
+            use std::sync::atomic::Ordering;
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.up.load(Ordering::SeqCst)
+        }
+        fn destinations(&self) -> Vec<Destination> {
+            self.rows.lock().expect("rows").clone()
+        }
+        fn viewers(&self) -> Option<u32> {
+            None
+        }
+        fn arm(&self, adapter: i64, on: bool) -> Result<(), String> {
+            for row in self.rows.lock().expect("rows").iter_mut() {
+                if row.id == adapter {
+                    row.armed = on;
+                }
+            }
+            Ok(())
+        }
+        fn notices(&mut self) -> Vec<String> {
+            std::mem::take(&mut *self.said.lock().expect("said"))
+        }
+        fn sandbox(&self, _: i64, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn retitle(&self, _: i64, _: Option<&str>, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn announce(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+        fn categorize(&self, _: i64, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn search_categories(&self, _: i64, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    // A panel's meter asks twelve times a second; a snapshot on either side
+    // of each would be two dozen looks a second at what cannot have moved,
+    // and a field that costs something to look at (a file, the motor) would
+    // cost it that many times.
+    #[test]
+    fn a_read_looks_at_nothing_the_events_follow() {
+        use std::sync::atomic::Ordering;
+        let app = Counted::default();
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(followed());
+        engine.tick();
+        app.asked.store(0, Ordering::SeqCst);
+        for _ in 0..12 {
+            engine.handle(Command::Levels);
+            engine.handle(Command::Events {
+                since: 0,
+                follow: false,
+            });
+        }
+        assert_eq!(app.asked.load(Ordering::SeqCst), 0);
+    }
+
+    // Whatever changed with no command to say so, or under one that was
+    // taken for a read, is an event on the next tick, a quarter of a second
+    // at most: compared with what was seen last, never lost.
+    #[test]
+    fn what_changed_under_a_read_is_an_event_on_the_next_tick() {
+        use crate::app::events::Event;
+        use std::sync::atomic::Ordering;
+        let events = followed();
+        let app = Counted::default();
+        app.up.store(true, Ordering::SeqCst);
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        engine.tick();
+        app.up.store(false, Ordering::SeqCst);
+        engine.handle(Command::Levels);
+        assert_eq!(said(&events), vec![]);
+        engine.tick();
+        assert_eq!(said(&events), vec![Event::AppReachable { on: false }]);
+    }
+
+    #[test]
+    fn the_first_command_the_engine_ever_runs_is_an_event_too() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Mute { on: true });
+        assert_eq!(said(&events), vec![Event::Muted { on: true }]);
+    }
+
+    fn a_room_with(
+        body: &str,
+    ) -> (
+        std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>>,
+        u64,
+    ) {
+        let feed: std::sync::Arc<std::sync::Mutex<crate::app::chat::Feed>> = Default::default();
+        let seq = feed.lock().expect("feed").push(crate::app::wire::Line {
+            id: "m1".into(),
+            platform: "twitch".into(),
+            channel: "kartths".into(),
+            from: "ana".into(),
+            body: body.into(),
+        });
+        (feed, seq)
+    }
+
+    #[test]
+    fn a_line_hidden_or_deleted_is_taken_down_on_every_face_that_follows() {
+        use crate::app::events::Event;
+        for take in [|seq| Command::Hide { seq }, |seq| Command::Delete { seq }] {
+            let events = followed();
+            let (feed, seq) = a_room_with("spam");
+            let mut engine = engine()
+                .with_chat(feed)
+                .with_events(std::sync::Arc::clone(&events));
+            assert_eq!(engine.handle(take(seq)), Reply::Ok);
+            assert_eq!(said(&events), vec![Event::ChatHidden { line: seq }]);
+        }
+    }
+
+    #[test]
+    fn a_line_the_engine_no_longer_has_is_not_taken_down() {
+        use crate::app::events::Event;
+        let events = followed();
+        let (feed, seq) = a_room_with("spam");
+        let mut engine = engine()
+            .with_chat(feed)
+            .with_events(std::sync::Arc::clone(&events));
+        let Reply::Error { message } = engine.handle(Command::Delete { seq: seq + 40 }) else {
+            panic!("no such line, so no")
+        };
+        assert_eq!(
+            said(&events),
+            vec![Event::Refused {
+                verb: "delete".into(),
+                message
+            }],
+            "the refusal, and no line taken down"
+        );
+    }
+
+    #[test]
+    fn a_refused_command_is_an_event_saying_why() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        let Reply::Error { message } = engine.handle(Command::GoLive) else {
+            panic!("nothing to send, so no")
+        };
+        assert_eq!(
+            said(&events),
+            vec![Event::Refused {
+                verb: "go-live".into(),
+                message
+            }]
+        );
+    }
+
+    #[test]
+    fn what_a_server_said_out_loud_is_an_event_on_the_tick() {
+        use crate::app::events::Event;
+        let events = followed();
+        let app = Counted::default();
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        app.said
+            .lock()
+            .expect("said")
+            .push("Twitch refused the title".into());
+        engine.tick();
+        assert_eq!(
+            said(&events),
+            vec![Event::Notice {
+                text: "Twitch refused the title".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn arming_a_destination_is_an_event() {
+        use crate::app::events::Event;
+        let events = followed();
+        let app = Counted::default();
+        app.rows.lock().expect("rows").push(Destination {
+            id: 2,
+            name: "twitch".into(),
+            platform: "twitch".into(),
+            status: "off".into(),
+            armed: false,
+            sandbox: false,
+            connected: true,
+            account: None,
+            category: None,
+            category_id: None,
+            viewers: None,
+            viewers_peak: None,
+            trouble: None,
+            title: None,
+            description: None,
+            channel: None,
+        });
+        let mut engine = engine()
+            .with_app(Box::new(app.clone()))
+            .with_events(std::sync::Arc::clone(&events));
+        assert_eq!(
+            engine.handle(Command::Arm {
+                adapter: 2,
+                on: true
+            }),
+            Reply::Ok
+        );
+        assert_eq!(
+            said(&events),
+            vec![Event::DestinationArmed { id: 2, on: true }]
+        );
+    }
+
+    #[test]
+    fn a_timer_reaching_zero_is_an_event() {
+        use crate::app::events::Event;
+        use crate::picture::scenes::{Element, ElementContent};
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::SceneElementAdd {
+            element: Element {
+                id: "clock".into(),
+                x: 600,
+                y: 400,
+                width: 700,
+                height: 180,
+                visible: true,
+                shader: None,
+                content: ElementContent::Timer { seconds: 0 },
+            },
+        });
+        engine.handle(Command::SceneTimerStart { id: "clock".into() });
+        engine.tick();
+        assert!(
+            said(&events).contains(&Event::TimerFinished { id: "clock".into() }),
+            "got {:?}",
+            said(&events)
+        );
+    }
+
+    #[test]
+    fn a_camera_whose_frames_stop_is_an_event_on_the_ticks() {
+        use crate::app::events::Event;
+        let events = followed();
+        // The fake camera's count never moves past three.
+        let (engine, _) = publishing_engine(None);
+        let mut engine = engine.with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Camera {
+            device: Some("HP".into()),
+        });
+        let id = engine.status().layers[0].id.clone();
+        for _ in 0..=crate::picture::stall::Stalls::FLAT_TICKS {
+            engine.tick();
+        }
+        assert!(
+            said(&events).contains(&Event::LayerStalled { id }),
+            "got {:?}",
+            said(&events)
+        );
+    }
+
+    #[test]
+    fn a_fader_moved_is_an_event_on_the_detail_ring() {
+        use crate::app::events::Event;
+        let events = followed();
+        let mut engine = engine().with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::Volume { level: 0.5 });
+        let faders = engine.status().faders;
+        assert_eq!(
+            said(&events),
+            vec![Event::Faders {
+                mic: 0.5,
+                music: faders.music,
+                duck_db: faders.duck_db
+            }]
+        );
     }
 }

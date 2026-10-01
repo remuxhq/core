@@ -284,6 +284,13 @@ const CHAT: &[Action] = &[
         args: "<line number>",
         summary: "Delete a line on its platform.",
     },
+    Action {
+        name: "say",
+        target: "say",
+        prefix: &[],
+        args: "[--to <chat>] <words>",
+        summary: "Say a line in the platform's chat.",
+    },
 ];
 
 const SCENE: &[Action] = &[
@@ -391,7 +398,8 @@ pub(super) const GROUPS: &[Group] = &[
 /// and what this shell keeps by itself.
 pub(super) const TOP: &[&str] = &[
     "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
-    "health", "wait", "history", "log", "login", "logout", "config", "daemon", "bug", "schema",
+    "health", "wait", "events", "history", "log", "login", "logout", "config", "daemon", "bug",
+    "schema",
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static Group> {

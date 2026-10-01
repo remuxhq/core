@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::app::wire::{Delete, Line, Up};
+use crate::app::wire::{Delete, Happening, Line, Say, Up, What};
 use crate::protocol::{ChatLine, CHAT_LINES};
 
 /// The last of the chat, as the engine holds it for every face: numbered as
@@ -69,6 +69,34 @@ impl Feed {
         self.hidden.insert(seq);
     }
 
+    /// What a moderator took down on a platform, off every face here: a
+    /// deleted message by its id, a banned viewer's lines in that chat, or the
+    /// whole chat cleared. The numbers of the lines it took, for the events.
+    /// A ban matches the name without case: a platform bans by login and the
+    /// line says the display name, which differ in case and, for names in
+    /// other scripts, altogether.
+    pub fn take_down(&mut self, happened: &Happening) -> Vec<u64> {
+        let here = |line: &ChatLine| {
+            line.platform == happened.platform && line.channel == happened.channel
+        };
+        let taken: Vec<u64> = self
+            .lines
+            .iter()
+            .filter(|line| !self.hidden.contains(&line.seq))
+            .filter(|line| match &happened.what {
+                What::Deleted { target } => {
+                    line.platform == happened.platform && &line.id == target
+                }
+                What::Banned { user, .. } => here(line) && line.from.eq_ignore_ascii_case(user),
+                What::Cleared => here(line),
+                _ => false,
+            })
+            .map(|line| line.seq)
+            .collect();
+        self.hidden.extend(&taken);
+        taken
+    }
+
     /// Off every face here, and a delete on the wire for the platform. A line
     /// the engine no longer holds cannot be deleted from here.
     pub fn delete(&mut self, seq: u64) -> Result<(), String> {
@@ -82,6 +110,29 @@ impl Feed {
             channel: line.channel.clone(),
         }));
         self.hidden.insert(seq);
+        Ok(())
+    }
+
+    /// A line the operator says, up the wire to the platform's chat. No copy
+    /// is kept: the platform hands it back down like anybody's line. Refused
+    /// with no wire up, since the queue would send it minutes out of its
+    /// moment, and with a control character in it: a newline is a second
+    /// line, and on Twitch's IRC a second command.
+    pub fn say(&mut self, body: &str, channel: Option<String>) -> Result<(), String> {
+        if !self.reachable {
+            return Err("no chat wire to say it on".into());
+        }
+        let body = body.trim();
+        if body.is_empty() {
+            return Err("say needs the words".into());
+        }
+        if body.chars().any(char::is_control) {
+            return Err("a line of chat is one line, with no control characters".into());
+        }
+        self.outgoing.push_back(Up::Say(Say {
+            body: body.into(),
+            channel: channel.filter(|channel| !channel.is_empty()),
+        }));
         Ok(())
     }
 
@@ -146,6 +197,56 @@ mod tests {
         assert!(feed.delete(99).is_err());
     }
 
+    // What the operator says goes up the wire and nowhere else: the platform
+    // hands it back down as a line like anybody's, so the feed keeps no copy
+    // of its own to show twice.
+    #[test]
+    fn a_line_said_goes_up_the_wire_once_and_comes_back_only_from_the_platform() {
+        let mut feed = Feed {
+            reachable: true,
+            ..Feed::default()
+        };
+        feed.say("hello chat", None).unwrap();
+        feed.say("oi", Some("main".into())).unwrap();
+        assert!(feed.since(0).is_empty(), "no copy here");
+        assert_eq!(
+            feed.take_outgoing(),
+            vec![
+                Up::Say(Say {
+                    body: "hello chat".into(),
+                    channel: None
+                }),
+                Up::Say(Say {
+                    body: "oi".into(),
+                    channel: Some("main".into())
+                }),
+            ]
+        );
+    }
+
+    // A line said to nobody would wait in the queue and go up minutes later,
+    // out of its moment; one with a newline in it is two lines on a platform
+    // that reads lines (Twitch's IRC), the second one a command.
+    #[test]
+    fn a_line_is_refused_with_no_wire_no_words_or_a_break_in_it() {
+        let mut feed = Feed::default();
+        assert!(feed.say("hi", None).unwrap_err().contains("no chat wire"));
+        feed.reachable = true;
+        assert!(feed.say("   ", None).is_err());
+        assert!(feed.say("hi\r\nPRIVMSG #x :pwned", None).is_err());
+        assert!(feed.say("hi\u{7}", None).is_err());
+        assert!(feed.take_outgoing().is_empty());
+        feed.say("  trimmed  ", Some("".into())).unwrap();
+        assert_eq!(
+            feed.take_outgoing(),
+            vec![Up::Say(Say {
+                body: "trimmed".into(),
+                channel: None
+            })],
+            "an empty channel is every chat"
+        );
+    }
+
     #[test]
     fn the_ring_is_bounded() {
         let mut feed = Feed::default();
@@ -154,5 +255,101 @@ mod tests {
         }
         assert_eq!(feed.since(0).len(), CHAT_LINES);
         assert_eq!(feed.since(0)[0].seq, 6);
+    }
+
+    fn from(id: &str, who: &str, channel: &str) -> Line {
+        Line {
+            id: id.into(),
+            platform: "twitch".into(),
+            channel: channel.into(),
+            from: who.into(),
+            body: "words".into(),
+        }
+    }
+
+    fn moderated(what: What, channel: &str) -> Happening {
+        Happening {
+            what,
+            id: String::new(),
+            platform: "twitch".into(),
+            channel: channel.into(),
+            from: String::new(),
+            body: String::new(),
+            badges: Vec::new(),
+            reply: String::new(),
+        }
+    }
+
+    // A moderator took a message down on its platform, and every face here
+    // kept showing it.
+    #[test]
+    fn what_a_moderator_took_down_leaves_every_face() {
+        let mut feed = Feed::default();
+        feed.push(from("m1", "Ana", "main"));
+        feed.push(from("m2", "Troll", "main"));
+        feed.push(from("m3", "troll", "main"));
+        feed.push(from("m4", "Troll", "other"));
+        feed.push(from("m5", "Bob", "other"));
+        let deleted = moderated(
+            What::Deleted {
+                target: "m1".into(),
+            },
+            "main",
+        );
+        assert_eq!(feed.take_down(&deleted), vec![1]);
+        let banned = moderated(
+            What::Banned {
+                user: "troll".into(),
+                seconds: 600,
+            },
+            "main",
+        );
+        assert_eq!(
+            feed.take_down(&banned),
+            vec![2, 3],
+            "a ban takes the viewer's lines in that chat, whatever the case of the name"
+        );
+        assert_eq!(
+            feed.since(0).iter().map(|l| l.seq).collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(
+            feed.take_down(&moderated(What::Cleared, "other")),
+            vec![4, 5]
+        );
+        assert!(feed.since(0).is_empty());
+        assert_eq!(
+            feed.take_down(&deleted),
+            Vec::<u64>::new(),
+            "a line already off is not taken off again"
+        );
+    }
+
+    #[test]
+    fn an_event_that_is_not_a_moderators_takes_nothing_down() {
+        let mut feed = Feed::default();
+        feed.push(from("m1", "Ana", "main"));
+        let sub = moderated(
+            What::Sub {
+                months: 1,
+                tier: "1000".into(),
+            },
+            "main",
+        );
+        assert!(feed.take_down(&sub).is_empty());
+        let elsewhere = Happening {
+            platform: "youtube".into(),
+            ..moderated(
+                What::Deleted {
+                    target: "m1".into(),
+                },
+                "main",
+            )
+        };
+        assert!(
+            feed.take_down(&elsewhere).is_empty(),
+            "an id is its platform's own"
+        );
+        assert_eq!(feed.since(0).len(), 1);
     }
 }

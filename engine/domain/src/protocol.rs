@@ -373,6 +373,17 @@ pub enum Command {
         #[serde(default)]
         follow: bool,
     },
+    /// What changed in the engine (`remuxd_domain::app::events`): the events
+    /// after the one numbered `since`, zero for all that is held. With
+    /// `follow`, the daemon answers once and then keeps the connection,
+    /// pushing an `events` reply whenever more happen, until the client hangs
+    /// up.
+    Events {
+        #[serde(default)]
+        since: u64,
+        #[serde(default)]
+        follow: bool,
+    },
     /// Take one line of chat off every face for the rest of the run: a
     /// spammer's, before the overlay on the stream shows it any longer. The
     /// app keeps the conversation as it was said; this is the engine's own
@@ -401,6 +412,16 @@ pub enum Command {
     /// engine finds the line by its number and hands over the message's id.
     Delete {
         seq: u64,
+    },
+    /// Say one line in the platform's chat, as the broadcaster: up the wire,
+    /// and whoever serves it posts it (`byo/bridge.py` with the account's
+    /// token). `channel` is a line's own (`ChatLine::channel`); none is every
+    /// chat the wire reads. The engine keeps no copy: the platform hands the
+    /// line back down like anybody's, and a face reads it there.
+    Say {
+        body: String,
+        #[serde(default)]
+        channel: Option<String>,
     },
     /// The config changed where the chat comes from (`remux chat --url`):
     /// the daemon drops its wire and opens what the config says now. A live
@@ -445,6 +466,12 @@ pub enum Reply {
     Chat {
         reachable: bool,
         lines: Vec<ChatLine>,
+    },
+    /// What changed, oldest first, and what a face asked for and can no
+    /// longer have, which a status makes whole. See [`Command::Events`].
+    Events {
+        gap: Option<crate::app::events::Gap>,
+        events: Vec<crate::app::events::Numbered>,
     },
     /// The three permissions, as the OS has them right now.
     ///
@@ -1301,5 +1328,64 @@ mod tests {
         assert_eq!(json["layer_flowing"], serde_json::json!({}));
         assert!(json.get("camera_shape").is_none());
         assert!(json.get("screen").is_none());
+    }
+
+    #[test]
+    fn the_events_are_asked_for_and_answered_in_these_bytes() {
+        use crate::app::events::{Event, Gap, Numbered};
+        assert_eq!(
+            encode(&Command::Events {
+                since: 4,
+                follow: true
+            }),
+            "{\"cmd\":\"events\",\"since\":4,\"follow\":true}\n"
+        );
+        assert_eq!(
+            decode("{\"cmd\":\"events\"}"),
+            Ok(Command::Events {
+                since: 0,
+                follow: false
+            }),
+            "a face that says nothing more asks for everything, once"
+        );
+        assert_eq!(
+            encode(&Reply::Events {
+                gap: None,
+                events: vec![Numbered {
+                    seq: 5,
+                    at: 1_700_000_000,
+                    event: Event::SceneSwitched {
+                        name: "code".into()
+                    },
+                }],
+            }),
+            "{\"reply\":\"events\",\"gap\":null,\"events\":[{\"seq\":5,\"at\":1700000000,\"event\":\"scene-switched\",\"name\":\"code\"}]}\n"
+        );
+        assert_eq!(
+            encode(&Reply::Events {
+                gap: Some(Gap { from: 3, to: 4 }),
+                events: vec![],
+            }),
+            "{\"reply\":\"events\",\"gap\":{\"from\":3,\"to\":4},\"events\":[]}\n"
+        );
+    }
+
+    #[test]
+    fn a_line_is_said_in_these_bytes() {
+        assert_eq!(
+            encode(&Command::Say {
+                body: "oi".into(),
+                channel: Some("main".into())
+            }),
+            "{\"cmd\":\"say\",\"body\":\"oi\",\"channel\":\"main\"}\n"
+        );
+        assert_eq!(
+            decode("{\"cmd\":\"say\",\"body\":\"oi\"}"),
+            Ok(Command::Say {
+                body: "oi".into(),
+                channel: None
+            }),
+            "no channel is every chat"
+        );
     }
 }
