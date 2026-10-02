@@ -142,6 +142,9 @@ impl Engine {
 
     pub(super) fn audio_layer_remove(&mut self, id: String) -> Reply {
         let Some(index) = self.status.audio_layers.iter().position(|l| l.id == id) else {
+            if self.forget_kept(|kept| kept.sounds.retain(|(_, sound)| sound.id != id)) {
+                return Reply::Status(Box::new(self.reported()));
+            }
             return Reply::Error {
                 message: format!("no audio layer {id:?}"),
             };

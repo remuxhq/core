@@ -872,6 +872,9 @@ impl Engine {
 
     pub(super) fn layer_remove(&mut self, id: String) -> Reply {
         let Some(index) = self.status.layers.iter().position(|layer| layer.id == id) else {
+            if self.forget_kept(|kept| kept.layers.retain(|(_, layer)| layer.id != id)) {
+                return Reply::Status(Box::new(self.reported()));
+            }
             return self.scene_element_remove(id);
         };
         self.pipeline.layer_remove(&id);
