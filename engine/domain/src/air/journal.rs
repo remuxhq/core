@@ -117,8 +117,6 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::Mute { on: muted } => format!("mic {}", if *muted { "muted" } else { "open" }),
         Command::Monitor { on: hearing } => format!("monitoring {}", on(hearing)),
         Command::Denoise { on: cleaned } => format!("denoise {}", on(cleaned)),
-        Command::Hear { apps } if apps.is_empty() => "hearing the whole screen".into(),
-        Command::Hear { apps } => format!("hearing {}", apps.join(", ")),
         Command::Clip { name } => format!("clip: {name}"),
         Command::StreamMusic { on: sent } => format!("music to the stream {}", on(sent)),
         Command::ScreenSound { on: sent } => {
@@ -229,7 +227,6 @@ fn verb(command: &Command) -> &'static str {
         Command::Mute { .. } => "mute",
         Command::Monitor { .. } => "monitor",
         Command::Denoise { .. } => "denoise",
-        Command::Hear { .. } => "hear",
         Command::Clip { .. } => "play",
         Command::StreamMusic { .. } => "stream-music",
         Command::ScreenSound { .. } | Command::LayerScreenSound { .. } => "screen-sound",

@@ -950,14 +950,6 @@ fn render_events(
             ),
             Event::ScreenSound { on: false, .. } => "screen sound off".into(),
             Event::Denoise { on: up } => on(*up, "denoise on", "denoise off"),
-            Event::Hearing { apps } if apps.is_empty() => "hearing the whole screen".into(),
-            Event::Hearing { apps } => format!(
-                "hearing only {}",
-                apps.iter()
-                    .map(|app| plain(app))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
             Event::AppAudio {
                 app: Some(app),
                 volume,
@@ -2895,10 +2887,7 @@ fn render_verbose(status: &Status, now: i64) -> String {
         ));
     }
     if status.screen_sound {
-        lines.push(match status.hearing_apps.as_slice() {
-            [] => "screen sound out".into(),
-            apps => format!("screen sound out: {}", apps.join(", ")),
-        });
+        lines.push("screen sound out".into());
     }
     match &status.mic {
         Some(mic) => lines.push(format!(
@@ -3801,12 +3790,6 @@ mod reading {
                 ),
                 at(8, Event::Denoise { on: true }),
                 at(
-                    9,
-                    Event::Hearing {
-                        apps: vec!["Spotify".into(), "Brave".into()],
-                    },
-                ),
-                at(
                     10,
                     Event::AppAudio {
                         app: Some("Safari".into()),
@@ -3827,7 +3810,6 @@ mod reading {
              00:00:00 #6 music off the stream\n\
              00:00:00 #7 screen sound on (desk)\n\
              00:00:00 #8 denoise on\n\
-             00:00:00 #9 hearing only Spotify, Brave\n\
              00:00:00 #10 app sound Safari at 100%\n\
              00:00:00 #11 self-view mirrored\n\
              00:00:00 #12 12 watching"

@@ -47,11 +47,6 @@ pub trait Sound: Send {
     fn gate(&mut self, params: GateParams);
     /// Take the room out of the microphone before the gate, or stop.
     fn denoise(&mut self, _on: bool) {}
-    /// Hear these applications alone in the screen's sound, or, empty, the
-    /// whole screen again.
-    fn hear(&mut self, _apps: &[String]) -> Result<(), String> {
-        Ok(())
-    }
     /// Play one file once over the mix, at its own level.
     fn clip(&mut self, _path: &std::path::Path) -> Result<(), String> {
         Err("this engine plays no clips".into())
@@ -234,52 +229,6 @@ impl Engine {
         }
         self.status.screen_sound = on;
         self.status.screen_sound_layer = on.then_some(id);
-        self.sound()
-    }
-
-    /// `hear`, for the faces that still send it (the shell no longer does:
-    /// an application's sound is an audio layer): that application's sound
-    /// alone, by the name the system lists it under, and the screen's sound
-    /// switched on with it, since nobody names an app they do not want heard.
-    pub(super) fn hear(&mut self, apps: Vec<String>) -> Reply {
-        let names = if apps.is_empty() {
-            Vec::new()
-        } else {
-            let running = match self.sources.available() {
-                Ok(available) => available.apps,
-                Err(why) => return Reply::Error { message: why },
-            };
-            let mut names = Vec::new();
-            for asked in &apps {
-                let wanted = asked.to_lowercase();
-                match running
-                    .iter()
-                    .find(|name| name.to_lowercase() == wanted)
-                    .or_else(|| {
-                        running
-                            .iter()
-                            .find(|name| name.to_lowercase().contains(&wanted))
-                    }) {
-                    Some(name) => names.push(name.clone()),
-                    None => {
-                        return Reply::Error {
-                            message: format!(
-                                "{asked} is not running; there is {}",
-                                list_of(running.iter().cloned())
-                            ),
-                        }
-                    }
-                }
-            }
-            names
-        };
-        if let Err(message) = self.pipeline.hear(&names) {
-            return Reply::Error { message };
-        }
-        self.status.hearing_apps = names;
-        if !self.status.hearing_apps.is_empty() {
-            self.status.screen_sound = true;
-        }
         self.sound()
     }
 
@@ -553,36 +502,6 @@ mod tests {
             "it should say what there is: {message}"
         );
         assert_eq!(engine.status().mic, None, "and change nothing");
-    }
-
-    // The screen's sound can be one application's: the name as the system
-    // lists it, matched loosely, the switch turned on with it, and a name that
-    // is not running refused with the names that are.
-    #[test]
-    fn hearing_an_application_names_it_as_the_system_does_and_sends_it() {
-        let mut one = Engine::with_sources(Box::new(ThisMachine));
-        assert!(matches!(
-            one.handle(Command::Hear {
-                apps: vec!["spot".into()]
-            }),
-            Reply::Status(_)
-        ));
-        assert_eq!(one.status().hearing_apps, vec!["Spotify".to_string()]);
-        assert!(one.status().screen_sound);
-        let Reply::Error { message } = one.handle(Command::Hear {
-            apps: vec!["Zoom".into()],
-        }) else {
-            panic!("an app that is not running is refused")
-        };
-        assert!(
-            message.contains("Zoom") && message.contains("Brave Browser"),
-            "{message}"
-        );
-        assert!(matches!(
-            one.handle(Command::Hear { apps: vec![] }),
-            Reply::Status(_)
-        ));
-        assert!(one.status().hearing_apps.is_empty());
     }
 
     #[test]

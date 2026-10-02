@@ -283,11 +283,6 @@ pub enum Command {
     Clip {
         name: String,
     },
-    /// Whose sound the screen's sound is: these applications' alone, or
-    /// everything the computer plays when the list is empty.
-    Hear {
-        apps: Vec<String>,
-    },
     /// The room out of the microphone (RNNoise), or as it comes.
     Denoise {
         on: bool,
@@ -882,9 +877,6 @@ pub struct Status {
     /// Whether the microphone goes through the denoiser before the gate.
     #[serde(default)]
     pub denoise: bool,
-    /// The applications whose sound is heard; empty is the whole screen's.
-    #[serde(default)]
-    pub hearing_apps: Vec<String>,
     /// The display layer supplying system audio; never more than one.
     #[serde(default)]
     pub screen_sound_layer: Option<String>,
@@ -942,7 +934,6 @@ impl Default for Status {
             denoise: false,
             version: String::new(),
             motor: String::new(),
-            hearing_apps: Vec::new(),
             categories: None,
             viewers_peak: None,
             recording_since: None,
@@ -1201,6 +1192,20 @@ mod tests {
     // wire format and only one of them is written in this language, so the
     // exact bytes matter and a rename that serde would happily carry across a
     // round trip has to fail here instead.
+    // One application's sound is an audio layer; `hear`, which filtered the
+    // screen's sound and heard only the first application it was given, is
+    // gone from the wire, both ways.
+    #[test]
+    fn hear_is_gone_from_the_wire() {
+        assert!(decode("{\"cmd\":\"hear\",\"apps\":[\"Spotify\"]}").is_err());
+        let status = serde_json::to_value(Status::default()).unwrap();
+        assert!(status.get("hearing_apps").is_none(), "{status}");
+        assert!(serde_json::from_str::<crate::app::events::Event>(
+            "{\"event\":\"hearing\",\"apps\":[]}"
+        )
+        .is_err());
+    }
+
     // What can be captured is asked as `sources`; the old `devices` is gone
     // from the wire, both ways.
     #[test]

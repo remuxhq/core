@@ -151,10 +151,6 @@ pub enum Event {
     Denoise {
         on: bool,
     },
-    /// The applications heard alone in the screen's sound; empty is all.
-    Hearing {
-        apps: Vec<String>,
-    },
     /// One application's sound on its own fader, `None` when off.
     AppAudio {
         app: Option<String>,
@@ -223,7 +219,6 @@ impl Event {
             | Self::MusicToStream { .. }
             | Self::ScreenSound { .. }
             | Self::Denoise { .. }
-            | Self::Hearing { .. }
             | Self::AppAudio { .. }
             | Self::Mirrored { .. }
             | Self::Viewers { .. } => Ring::Detail,
@@ -407,7 +402,6 @@ pub struct Snapshot {
     pub screen_sound: bool,
     pub screen_sound_layer: Option<String>,
     pub denoise: bool,
-    pub hearing_apps: Vec<String>,
     pub app_audio: Option<String>,
     pub app_audio_volume: f64,
     pub mirrored: bool,
@@ -509,7 +503,6 @@ impl From<&Status> for Snapshot {
             screen_sound: status.screen_sound,
             screen_sound_layer: status.screen_sound_layer.clone(),
             denoise: status.denoise,
-            hearing_apps: status.hearing_apps.clone(),
             app_audio: status.app_audio.clone(),
             app_audio_volume: status.app_audio_volume,
             mirrored: status.mirrored,
@@ -641,11 +634,6 @@ fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
     }
     if before.denoise != after.denoise {
         events.push(Event::Denoise { on: after.denoise });
-    }
-    if before.hearing_apps != after.hearing_apps {
-        events.push(Event::Hearing {
-            apps: after.hearing_apps.clone(),
-        });
     }
     if (&before.app_audio, before.app_audio_volume) != (&after.app_audio, after.app_audio_volume) {
         events.push(Event::AppAudio {
@@ -1434,7 +1422,6 @@ mod tests {
         after.screen_sound = true;
         after.screen_sound_layer = Some("desk".into());
         after.denoise = true;
-        after.hearing_apps = vec!["Spotify".into()];
         after.app_audio = Some("Safari".into());
         after.mirrored = true;
         after.viewers = Some(12);
@@ -1457,9 +1444,6 @@ mod tests {
                     layer: Some("desk".into())
                 },
                 Event::Denoise { on: true },
-                Event::Hearing {
-                    apps: vec!["Spotify".into()]
-                },
                 Event::AppAudio {
                     app: Some("Safari".into()),
                     volume: before.app_audio_volume

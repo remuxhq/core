@@ -57,7 +57,6 @@ pub struct ObsPipeline {
     /// hears every app but this one; with none named, the whole screen.
     screen_sound: *mut sys::obs_source_t,
     screen_heard: Followed,
-    hearing_apps: Vec<String>,
     screen_sound_on: bool,
     /// A clip, on channel 4, played once over the mix.
     clip: *mut sys::obs_source_t,
@@ -372,7 +371,6 @@ impl ObsPipeline {
             music_was_playing: false,
             screen_sound: std::ptr::null_mut(),
             screen_heard: Followed::default(),
-            hearing_apps: Vec::new(),
             screen_sound_on: false,
             clip: std::ptr::null_mut(),
             gate_params: GateParams::default(),
@@ -544,28 +542,12 @@ impl ObsPipeline {
                 return Ok(());
             }
             // `sck_audio_capture`: type 0 is the whole desktop, 1 one app by
-            // its bundle id (mac-sck-common.h); anything else is a crash.
+            // its bundle id (mac-sck-common.h); anything else is a crash. One
+            // application's sound is an audio layer of its own.
             let settings = sys::obs_data_create();
             let table = &crate::platform::TABLE;
-            match self
-                .hearing_apps
-                .first()
-                .filter(|_| table.screen_sound.per_app)
-            {
-                Some(app) => {
-                    let bundle = crate::sources::bundle_of(&self.known, app, crate::sources::apps)
-                        .ok_or_else(|| format!("no running application called {app}"))?;
-                    sys::obs_data_set_int(settings, c("type").as_ptr(), 1);
-                    sys::obs_data_set_string(
-                        settings,
-                        c("application").as_ptr(),
-                        c(&bundle).as_ptr(),
-                    );
-                }
-                None if table.screen_sound.per_app => {
-                    sys::obs_data_set_int(settings, c("type").as_ptr(), 0)
-                }
-                None => {}
+            if table.screen_sound.per_app {
+                sys::obs_data_set_int(settings, c("type").as_ptr(), 0);
             }
             let source = sys::obs_source_create(
                 c(table.screen_sound.source).as_ptr(),
@@ -1182,13 +1164,6 @@ impl Sound for ObsPipeline {
             }
             sys::obs_set_output_source(4, source);
             self.clip = source;
-        }
-        Ok(())
-    }
-    fn hear(&mut self, apps: &[String]) -> Result<(), String> {
-        self.hearing_apps = apps.to_vec();
-        if self.screen_sound_on {
-            self.apply_screen_sound()?;
         }
         Ok(())
     }
