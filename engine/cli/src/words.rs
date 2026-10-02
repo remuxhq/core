@@ -294,19 +294,6 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "mic" => Ok(Command::Mic {
             device: off_or(&joined),
         }),
-        // `remux hear Spotify, Brave`: those apps' sound alone; `hear off`,
-        // the whole screen's again.
-        "hear" => Ok(Command::Hear {
-            apps: match joined.as_str() {
-                "" => return Err("hear takes app names, or off".into()),
-                "off" | "all" | "screen" => Vec::new(),
-                names => names
-                    .split(',')
-                    .map(|n| n.trim().to_string())
-                    .filter(|n| !n.is_empty())
-                    .collect(),
-            },
-        }),
         "denoise" => Ok(Command::Denoise {
             on: on_or(&joined)?,
         }),
@@ -3137,17 +3124,10 @@ mod reading {
                 name: "clap".into()
             })
         );
-        assert_eq!(
-            parse(&w("audio hear Spotify, Brave")),
-            Ok(Command::Hear {
-                apps: vec!["Spotify".into(), "Brave".into()]
-            })
-        );
-        assert_eq!(
-            parse(&w("audio hear off")),
-            Ok(Command::Hear { apps: vec![] })
-        );
-        assert!(parse(&w("audio hear")).is_err());
+        // One application's sound is an audio layer of its own; `hear` kept
+        // the first of a list and dropped the rest without a word.
+        let gone = parse(&w("audio hear Spotify")).unwrap_err();
+        assert!(gone.contains("hear is not a audio command"), "{gone}");
         assert!(parse(&w("audio clip")).is_err());
         assert_eq!(read(&w("audio clips")).unwrap().view, View::Clips);
         assert!(parse(&w("live --confirm")).is_err());

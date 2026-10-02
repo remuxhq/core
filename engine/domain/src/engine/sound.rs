@@ -237,9 +237,10 @@ impl Engine {
         self.sound()
     }
 
-    /// `remux hear Spotify`: that application's sound alone, by the name
-    /// the system lists it under, and the screen's sound switched on with
-    /// it, since nobody names an app they do not want heard.
+    /// `hear`, for the faces that still send it (the shell no longer does:
+    /// an application's sound is an audio layer): that application's sound
+    /// alone, by the name the system lists it under, and the screen's sound
+    /// switched on with it, since nobody names an app they do not want heard.
     pub(super) fn hear(&mut self, apps: Vec<String>) -> Reply {
         let names = if apps.is_empty() {
             Vec::new()

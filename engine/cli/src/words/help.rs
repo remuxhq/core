@@ -56,7 +56,6 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["arm"], args: "<destination id>", summary: "Include a destination in the next live.", note: "Does not start the live. Find destination IDs with `remux destination list`." },
     Topic { names: &["disarm"], args: "<destination id>", summary: "Leave a destination out of the next live.", note: "Does not stop a live. Find destination IDs with `remux destination list`." },
     Topic { names: &["scenes"], args: "", summary: "List scenes and the active scene.", note: "" },
-    Topic { names: &["hear"], args: "<apps|off>", summary: "Hear these applications alone in the screen's sound.", note: "Names as `remux sources` lists them, comma-separated: remux audio hear Spotify, Brave. `off` is the whole screen's sound again." },
     Topic { names: &["denoise"], args: "[on|off]", summary: "Take the room out of the microphone before the gate.", note: "Omitted means on." },
     Topic { names: &["play"], args: "<clip|file>", summary: "Play one clip once over the mix.", note: "A name from `remux audio clips`, or a file." },
     Topic { names: &["clips"], args: "", summary: "List the clips `audio clip` can play.", note: "Read off the clips folder here; `remux config` says where it is." },
@@ -177,8 +176,8 @@ remux scene layer shot editor reads a source; remux scene shot reads the
 composed picture; --out file.jpg writes it.
 Layer choices, layout and visibility survive a restart.
 Use remux audio screen-sound on for a unique display, or remux scene layer
-screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
-one app's sound alone; remux audio app Spotify captures it on its own fader.
+screen-sound <id> on with multiple displays. remux audio app Spotify captures
+one app's sound on its own fader.
 remux audio layer add app game Steam belongs to the active scene: a switch
 keeps the sounds both scenes hear and closes the others, as with pictures.
 
@@ -332,7 +331,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 62, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 61, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {

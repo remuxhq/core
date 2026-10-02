@@ -94,13 +94,6 @@ const AUDIO: &[Action] = &[
         summary: "Read the sound levels.",
     },
     Action {
-        name: "hear",
-        target: "hear",
-        prefix: &[],
-        args: "<apps|off>",
-        summary: "Hear these applications alone in the screen's sound.",
-    },
-    Action {
         name: "denoise",
         target: "denoise",
         prefix: &[],
