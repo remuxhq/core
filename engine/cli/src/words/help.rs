@@ -94,7 +94,9 @@ destination, chat. No video group or capture shortcuts. Top-level: status,
 sources, grants, levels, plan, live, stop, record, cut, quit, health, wait,
 events, history, log, login, logout, config, daemon, bug, schema.
 
-Status lists active_scene, scenes, layers, layer_flowing and scene_flowing.
+Status has scene (the active one: its layers, elements, filter and sounds),
+scenes (their names) and picture (its frames). remux levels has the meters and
+each capture's frames (layer_flowing); remux scene list --json every scene.
 Fresh setups contain only the default scene: no Starting Soon, BRB or Nothing
 Shared presets. Destinations are under destinations in status and in
 remux destination list; screen IDs are in sources.
@@ -194,7 +196,7 @@ remux live sends the active scene, so switch to the opening one first; remux pla
 names it. A switch closes the captures the next scene does not use and opens its
 own, so a camera coming back takes a moment for its first frame.
 Switching prepares new sources and filters before committing and retains
-shared physical captures. remux scene status --json reports saved layouts.
+shared physical captures. remux scene list --json reports saved layouts.
 
 Filters: remux scene filter /path/to/effect.wgsl applies after composition;
 remux scene layer filter face /path/to/effect.wgsl processes native pixels;
@@ -473,7 +475,7 @@ mod tests {
             "remux audio layer add system pc",
             "Layer choices, layout and visibility survive a restart",
             "layer_flowing",
-            "scene_flowing",
+            "remux scene list --json",
             "remux scene filter off",
             "Filter paths are remembered per scene",
         ] {
