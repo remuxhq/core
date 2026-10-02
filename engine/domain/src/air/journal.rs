@@ -30,6 +30,9 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
     if let Reply::Error { message } = reply {
         return match command {
             Command::Status
+            | Command::Log
+            | Command::CategoriesFound
+            | Command::Scenes
             | Command::Watching { .. }
             | Command::Present
             | Command::Levels
@@ -154,6 +157,9 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         // Sliders, polls and reads. A fader moved thirty times in a minute
         // would push everything worth reading off the top.
         Command::Status
+        | Command::Log
+        | Command::CategoriesFound
+        | Command::Scenes
         | Command::Watching { .. }
         | Command::Present
         | Command::Plan
@@ -241,6 +247,9 @@ fn verb(command: &Command) -> &'static str {
         Command::Quit => "quit",
         Command::Rewire => "rewire",
         Command::Status
+        | Command::Log
+        | Command::CategoriesFound
+        | Command::Scenes
         | Command::Watching { .. }
         | Command::Levels
         | Command::Sources

@@ -215,7 +215,9 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         // person at a terminal, or is refused where there is nobody to ask.
         "plan" => Ok(Command::Plan),
         // What the shell draws out of the status by itself.
-        "scenes" | "destinations" | "log" | "health" => Ok(Command::Status),
+        "destinations" | "health" => Ok(Command::Status),
+        "scenes" => Ok(Command::Scenes),
+        "log" => Ok(Command::Log),
         "live" | "go-live" => match (rest.first().map(String::as_str), rest.get(1)) {
             (Some("--confirm"), Some(plan)) => Ok(Command::Live {
                 plan: plan
@@ -763,6 +765,17 @@ pub fn render(reply: &Reply) -> String {
         Reply::Error { message } => format!("no: {message}"),
         Reply::Status(status) => render_status(status),
         Reply::Plan(plan) => render_plan(plan),
+        Reply::Log { lines } => lines.join("\n"),
+        Reply::Categories { found } => match found {
+            Some(found) if !found.items.is_empty() => found
+                .items
+                .iter()
+                .map(|c| format!("{:<12} {}", c.id, c.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => "nothing found".into(),
+        },
+        Reply::Scenes { active, scenes } => render_scene_list(active, scenes),
         Reply::Sources(devices) => render_devices(devices),
         // dB, because that is what the meters are marked in and what a person
         // reading this in a terminal is comparing against them.
@@ -773,6 +786,7 @@ pub fn render(reply: &Reply) -> String {
             hearing,
             mixing,
             audio_layers,
+            ..
         } => format!(
             "mic {:.1} dB (peak {:.1}) gate {}{}, voice {:.0} highs {:.0}, mix {:.1} dB, music {:.1} dB{}{}",
             hearing.level_db,
@@ -1053,18 +1067,13 @@ fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
     lines.join("\n")
 }
 
-pub fn render_scene_list(status: &Status) -> String {
-    status
-        .scenes
+pub fn render_scene_list(active: &str, scenes: &[remuxd_domain::picture::scenes::Scene]) -> String {
+    scenes
         .iter()
         .map(|scene| {
             format!(
                 "{}{} ({} layers)",
-                if scene.name == status.active_scene {
-                    "* "
-                } else {
-                    "  "
-                },
+                if scene.name == active { "* " } else { "  " },
                 scene.name,
                 scene.ordered_ids().len()
             )
@@ -1082,18 +1091,15 @@ fn render_status(status: &Status) -> String {
     if status.recording {
         said.push("recording".into());
     }
-    if let Some(shader) = &status.shader {
+    let scene = &status.scene;
+    if let Some(shader) = &scene.shader {
         said.push(format!("filter {shader}"));
     }
     // Said only when it is on: it is the exception, and the one an
     // operator wants to be reminded of before a call comes in.
-    if status.layers.is_empty() {
+    if scene.layers.is_empty() {
         said.push("no layers".into());
     }
-    if let Some(scene) = status
-        .scenes
-        .iter()
-        .find(|scene| scene.name == status.active_scene)
     {
         for (index, element) in scene.elements.iter().enumerate() {
             let content = match &element.content {
@@ -1110,7 +1116,7 @@ fn render_status(status: &Status) -> String {
             ));
         }
     }
-    for (index, layer) in status.layers.iter().enumerate() {
+    for (index, layer) in scene.layers.iter().enumerate() {
         said.push(format!(
             "layer {}: {:?} {} ({}x{} source) at {},{} {}x{} rotated {}° (order {index}){}{}{}{}",
             layer.id,
@@ -1137,7 +1143,7 @@ fn render_status(status: &Status) -> String {
                 .map_or(String::new(), |path| format!(" filter {path}"))
         ));
     }
-    for layer in &status.audio_layers {
+    for layer in &scene.audio_layers {
         said.push(format!(
             "audio layer {}: {} ({}%){}{}",
             layer.id,
@@ -1155,7 +1161,7 @@ fn render_status(status: &Status) -> String {
         (Some(mic), true) => said.push(format!("mic {mic} (muted)")),
         // A microphone that is chosen and not delivering says why on the same
         // line: the name alone read as a working one the night it had left.
-        (Some(mic), false) => said.push(match &status.hearing.complaint {
+        (Some(mic), false) => said.push(match &status.mic_complaint {
             Some(why) => format!("mic {mic} ({why})"),
             None => format!("mic {mic}"),
         }),
@@ -1168,19 +1174,24 @@ fn render_status(status: &Status) -> String {
     if let Some(music) = &status.music {
         said.push(format!("music {music}"));
     }
-    if let Some(viewers) = status.viewers {
-        said.push(format!("{viewers} watching"));
+    let watching: Vec<u32> = status
+        .destinations
+        .iter()
+        .filter_map(|row| row.viewers)
+        .collect();
+    if !watching.is_empty() {
+        said.push(format!("{} watching", watching.iter().sum::<u32>()));
     }
     // What is actually coming out, which is the only part that can disagree
     // with everything above it.
     said.push(format!(
         "scene {} ({} saved)",
-        status.active_scene,
+        scene.name,
         status.scenes.len()
     ));
     said.push(format!(
         "{}x{} at {} frames",
-        status.scene_flowing.width, status.scene_flowing.height, status.scene_flowing.frames
+        status.picture.width, status.picture.height, status.picture.frames
     ));
     said.join(", ")
 }
@@ -1324,11 +1335,11 @@ mod tests {
         );
         assert_eq!(
             super::parse(&words(&["scene", "list"])),
-            Ok(remuxd_domain::protocol::Command::Status)
+            Ok(remuxd_domain::protocol::Command::Scenes)
         );
         assert!(super::parse(&words(&["scene", "create"])).is_err());
         assert!(
-            super::render_scene_list(&remuxd_domain::protocol::Status::default())
+            super::render_scene_list("default", &remuxd_domain::picture::scenes::defaults())
                 .contains("* default")
         );
     }
@@ -1834,7 +1845,7 @@ mod tests {
             on_air: true,
             mic: Some("HyperX DuoCast".into()),
             muted: true,
-            scene_flowing: remuxd_domain::protocol::Flowing {
+            picture: remuxd_domain::protocol::Flowing {
                 width: 1920,
                 height: 1080,
                 frames: 900,
@@ -1852,10 +1863,7 @@ mod tests {
         // its name alone read as a working one the night it had left.
         let unplugged = remuxd_domain::protocol::Status {
             mic: Some("Razer".into()),
-            hearing: remuxd_domain::protocol::Hearing {
-                complaint: Some("unplugged".into()),
-                ..Default::default()
-            },
+            mic_complaint: Some("unplugged".into()),
             ..Default::default()
         };
         let said = render(&Reply::Status(Box::new(unplugged)));
@@ -2593,10 +2601,10 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         _ if verbose => (Command::Status, View::Verbose),
         Some("live") | Some("go-live") if words.len() == 1 => (Command::Plan, View::Confirm),
         Some("gate") if words.len() == 1 => (Command::Status, View::Gate),
-        Some("scenes") => (Command::Status, View::Scenes),
+        Some("scenes") => (Command::Scenes, View::Scenes),
         Some("health") => (Command::Status, View::Health),
         Some("destinations") | Some("dests") => (Command::Status, View::Destinations),
-        Some("log") => (Command::Status, View::Log),
+        Some("log") => (Command::Log, View::Log),
         Some("categories") => match parse_wire_words(&words)? {
             Command::Categories { adapter, query } => (
                 Command::Categories {
@@ -2687,31 +2695,15 @@ pub fn jpeg_bytes(reply: &Reply) -> Option<Vec<u8>> {
 pub fn show(reply: &Reply, view: &View, format: Format, ink: Ink, now: i64) -> String {
     match (format, view, reply) {
         (Format::Json, View::Destinations, Reply::Status(status)) => json(&status.destinations),
-        (Format::Json, View::Log, Reply::Status(status)) => json(&status.log),
-        (Format::Json, View::Categories { .. }, Reply::Status(status)) => json(&status.categories),
+        (Format::Json, View::Log, Reply::Log { lines }) => json(lines),
+        (Format::Json, View::Categories { .. }, Reply::Categories { found }) => json(found),
         (Format::Json, View::Gate, Reply::Status(status)) => json(&status.gate),
-        (Format::Json, View::Scenes, Reply::Status(status)) => json(&serde_json::json!({
-            "scenes": status.scenes,
-            "active_scene": status.active_scene
-        })),
-        (Format::Prose, View::Scenes, Reply::Status(status)) => render_scene_list(status),
         (Format::Prose, View::Gate, Reply::Status(status)) => render_gate(&status.gate),
         (Format::Json, _, reply) => json(reply),
         (Format::Prose, View::Destinations, Reply::Status(status)) => {
             render_destinations(&status.destinations)
         }
-        (Format::Prose, View::Log, Reply::Status(status)) => status.log.join("\n"),
-        (Format::Prose, View::Verbose, Reply::Status(status)) => render_verbose(status, now),
-        (Format::Prose, View::Categories { .. }, Reply::Status(status)) => match &status.categories
-        {
-            Some(found) if !found.items.is_empty() => found
-                .items
-                .iter()
-                .map(|c| format!("{:<12} {}", c.id, c.name))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            _ => "nothing found".into(),
-        },
+        (Format::Prose, View::Verbose, Reply::Status(status)) => render_verbose(status, None, now),
         (Format::Prose, _, reply) => render_with(reply, ink),
     }
 }
@@ -2804,8 +2796,16 @@ pub fn elapsed(since: Option<i64>, now: i64) -> String {
     }
 }
 
-/// The whole status, one fact a line, in the units the sliders are marked in.
-fn render_verbose(status: &Status, now: i64) -> String {
+/// The whole status, one fact a line, in the units the sliders are marked in;
+/// with the meters when they were read beside it.
+pub fn render_verbose(
+    status: &Status,
+    meters: Option<(
+        &remuxd_domain::protocol::Hearing,
+        &remuxd_domain::protocol::Mixing,
+    )>,
+    now: i64,
+) -> String {
     use remuxd_domain::sound::mixer::levels::decibels;
     let mut lines = Vec::new();
     lines.push(match status.on_air_since {
@@ -2819,11 +2819,11 @@ fn render_verbose(status: &Status, now: i64) -> String {
             elapsed(status.recording_since, now)
         ));
     }
-    lines.push(format!("scene {}", status.active_scene));
-    if status.layers.is_empty() {
+    lines.push(format!("scene {}", status.scene.name));
+    if status.scene.layers.is_empty() {
         lines.push("no layers".into());
     }
-    for layer in &status.layers {
+    for layer in &status.scene.layers {
         let t = layer.transform;
         lines.push(format!(
             "layer {} {} at {},{} {}x{}{}{}{}",
@@ -2842,7 +2842,7 @@ fn render_verbose(status: &Status, now: i64) -> String {
             if layer.mirrored { ", mirrored" } else { "" }
         ));
     }
-    for layer in &status.audio_layers {
+    for layer in &status.scene.audio_layers {
         lines.push(format!(
             "sound {}: {}{}",
             plain(&layer.id),
@@ -2855,25 +2855,26 @@ fn render_verbose(status: &Status, now: i64) -> String {
             "mic {mic}{}{}{}",
             if status.muted { ", muted" } else { "" },
             if status.denoise { ", denoised" } else { "" },
-            match &status.hearing.complaint {
+            match &status.mic_complaint {
                 Some(why) => format!(" ({why})"),
                 None => String::new(),
             }
         )),
         None => lines.push("no mic".into()),
     }
-    let h = &status.hearing;
-    lines.push(format!(
-        "  level {:.1} dB, peak {:.1} dB, gate {} at {:+.1} dB, voice {:.1} dB, highs {:.1} dB",
-        h.level_db,
-        h.peak_db,
-        if h.gate_open { "open" } else { "closed" },
-        h.gain_db,
-        decibels(h.gate_levels.full),
-        decibels(h.gate_levels.hf)
-    ));
+    if let Some((h, _)) = meters {
+        lines.push(format!(
+            "  level {:.1} dB, peak {:.1} dB, gate {} at {:+.1} dB, voice {:.1} dB, highs {:.1} dB",
+            h.level_db,
+            h.peak_db,
+            if h.gate_open { "open" } else { "closed" },
+            h.gain_db,
+            decibels(h.gate_levels.full),
+            decibels(h.gate_levels.hf)
+        ));
+    }
     lines.push(format!("  {}", render_gate(&status.gate)));
-    if h.starved > 0 || h.dropped > 0 {
+    if let Some((h, _)) = meters.filter(|(h, _)| h.starved > 0 || h.dropped > 0) {
         lines.push(format!(
             "  ring {} frames, starved {} blocks, dropped {} samples",
             h.buffered, h.starved, h.dropped
@@ -2884,10 +2885,9 @@ fn render_verbose(status: &Status, now: i64) -> String {
         status.faders.mic * 100.0,
         remuxd_domain::sound::music::music_fader_db(status.faders.music),
         status.faders.duck_db,
-        if status.mixing.ducked_db < -0.5 {
-            format!(" (ducking {:.0} dB)", status.mixing.ducked_db)
-        } else {
-            String::new()
+        match meters {
+            Some((_, m)) if m.ducked_db < -0.5 => format!(" (ducking {:.0} dB)", m.ducked_db),
+            _ => String::new(),
         }
     ));
     lines.push(format!(
@@ -2904,12 +2904,24 @@ fn render_verbose(status: &Status, now: i64) -> String {
             (false, _) => String::new(),
         }
     ));
-    if let Some(viewers) = status.viewers {
+    let watching: Vec<u32> = status
+        .destinations
+        .iter()
+        .filter_map(|d| d.viewers)
+        .collect();
+    if !watching.is_empty() {
+        let peaks: Vec<u32> = status
+            .destinations
+            .iter()
+            .filter_map(|d| d.viewers_peak)
+            .collect();
         lines.push(format!(
-            "{viewers} watching{}",
-            match status.viewers_peak {
-                Some(peak) => format!(", peak {peak}"),
-                None => String::new(),
+            "{} watching{}",
+            watching.iter().sum::<u32>(),
+            if peaks.is_empty() {
+                String::new()
+            } else {
+                format!(", peak {}", peaks.iter().sum::<u32>())
             }
         ));
     }
@@ -2921,19 +2933,19 @@ fn render_verbose(status: &Status, now: i64) -> String {
         o.fps,
         o.video_kbps,
         o.audio_kbps,
-        status.scene_flowing.width,
-        status.scene_flowing.height,
-        status.scene_flowing.frames
+        status.picture.width,
+        status.picture.height,
+        status.picture.frames
     ));
     lines.push(format!(
         "app {}{}",
-        if status.app {
+        if status.app_reachable {
             "reachable"
         } else {
             "not signed in"
         },
-        match &status.server {
-            Some(server) => format!(" at {server}"),
+        match &status.destinations_from {
+            Some(from) => format!(", destinations from {from}"),
             None => String::new(),
         }
     ));
@@ -3102,19 +3114,12 @@ mod reading {
             shader: None,
             audio_layers: vec![],
         };
-        let status = Status {
+        let reply = Reply::Scenes {
+            active: "talk".into(),
             scenes: vec![scene("code"), scene("talk")],
-            active_scene: "talk".into(),
-            ..Status::default()
         };
         assert_eq!(
-            show(
-                &Reply::Status(Box::new(status)),
-                &View::Scenes,
-                Format::Prose,
-                Ink::Plain,
-                0
-            ),
+            show(&reply, &View::Scenes, Format::Prose, Ink::Plain, 0),
             "  code (0 layers)\n* talk (0 layers)"
         );
     }
@@ -3153,7 +3158,7 @@ mod reading {
         let log = read(&w("log -f")).unwrap();
         assert_eq!(
             (log.command, log.view, log.follow),
-            (Some(Command::Status), View::Log, true)
+            (Some(Command::Log), View::Log, true)
         );
     }
 
@@ -3215,7 +3220,6 @@ mod reading {
     fn json_of_a_view_is_that_part_of_the_status() {
         let status = Status {
             destinations: vec![twitch()],
-            log: vec!["one".into()],
             ..Status::default()
         };
         let reply = Reply::Status(Box::new(status));
@@ -3223,8 +3227,11 @@ mod reading {
             show(&reply, &View::Destinations, Format::Json, Ink::Plain, 0)
                 .starts_with("[{\"id\":2")
         );
+        let log = Reply::Log {
+            lines: vec!["one".into()],
+        };
         assert_eq!(
-            show(&reply, &View::Log, Format::Json, Ink::Plain, 0),
+            show(&log, &View::Log, Format::Json, Ink::Plain, 0),
             "[\"one\"]"
         );
         assert!(show(&Reply::Ok, &View::Reply, Format::Json, Ink::Plain, 0)
@@ -3359,6 +3366,7 @@ mod reading {
                 },
                 AudioLayerHeard::silent("ghost".into()),
             ],
+            layer_flowing: Default::default(),
         });
         assert!(
             said.ends_with(", sound call -30.2 dB, sound ghost hears nothing"),

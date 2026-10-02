@@ -134,6 +134,18 @@ fn main() {
         println!("{}", cli::show(&live, &View::Reply, ask.format, ink, now()));
         std::process::exit(if failed { 1 } else { 0 });
     }
+    // `status -v` at a person: the meters read beside the status.
+    if let (View::Verbose, Format::Prose, Reply::Status(status)) = (&ask.view, ask.format, &reply) {
+        let meters = ask_or_exit(&path, &Command::Levels);
+        let meters = match &meters {
+            Reply::Levels {
+                hearing, mixing, ..
+            } => Some((hearing, mixing)),
+            _ => None,
+        };
+        println!("{}", cli::render_verbose(status, meters, now()));
+        return;
+    }
     let failed = matches!(reply, Reply::Error { .. });
     if let (View::ShotTo(file), Some(bytes)) = (&ask.view, cli::jpeg_bytes(&reply)) {
         if let Err(e) = std::fs::write(file, bytes) {
@@ -365,10 +377,14 @@ fn report_a_bug(path: &std::path::Path, open: bool) -> ! {
                 },
             };
             let seen = health::of(&status, &grants);
+            let log = match ask(path, &Command::Log) {
+                Ok(Reply::Log { lines }) => lines,
+                _ => Vec::new(),
+            };
             (
                 format!("remuxd {} ({})", status.version, status.motor),
                 seen.trouble,
-                status.log.clone(),
+                log,
             )
         }
         Ok(_) => ("the engine answered something else".into(), vec![], vec![]),
@@ -445,21 +461,20 @@ fn ask_or_exit(path: &std::path::Path, command: &Command) -> Reply {
     ask(path, command).unwrap_or_else(|why| fail(&why, json, 1))
 }
 
-/// The app answers a category search on the status, not on the reply: ask
-/// until the status carries this query, or give up after five seconds.
+/// The app answers a category search later, not on the reply: ask until the
+/// answer kept is this query's, or give up after five seconds.
 fn wait_for_categories(path: &std::path::Path, view: &View) -> Reply {
     let View::Categories { adapter, query } = view else {
         return Reply::Ok;
     };
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Reply::Status(status) = ask_or_exit(path, &Command::Status) {
-            if status
-                .categories
+        if let Reply::Categories { found } = ask_or_exit(path, &Command::CategoriesFound) {
+            if found
                 .as_ref()
                 .is_some_and(|found| found.adapter == *adapter && &found.query == query)
             {
-                return Reply::Status(status);
+                return Reply::Categories { found };
             }
         }
     }
@@ -489,15 +504,15 @@ fn follow_the_levels(path: &std::path::Path, format: Format) -> ! {
 fn follow_the_log(path: &std::path::Path, format: Format) -> ! {
     let mut seen: Vec<String> = Vec::new();
     loop {
-        if let Reply::Status(status) = ask_or_exit(path, &Command::Status) {
-            let fresh = new_lines(&seen, &status.log);
+        if let Reply::Log { lines } = ask_or_exit(path, &Command::Log) {
+            let fresh = new_lines(&seen, &lines);
             for line in &fresh {
                 match format {
                     Format::Json => println!("{}", cli::json_line(line)),
                     Format::Prose => println!("{line}"),
                 }
             }
-            seen = status.log.clone();
+            seen = lines;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }

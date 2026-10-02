@@ -375,12 +375,18 @@ pub enum Command {
         name: String,
     },
     /// Ask where one destination's live can be filed, for what was typed. The
-    /// app answers with a push and the answer lands on the status
-    /// (`Status::categories`), so every face reads the same list.
+    /// app answers with a push; [`Command::CategoriesFound`] reads the answer,
+    /// the same for every face.
     Categories {
         adapter: i64,
         query: String,
     },
+    /// The last answer to [`Command::Categories`].
+    CategoriesFound,
+    /// Every scene in full, with the one on the air named.
+    Scenes,
+    /// The engine's journal.
+    Log,
     /// Take one line of chat out of the platform's chat, for everybody who is
     /// watching there, as the broadcaster moderating their own room; and off
     /// every face here at once, like `Hide`. The app does the asking; the
@@ -414,8 +420,22 @@ pub enum Reply {
         hearing: Hearing,
         mixing: Mixing,
         /// One per sound of the active scene, in its order.
-        #[serde(default)]
         audio_layers: Vec<AudioLayerHeard>,
+        /// Each capture's frames, by layer ID.
+        layer_flowing: std::collections::BTreeMap<String, Flowing>,
+    },
+    /// The engine's journal, newest last. See [`crate::air::journal`].
+    Log {
+        lines: Vec<String>,
+    },
+    /// The last answer to [`Command::Categories`], `None` until one came.
+    Categories {
+        found: Option<Found>,
+    },
+    /// Every scene in full; `active` is the one on the air.
+    Scenes {
+        active: String,
+        scenes: Vec<crate::picture::scenes::Scene>,
     },
     Ok,
     /// Boxed, and only because of its size: a `Reply` that carried a `Status`
@@ -749,11 +769,6 @@ fn per_second(what: f64, over_seconds: f64) -> f64 {
     what / over_seconds
 }
 
-/// A serde default for a switch that starts on.
-fn yes() -> bool {
-    true
-}
-
 pub fn default_scene_name() -> String {
     "default".into()
 }
@@ -762,177 +777,104 @@ fn floor() -> f64 {
     crate::sound::mixer::levels::Meter::FLOOR_DB
 }
 
-/// Everything a client needs to draw the state of the engine in one line.
+/// Everything a face needs to draw the engine, and nothing it would have to
+/// ask for again a second later: the meters are `levels`, the journal is
+/// `log`, the other scenes are their names.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Status {
+    // The live.
     pub on_air: bool,
-    pub recording: bool,
-    /// When the recording started, seconds past the epoch, while one is
-    /// running. The clock is here rather than in each face because three faces
-    /// starting their own the moment they connect would each show a different
-    /// running time for the same file, and a panel opened mid-recording would
-    /// show it starting from zero.
-    #[serde(default)]
-    pub recording_since: Option<i64>,
-    /// When the live started, seconds past the epoch, while one is running.
-    /// The same reason as `recording_since`: one clock, the engine's.
-    #[serde(default)]
+    /// When the live started, seconds past the epoch, while one is running:
+    /// one clock, the engine's, so every face shows the same running time.
     pub on_air_since: Option<i64>,
-    /// Scene layers, back to front. Their choices and layout survive a restart.
-    #[serde(default)]
-    pub layers: Vec<crate::picture::layers::Layer>,
-    /// Named layouts; the active entry reflects the current layers.
-    #[serde(default)]
-    pub scenes: Vec<crate::picture::scenes::Scene>,
-    #[serde(default = "default_scene_name")]
-    pub active_scene: String,
-    /// Independent audio captures, not ordered visual scene layers.
-    #[serde(default)]
-    pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
-    /// The selected scene shader, if any. Never its source.
-    #[serde(default)]
-    pub shader: Option<String>,
-    pub mic: Option<String>,
-    pub muted: bool,
-    /// Whether the self-view is flipped. On the status rather than assumed,
-    /// because it is a switch on the panel and a panel that cannot read its
-    /// own switches back draws them wrong after anything else changes them.
-    pub mirrored: bool,
-    pub music: Option<String>,
-    /// The scene's frames, drawn at the full rate whether or not anything is
-    /// in it; the plan, not the count, keeps an empty scene off the air.
-    pub scene_flowing: Flowing,
-    /// Capture measurements keyed by layer ID; no arbitrary first source.
-    #[serde(default)]
-    pub layer_flowing: std::collections::BTreeMap<String, Flowing>,
-    pub hearing: Hearing,
-    pub mixing: Mixing,
-    /// Summed across the destinations that answered. A destination that could
-    /// not be asked is left out, never counted as zero.
-    pub viewers: Option<u32>,
-    /// The most watching at once since the live began, summed like `viewers`.
-    /// The platforms give the number now and never the peak; the app keeps
-    /// it while a broadcast is open. `None` off air or before anyone answered.
-    #[serde(default)]
-    pub viewers_peak: Option<u32>,
-    /// Where the faders are, so a panel can draw them where they are.
-    ///
-    /// Without this a panel has to keep its own copy, and then two faces
-    /// looking at one engine disagree about the volume within a minute: the
-    /// one that did not move it goes on drawing the old position forever. Same
-    /// reason `muted` and `mirrored` are here.
-    pub faders: Faders,
-    /// Where the gate's thresholds are. On the status for the same reason as
-    /// everything else here: a panel with five sliders on it has to be able to
-    /// draw them where they are, and the engine is what knows.
-    pub gate: crate::sound::mixer::gate::GateParams,
-    /// Whether the app is reachable. See [`Reply::Chat`] for why it travels
-    /// beside the list rather than being inferred from it.
-    pub app: bool,
-    /// The engine's own version, so a face and a script know who answers.
-    #[serde(default)]
-    pub version: String,
-    /// Which motor is behind the ports, by name and version: `obs 30.2.3`.
-    #[serde(default)]
-    pub motor: String,
-    /// Whether you are hearing your own mix. On the status like every other
-    /// switch, because a panel that kept its own copy would disagree with the
-    /// terminal about whether the speakers are live, which is the one switch
-    /// where that matters.
-    pub monitoring: bool,
-    /// Where the bed is playing while `monitoring` is on: the system's output
-    /// device by name, so a person with a headset and a pair of speakers
-    /// knows which one is live without opening System Settings. `None` while
-    /// the speakers are closed.
-    #[serde(default)]
-    pub speakers: Option<String>,
-    /// Whether the music is in the mix that leaves. On unless somebody said
-    /// otherwise: a bed nobody meant to keep off the air is the worse
-    /// surprise. Hearing it is the other switch, `monitoring`, and the two are
-    /// independent on purpose.
-    #[serde(default = "yes")]
-    pub music_to_stream: bool,
-    /// Whether the microphone goes through the denoiser before the gate.
-    #[serde(default)]
-    pub denoise: bool,
-    /// Where recordings are written, as the engine was started with. `None`
-    /// is an engine that can capture, mix and publish but cannot record, which
-    /// is a real configuration and not a broken one.
-    #[serde(default)]
-    pub record_dir: Option<String>,
-    /// Which app this engine repeats, so a settings window can say which one
-    /// rather than making somebody read a process listing to find out.
-    #[serde(default)]
-    pub server: Option<String>,
-    /// Where a panel can read the preview without asking for it. `None` on an
-    /// engine that could not make the region, and a client that sees `None`
-    /// falls back to [`Command::Shot`]. See [`crate::picture::preview`].
-    #[serde(default)]
-    pub preview: Option<crate::picture::preview::Preview>,
-    /// What is leaving, measured where it leaves. See [`Outgoing`].
-    #[serde(default)]
-    pub outgoing: Outgoing,
-    /// What the engine has done, newest last, stamped. See
-    /// [`crate::air::journal`]. Empty on a fresh engine and never long: two hundred
-    /// lines is as far back as anybody reads while something is wrong.
-    #[serde(default)]
-    pub log: Vec<String>,
-    /// What the app says the destinations are. Repeated, never held: `armed`
-    /// is the web's column and this engine is not its second home.
+    pub recording: bool,
+    /// When the recording started, seconds past the epoch, while one is running.
+    pub recording_since: Option<i64>,
+    /// What the app says the destinations are, each with its viewers.
     pub destinations: Vec<Destination>,
-    /// The last answer to [`Command::Categories`]: which destination, what was
-    /// typed, what the platform offers. `None` until somebody asks.
-    #[serde(default)]
-    pub categories: Option<Found>,
-    /// Moves when a device is plugged in or pulled out. A face keeps the one
-    /// it last read the device list at and asks again when this differs;
-    /// see [`crate::engine::Sources::generation`].
-    #[serde(default)]
+    /// What is leaving, measured where it leaves. See [`Outgoing`].
+    pub outgoing: Outgoing,
+
+    // The active scene.
+    /// The scene on the air: its layers and elements in one back-to-front
+    /// order, its filter, its sounds.
+    pub scene: crate::picture::scenes::Scene,
+    /// Every scene's name, the active one included.
+    pub scenes: Vec<String>,
+    /// The composed scene's frames, drawn at the full rate whether or not
+    /// anything is in it; the plan, not the count, keeps an empty scene off
+    /// the air.
+    pub picture: Flowing,
+    /// Where a panel can read the preview without asking for it; `None`
+    /// falls back to [`Command::Shot`].
+    pub preview: Option<crate::picture::preview::Preview>,
+    /// Whether the panel's self-view is flipped.
+    pub mirrored: bool,
+
+    // The voice and the music.
+    /// The microphone open, by name.
+    pub mic: Option<String>,
+    /// What is wrong with it when something is, a format it does not read.
+    pub mic_complaint: Option<String>,
+    pub muted: bool,
+    pub faders: Faders,
+    pub gate: crate::sound::mixer::gate::GateParams,
+    /// Whether the microphone goes through the denoiser before the gate.
+    pub denoise: bool,
+    /// Whether you are hearing your own mix, and on which output.
+    pub monitoring: bool,
+    pub speakers: Option<String>,
+    /// The track playing, by title.
+    pub music: Option<String>,
+    /// Whether the music is in the mix that leaves.
+    pub music_to_stream: bool,
+
+    // The engine.
+    pub version: String,
+    /// Which motor is behind the ports: `obs 30.2.3`.
+    pub motor: String,
+    /// Where recordings are written; `None` is an engine that cannot record.
+    pub record_dir: Option<String>,
+    /// Where the destinations are read from: the web's address with an
+    /// account, the file they are kept in without one.
+    pub destinations_from: Option<String>,
+    /// Whether the app is reachable: the chat, the accounts, the viewers.
+    pub app_reachable: bool,
+    /// Moves when a device is plugged in or pulled out; a face asks for the
+    /// sources again when it differs from the one it last read them at.
     pub devices_generation: u64,
 }
 
 impl Default for Status {
     fn default() -> Self {
-        // Written out rather than derived for one field: the music is in the
-        // mix that leaves unless somebody said otherwise, and a derived
-        // default said `false`. A face that keeps its own defaults
-        // reads them from here, so a window drawn before the first status agrees.
         Self {
             on_air: false,
-            recording: false,
-            denoise: false,
-            version: String::new(),
-            motor: String::new(),
-            categories: None,
-            viewers_peak: None,
-            recording_since: None,
             on_air_since: None,
-            layers: Vec::new(),
-            scenes: crate::picture::scenes::defaults(),
-            active_scene: default_scene_name(),
-            audio_layers: Vec::new(),
-            shader: None,
-            mic: None,
-            muted: false,
+            recording: false,
+            recording_since: None,
+            destinations: Vec::new(),
+            outgoing: Outgoing::default(),
+            scene: crate::picture::scenes::defaults().remove(0),
+            scenes: vec![default_scene_name()],
+            picture: Flowing::default(),
+            preview: None,
             mirrored: false,
-            music: None,
-            scene_flowing: Flowing::default(),
-            layer_flowing: std::collections::BTreeMap::new(),
-            hearing: Hearing::default(),
-            mixing: Mixing::default(),
-            viewers: None,
+            mic: None,
+            mic_complaint: None,
+            muted: false,
             faders: Faders::default(),
             gate: crate::sound::mixer::gate::GateParams::default(),
-            app: false,
+            denoise: false,
             monitoring: false,
             speakers: None,
+            music: None,
+            // The music is in the mix that leaves unless somebody said otherwise.
             music_to_stream: true,
+            version: String::new(),
+            motor: String::new(),
             record_dir: None,
-            server: None,
-            preview: None,
-            outgoing: Outgoing::default(),
-            log: Vec::new(),
-            destinations: Vec::new(),
+            destinations_from: None,
+            app_reachable: false,
             devices_generation: 0,
         }
     }
@@ -1248,9 +1190,9 @@ mod tests {
     }
 
     #[test]
-    fn independent_audio_layers_are_labeled_in_status_json() {
+    fn the_active_scene_and_its_sounds_are_one_object_in_status_json() {
         let mut status = Status::default();
-        status.audio_layers.push(
+        status.scene.audio_layers.push(
             crate::sound::audio_layers::Layer::new(
                 "call".into(),
                 crate::sound::audio_layers::Source::app("Zoom".into()),
@@ -1258,26 +1200,24 @@ mod tests {
             .unwrap(),
         );
         let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["scene"]["name"], "default");
         assert_eq!(
-            json["audio_layers"][0]["source"],
+            json["scene"]["audio_layers"][0]["source"],
             serde_json::json!({"kind":"app", "name":"Zoom"})
         );
-        assert_eq!(json["audio_layers"][0]["id"], "call");
+        assert_eq!(json["scenes"], serde_json::json!(["default"]));
         assert_eq!(serde_json::from_value::<Status>(json).unwrap(), status);
     }
 
     #[test]
     fn status_carries_nothing_it_does_not_know() {
         let status = Status::default();
-        assert_eq!(status.viewers, None, "nobody asked is not nobody watching");
         assert!(!status.on_air);
         let json = serde_json::to_value(&status).expect("status encodes");
-        assert_eq!(json["viewers"], serde_json::Value::Null);
-        assert_eq!(json["layers"], serde_json::json!([]));
-        assert_eq!(json["audio_layers"], serde_json::json!([]));
-        assert_eq!(json["layer_flowing"], serde_json::json!({}));
-        assert!(json.get("camera_shape").is_none());
-        assert!(json.get("screen").is_none());
+        assert_eq!(json["scene"]["layers"], serde_json::json!([]));
+        assert_eq!(json["mic"], serde_json::Value::Null);
+        assert_eq!(json["preview"], serde_json::Value::Null);
+        assert_eq!(json["picture"]["frames"], 0);
     }
 
     #[test]

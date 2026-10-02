@@ -84,6 +84,12 @@ impl Engine {
             hearing: self.pipeline.hearing(),
             mixing: self.pipeline.mixing(),
             audio_layers: self.audio_layers_heard(),
+            layer_flowing: self
+                .status
+                .layers
+                .iter()
+                .map(|layer| (layer.id.clone(), self.pipeline.layer_flowing(&layer.id)))
+                .collect(),
         }
     }
 
@@ -420,7 +426,7 @@ mod tests {
             message.contains("HyperX DuoCast and MacBook Pro Microphone"),
             "it should say what there is: {message}"
         );
-        assert_eq!(engine.status().mic, None, "and change nothing");
+        assert_eq!(engine.state().mic, None, "and change nothing");
     }
 
     #[test]
@@ -443,7 +449,7 @@ mod tests {
         engine.handle(Command::Volume { level: 1.5 });
         engine.handle(Command::MusicVolume { level: 0.3 });
         engine.handle(Command::Duck { db: -24.0 });
-        let faders = engine.status().faders;
+        let faders = engine.state().faders;
         assert!((faders.mic - 1.5).abs() < 1e-9, "the microphone past unity");
         assert!((faders.music - 0.3).abs() < 1e-9);
         assert!((faders.duck_db + 24.0).abs() < 1e-9);
@@ -451,7 +457,7 @@ mod tests {
 
     #[test]
     fn the_faders_start_where_the_engine_starts_them() {
-        let faders = engine().status().faders;
+        let faders = engine().state().faders;
         assert!((faders.mic - 1.0).abs() < 1e-9, "unity, not silence");
         assert_eq!(faders, crate::protocol::Faders::default());
     }
@@ -484,7 +490,7 @@ mod tests {
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
 
-        let before = engine.status().gate;
+        let before = engine.state().gate;
         let Reply::Status(after) = engine.handle(Command::Gate {
             patch: serde_json::json!({ "full": 0.2 }),
         }) else {
@@ -508,13 +514,13 @@ mod tests {
     #[test]
     fn hearing_your_own_mix_is_a_switch_every_face_can_read() {
         let (mut engine, _) = publishing_engine(None);
-        assert!(!engine.status().monitoring, "the speakers start quiet");
+        assert!(!engine.state().monitoring, "the speakers start quiet");
         let Reply::Status(after) = engine.handle(Command::Monitor { on: true }) else {
             panic!("it answers with a status: this switch makes a noise in a room")
         };
         assert!(after.monitoring);
         engine.handle(Command::Monitor { on: false });
-        assert!(!engine.status().monitoring);
+        assert!(!engine.state().monitoring);
     }
 
     // "I had to be able to hear the music even without streaming it. Sending
@@ -536,17 +542,17 @@ mod tests {
             .with_pipeline(Box::new(pipeline))
             .with_library(Box::new(ThreeGenres));
         assert!(
-            engine.status().music_to_stream,
+            engine.state().music_to_stream,
             "the bed reaches the audience unless somebody says otherwise"
         );
         assert!(
-            !engine.status().monitoring,
+            !engine.state().monitoring,
             "quiet until there is something to hear"
         );
 
         engine.handle(Command::Genre { name: "edm".into() });
         assert!(
-            engine.status().monitoring,
+            engine.state().monitoring,
             "starting the music opens the speakers"
         );
         assert!(
@@ -589,10 +595,10 @@ mod tests {
     fn turning_the_music_off_closes_the_speakers() {
         let (mut engine, _, _) = machine_with_music();
         engine.handle(Command::Genre { name: "edm".into() });
-        assert!(engine.status().monitoring);
+        assert!(engine.state().monitoring);
         engine.handle(Command::Music { on: false });
         assert!(
-            !engine.status().monitoring,
+            !engine.state().monitoring,
             "the speakers close with the music"
         );
     }
@@ -603,7 +609,7 @@ mod tests {
         let reply = engine.handle(Command::Monitor { on: true });
         assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
         assert!(
-            !engine.status().monitoring,
+            !engine.state().monitoring,
             "a switch that says it is on while nothing is playing is the worst \
                  possible answer for this one"
         );
@@ -712,7 +718,7 @@ mod tests {
     fn turning_music_on_with_no_genre_chosen_picks_one() {
         let (mut engine, played, _) = machine_with_music();
         engine.handle(Command::Music { on: true });
-        assert!(engine.status().music.is_some());
+        assert!(engine.state().music.is_some());
         assert_eq!(played.lock().expect("played").len(), 1);
     }
 
@@ -723,7 +729,7 @@ mod tests {
             name: "lofi".into(),
         });
         engine.handle(Command::Music { on: false });
-        assert_eq!(engine.status().music, None);
+        assert_eq!(engine.state().music, None);
         assert_eq!(
             played.lock().expect("played").last(),
             Some(&None),
@@ -811,12 +817,12 @@ mod tests {
         engine.handle(Command::Genre {
             name: "lofi".into(),
         });
-        let playing = engine.status().music.clone();
+        let playing = engine.state().music.clone();
         assert!(playing.is_some());
         engine.tick();
         engine.tick();
         assert_eq!(
-            engine.status().music,
+            engine.state().music,
             playing,
             "the tick did not skip a track"
         );
@@ -847,7 +853,7 @@ mod tests {
         engine.handle(Command::Genre {
             name: "lofi".into(),
         });
-        assert!(engine.status().monitoring);
+        assert!(engine.state().monitoring);
         let Reply::Status(after) = engine.handle(Command::Monitor { on: false }) else {
             panic!("a switch every face reads answers with a status")
         };

@@ -44,20 +44,21 @@ pub fn of(status: &Status, grants: &Grants) -> Health {
     trouble.extend(grant("screen recording", grants.screen));
     trouble.extend(grant("microphone", grants.microphone));
     if status
+        .scene
         .layers
         .iter()
         .any(|l| l.source.kind == crate::picture::layers::Kind::Camera)
     {
         trouble.extend(grant("camera", grants.camera));
     }
-    if !status.layers.iter().any(|l| l.visible) {
+    if !status.scene.layers.iter().any(|l| l.visible) {
         trouble.push(
             "no picture: remux scene layer add screen <id> <display> or window <id> <words>".into(),
         );
-    } else if status.scene_flowing.frames == 0 {
+    } else if status.picture.frames == 0 {
         trouble.push("the capture is not delivering frames".into());
     }
-    if let (Some(mic), Some(why)) = (&status.mic, &status.hearing.complaint) {
+    if let (Some(mic), Some(why)) = (&status.mic, &status.mic_complaint) {
         trouble.push(format!("mic {mic}: {why}"));
     }
     if !status.destinations.iter().any(|d| d.armed && d.connected) {
@@ -104,7 +105,6 @@ pub(crate) mod tests {
     fn ready() -> (Status, Grants) {
         let mut status = Status {
             version: "0.1.0".into(),
-            layers: vec![screen_layer("VG2791R")],
             destinations: vec![Destination {
                 id: 1,
                 name: "tw".into(),
@@ -114,7 +114,8 @@ pub(crate) mod tests {
             }],
             ..Default::default()
         };
-        status.scene_flowing.frames = 30;
+        status.picture.frames = 30;
+        status.scene.layers = vec![screen_layer("VG2791R")];
         (
             status,
             Grants {
@@ -138,7 +139,7 @@ pub(crate) mod tests {
             }
         );
         let mut status = status;
-        status.layers.clear();
+        status.scene.layers.clear();
         status.destinations[0].armed = false;
         let mut grants = grants;
         grants.screen = Grant::Refused;
@@ -156,7 +157,7 @@ pub(crate) mod tests {
         let mut face = screen_layer("FaceTime");
         face.id = "face".into();
         face.source.kind = crate::picture::layers::Kind::Camera;
-        status.layers.push(face);
+        status.scene.layers.push(face);
         status.destinations[0].trouble = Some("youtube said 403".into());
         let said = of(&status, &grants);
         assert_eq!(
