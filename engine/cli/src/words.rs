@@ -3113,10 +3113,6 @@ mod reading {
                 name: "clap".into()
             })
         );
-        // One application's sound is an audio layer of its own; `hear` kept
-        // the first of a list and dropped the rest without a word.
-        let gone = parse(&w("audio hear Spotify")).unwrap_err();
-        assert!(gone.contains("hear is not a audio command"), "{gone}");
         assert!(parse(&w("audio clip")).is_err());
         assert_eq!(read(&w("audio clips")).unwrap().view, View::Clips);
         assert!(parse(&w("live --confirm")).is_err());

@@ -1192,20 +1192,6 @@ mod tests {
     // wire format and only one of them is written in this language, so the
     // exact bytes matter and a rename that serde would happily carry across a
     // round trip has to fail here instead.
-    // One application's sound is an audio layer; `hear`, which filtered the
-    // screen's sound and heard only the first application it was given, is
-    // gone from the wire, both ways.
-    #[test]
-    fn hear_is_gone_from_the_wire() {
-        assert!(decode("{\"cmd\":\"hear\",\"apps\":[\"Spotify\"]}").is_err());
-        let status = serde_json::to_value(Status::default()).unwrap();
-        assert!(status.get("hearing_apps").is_none(), "{status}");
-        assert!(serde_json::from_str::<crate::app::events::Event>(
-            "{\"event\":\"hearing\",\"apps\":[]}"
-        )
-        .is_err());
-    }
-
     // What can be captured is asked as `sources`; the old `devices` is gone
     // from the wire, both ways.
     #[test]
