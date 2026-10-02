@@ -553,11 +553,7 @@ impl ObsPipeline {
                 .filter(|_| table.screen_sound.per_app)
             {
                 Some(app) => {
-                    let bundle = self
-                        .known
-                        .lock()
-                        .ok()
-                        .and_then(|k| k.apps.get(app).cloned())
+                    let bundle = crate::sources::bundle_of(&self.known, app, crate::sources::apps)
                         .ok_or_else(|| format!("no running application called {app}"))?;
                     sys::obs_data_set_int(settings, c("type").as_ptr(), 1);
                     sys::obs_data_set_string(
@@ -882,16 +878,7 @@ impl ObsPipeline {
                             "this platform hears the screen whole, never one application".into(),
                         );
                     }
-                    let bundle = self
-                        .known
-                        .lock()
-                        .ok()
-                        .and_then(|k| {
-                            k.apps
-                                .iter()
-                                .find(|(name, _)| name.eq_ignore_ascii_case(said))
-                                .map(|(_, bundle)| bundle.clone())
-                        })
+                    let bundle = crate::sources::bundle_of(&self.known, said, crate::sources::apps)
                         .ok_or_else(|| format!("no running application called {said}"));
                     let bundle = match bundle {
                         Ok(bundle) => bundle,
