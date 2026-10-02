@@ -53,11 +53,6 @@ pub struct ObsPipeline {
     music_to_stream: bool,
     monitoring: bool,
     music_was_playing: bool,
-    /// The screen's sound, on channel 3: one app's, or off. `sck_audio_capture`
-    /// hears every app but this one; with none named, the whole screen.
-    screen_sound: *mut sys::obs_source_t,
-    screen_heard: Followed,
-    screen_sound_on: bool,
     /// A clip, on channel 4, played once over the mix.
     clip: *mut sys::obs_source_t,
     gate_params: GateParams,
@@ -66,10 +61,6 @@ pub struct ObsPipeline {
     pub(crate) preview: Option<Box<crate::preview::Ring>>,
     width: u32,
     height: u32,
-    /// An application's sound on its own, on channel 5, and its fader.
-    app_audio: *mut sys::obs_source_t,
-    app_heard: Followed,
-    app_audio_volume: f64,
     /// The independent audio captures, each on its own channel from 8, and
     /// whether it steps back under the voice.
     audio_layers: Vec<(String, *mut sys::obs_source_t, u32, bool)>,
@@ -93,8 +84,6 @@ struct Heard {
     level_mdb: AtomicU64,
     peak_mdb: AtomicU64,
     updates: AtomicU64,
-    /// Samples the source handed over, both channels, when followed.
-    samples: AtomicU64,
 }
 
 impl Heard {
@@ -116,86 +105,6 @@ impl Heard {
     }
     fn db(&self, mdb: &AtomicU64) -> f64 {
         mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0
-    }
-    unsafe extern "C" fn on_audio(
-        param: *mut c_void,
-        _source: *mut sys::obs_source_t,
-        data: *const sys::audio_data,
-        _muted: bool,
-    ) {
-        // SAFETY: `param` is the boxed `Heard`; `data` is libobs's for the
-        // call. Counted in both channels, as the native motor counts them.
-        unsafe {
-            let heard = &*(param as *const Self);
-            heard
-                .samples
-                .fetch_add(u64::from((*data).frames) * 2, Ordering::Relaxed);
-        }
-    }
-}
-
-/// A meter that follows whichever source is there now: the level off a
-/// volmeter (after the source's fader), the samples off the source's own
-/// audio, kept across sources.
-struct Followed {
-    meter: *mut sys::obs_volmeter_t,
-    heard: Box<Heard>,
-}
-
-impl Default for Followed {
-    fn default() -> Self {
-        Self {
-            meter: std::ptr::null_mut(),
-            heard: Box::default(),
-        }
-    }
-}
-
-impl Followed {
-    fn param(&self) -> *mut c_void {
-        &*self.heard as *const Heard as *mut c_void
-    }
-    /// SAFETY: `source` is live, and is left before it is released.
-    unsafe fn follow(&mut self, source: *mut sys::obs_source_t) {
-        unsafe {
-            if self.meter.is_null() {
-                self.meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
-                sys::obs_volmeter_add_callback(self.meter, Some(Heard::on_level), self.param());
-            }
-            sys::obs_volmeter_attach_source(self.meter, source);
-            sys::obs_source_add_audio_capture_callback(source, Some(Heard::on_audio), self.param());
-        }
-    }
-    /// SAFETY: `source` is the live one `follow` was given.
-    unsafe fn leave(&mut self, source: *mut sys::obs_source_t) {
-        unsafe {
-            sys::obs_source_remove_audio_capture_callback(
-                source,
-                Some(Heard::on_audio),
-                self.param(),
-            );
-            if !self.meter.is_null() {
-                sys::obs_volmeter_detach_source(self.meter);
-            }
-        }
-        // Nothing followed is silence, not the last level heard.
-        self.heard.level_mdb.store(0, Ordering::Relaxed);
-        self.heard.peak_mdb.store(0, Ordering::Relaxed);
-    }
-    fn samples(&self) -> u64 {
-        self.heard.samples.load(Ordering::Relaxed)
-    }
-    fn db(&self) -> f64 {
-        self.heard.db(&self.heard.level_mdb)
-    }
-}
-
-impl Drop for Followed {
-    fn drop(&mut self) {
-        if !self.meter.is_null() {
-            // SAFETY: ours; its source was left first.
-            unsafe { sys::obs_volmeter_destroy(self.meter) };
-        }
     }
 }
 
@@ -369,18 +278,12 @@ impl ObsPipeline {
             music_to_stream: true,
             monitoring: false,
             music_was_playing: false,
-            screen_sound: std::ptr::null_mut(),
-            screen_heard: Followed::default(),
-            screen_sound_on: false,
             clip: std::ptr::null_mut(),
             gate_params: GateParams::default(),
             denoise_on: false,
             preview: None,
             width: 1920,
             height: 1080,
-            app_audio: std::ptr::null_mut(),
-            app_heard: Followed::default(),
-            app_audio_volume: 1.0,
             audio_layers: Vec::new(),
             video_encoder: std::ptr::null_mut(),
             audio_encoder: std::ptr::null_mut(),
@@ -527,49 +430,8 @@ impl ObsPipeline {
         }
     }
 
-    /// The screen's sound source, remade for what is heard now.
-    fn apply_screen_sound(&mut self) -> Result<(), String> {
-        // SAFETY: the old one comes off channel 3 before release.
-        unsafe {
-            if !self.screen_sound.is_null() {
-                self.unduck(self.screen_sound);
-                sys::obs_set_output_source(3, std::ptr::null_mut());
-                self.screen_heard.leave(self.screen_sound);
-                sys::obs_source_release(self.screen_sound);
-                self.screen_sound = std::ptr::null_mut();
-            }
-            if !self.screen_sound_on {
-                return Ok(());
-            }
-            // `sck_audio_capture`: type 0 is the whole desktop, 1 one app by
-            // its bundle id (mac-sck-common.h); anything else is a crash. One
-            // application's sound is an audio layer of its own.
-            let settings = sys::obs_data_create();
-            let table = &crate::platform::TABLE;
-            if table.screen_sound.per_app {
-                sys::obs_data_set_int(settings, c("type").as_ptr(), 0);
-            }
-            let source = sys::obs_source_create(
-                c(table.screen_sound.source).as_ptr(),
-                c("screen sound").as_ptr(),
-                settings,
-                std::ptr::null_mut(),
-            );
-            sys::obs_data_release(settings);
-            if source.is_null() {
-                return Err("libobs could not hear the screen".into());
-            }
-            sys::obs_set_output_source(3, source);
-            self.screen_heard.follow(source);
-            self.screen_sound = source;
-        }
-        self.apply_duck();
-        Ok(())
-    }
-
-    /// Whatever plays under the voice steps back when it speaks: the music,
-    /// the screen's sound, an application's, and the audio layers whose kind
-    /// ducks; never a microphone or a clip. A compressor on each, keyed by
+    /// Whatever plays under the voice steps back when it speaks: the music
+    /// and the audio layers that duck; never a microphone or a clip. A compressor on each, keyed by
     /// the microphone (libobs's sidechain), its threshold set so the step is
     /// about `duck_db` when the voice is at a normal level.
     fn apply_duck(&mut self) {
@@ -580,7 +442,7 @@ impl ObsPipeline {
         if self.mic.is_null() || self.duck_db >= 0.0 {
             return;
         }
-        let under = [self.music, self.screen_sound, self.app_audio]
+        let under = [self.music]
             .into_iter()
             .chain(
                 self.audio_layers
@@ -814,19 +676,6 @@ impl ObsPipeline {
         self.height
     }
 
-    /// The screen's sound on or off; what is heard of it is `hear`'s.
-    pub(crate) fn set_screen_sound(&mut self, on: bool) -> Result<(), String> {
-        if on == self.screen_sound_on {
-            return Ok(());
-        }
-        self.screen_sound_on = on;
-        let made = self.apply_screen_sound();
-        if made.is_err() {
-            self.screen_sound_on = false;
-        }
-        made
-    }
-
     /// An audio source of this platform's kind: `(source id, settings)` for
     /// a microphone by id, one application by name, or the whole screen's.
     fn audio_source(
@@ -859,7 +708,7 @@ impl ObsPipeline {
                     table.mic.source
                 }
                 Kind::App => {
-                    if !table.screen_sound.per_app {
+                    if !table.system_sound.per_app {
                         sys::obs_data_release(settings);
                         return Err(
                             "this platform hears the screen whole, never one application".into(),
@@ -881,13 +730,13 @@ impl ObsPipeline {
                         c("application").as_ptr(),
                         c(&bundle).as_ptr(),
                     );
-                    table.screen_sound.source
+                    table.system_sound.source
                 }
-                Kind::Screen => {
-                    if table.screen_sound.per_app {
+                Kind::System => {
+                    if table.system_sound.per_app {
                         sys::obs_data_set_int(settings, c("type").as_ptr(), 0);
                     }
-                    table.screen_sound.source
+                    table.system_sound.source
                 }
             };
             let source = sys::obs_source_create(
@@ -914,7 +763,6 @@ impl Drop for ObsPipeline {
         self.recording = None;
         self.publishing.clear();
         self.clear_picture();
-        let _ = self.app_audio(None);
         for (id, _, _, _) in self.audio_layers.clone() {
             self.audio_layer_remove(&id);
         }
@@ -940,8 +788,6 @@ impl Drop for ObsPipeline {
                 sys::obs_source_release(self.clip);
             }
         }
-        self.screen_sound_on = false;
-        let _ = self.apply_screen_sound();
         // SAFETY: ours; the channels are emptied before the release.
         unsafe {
             if !self.mic.is_null() {
@@ -1054,11 +900,7 @@ impl Sound for ObsPipeline {
         }
     }
     fn hearing(&self) -> Hearing {
-        let heard = Hearing {
-            screen_samples: self.screen_heard.samples(),
-            app_samples: self.app_heard.samples(),
-            ..Hearing::default()
-        };
+        let heard = Hearing::default();
         if self.mic.is_null() {
             return heard;
         }
@@ -1189,49 +1031,12 @@ impl Sound for ObsPipeline {
             self.duck_db = levels.duck_db;
             self.apply_duck();
         }
-        self.set_screen_sound(levels.screen_sound)?;
         if !self.music.is_null() {
             // SAFETY: ours and live.
             unsafe { sys::obs_source_set_volume(self.music, levels.music as f32) };
         }
-        self.app_audio_volume = levels.app_audio_volume;
-        if !self.app_audio.is_null() {
-            // SAFETY: ours and live.
-            unsafe { sys::obs_source_set_volume(self.app_audio, levels.app_audio_volume as f32) };
-        }
         self.apply_music_routing();
         Ok(())
-    }
-    /// One application's sound on channel 5, apart from the screen's. The
-    /// new one opens before the old one goes, so a name that is not running
-    /// leaves the one that is.
-    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
-        let made = match app {
-            Some(app) => {
-                Some(self.audio_source(remuxd_domain::sound::audio_layers::Kind::App, app)?)
-            }
-            None => None,
-        };
-        // SAFETY: the old one comes off channel 5 before release; the new
-        // one is ours until the next.
-        unsafe {
-            if !self.app_audio.is_null() {
-                self.unduck(self.app_audio);
-                sys::obs_set_output_source(5, std::ptr::null_mut());
-                self.app_heard.leave(self.app_audio);
-                sys::obs_source_release(self.app_audio);
-                self.app_audio = std::ptr::null_mut();
-            }
-            if let Some(source) = made {
-                sys::obs_source_set_volume(source, self.app_audio_volume as f32);
-                sys::obs_set_output_source(5, source);
-                self.app_heard.follow(source);
-                self.app_audio = source;
-                self.meter_the_mix();
-            }
-        }
-        self.apply_duck();
-        Ok(app.map(String::from))
     }
     /// Each audio layer on a channel of its own, from 8: libobs mixes every
     /// output channel into what leaves.
@@ -1243,7 +1048,7 @@ impl Sound for ObsPipeline {
         let said = match layer.source.kind {
             Kind::Mic => layer.source.device.clone(),
             Kind::App => layer.source.name.clone(),
-            Kind::Screen => layer.source.display.map(|d| d.to_string()),
+            Kind::System => Some("system".to_string()),
         }
         .ok_or("an audio layer names its source")?;
         let channel = (8..64)
@@ -1334,11 +1139,6 @@ impl Sound for ObsPipeline {
             peak_db: db(&self.mixed.peak_mdb),
             music_db: music(&self.music_heard.level_mdb),
             music_peak_db: music(&self.music_heard.peak_mdb),
-            app_db: if self.app_audio.is_null() {
-                floor
-            } else {
-                self.app_heard.db().max(floor)
-            },
             // Only the music is monitored (`apply_music_routing`): the
             // speakers hear it, as you hear it, or nothing.
             monitor_db: if self.monitoring {

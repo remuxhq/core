@@ -8,18 +8,20 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     Mic,
     App,
-    Screen,
+    /// What the computer plays, every application at once: the whole
+    /// desktop's sound, never one display's, since no display has a sound.
+    System,
 }
 
 impl Kind {
     /// Whether a sound of this kind steps back under the voice, as the music
-    /// does. An application's or a screen's sound is what plays while one
+    /// does. An application's or the system's sound is what plays while one
     /// talks over it: a video, a game, a call. A microphone is somebody
     /// talking, and a voice ducked under another voice is a voice lost.
     pub fn ducks(self) -> bool {
         match self {
             Kind::Mic => false,
-            Kind::App | Kind::Screen => true,
+            Kind::App | Kind::System => true,
         }
     }
 }
@@ -34,8 +36,6 @@ pub struct Source {
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display: Option<u32>,
 }
 impl Source {
     pub fn mic(device: String) -> Self {
@@ -43,7 +43,6 @@ impl Source {
             kind: Kind::Mic,
             device: Some(device),
             name: None,
-            display: None,
         }
     }
     pub fn app(name: String) -> Self {
@@ -51,30 +50,33 @@ impl Source {
             kind: Kind::App,
             device: None,
             name: Some(name),
-            display: None,
         }
     }
-    pub fn screen(display: u32) -> Self {
+    pub fn system() -> Self {
         Self {
-            kind: Kind::Screen,
+            kind: Kind::System,
             device: None,
             name: None,
-            display: Some(display),
         }
     }
     fn valid(&self) -> bool {
         match self.kind {
             Kind::Mic => {
-                self.device.as_ref().is_some_and(|s| !s.trim().is_empty())
-                    && self.name.is_none()
-                    && self.display.is_none()
+                self.device.as_ref().is_some_and(|s| !s.trim().is_empty()) && self.name.is_none()
             }
             Kind::App => {
-                self.name.as_ref().is_some_and(|s| !s.trim().is_empty())
-                    && self.device.is_none()
-                    && self.display.is_none()
+                self.name.as_ref().is_some_and(|s| !s.trim().is_empty()) && self.device.is_none()
             }
-            Kind::Screen => self.display.is_some() && self.device.is_none() && self.name.is_none(),
+            Kind::System => self.device.is_none() && self.name.is_none(),
+        }
+    }
+
+    /// What it hears, for a person: `mic USB`, `app Discord`, `system`.
+    pub fn said(&self) -> String {
+        match self.kind {
+            Kind::Mic => format!("mic {}", self.device.as_deref().unwrap_or_default()),
+            Kind::App => format!("app {}", self.name.as_deref().unwrap_or_default()),
+            Kind::System => "system".into(),
         }
     }
 }
@@ -148,12 +150,11 @@ impl Layer {
 
 impl Source {
     /// Whether two layers hear the same capture, whatever they are called:
-    /// one microphone, one application (by name, as the motor finds it), one
-    /// display.
+    /// one microphone, one application (by name, as the motor finds it), or
+    /// the system's sound.
     pub fn same_capture(&self, other: &Source) -> bool {
         self.kind == other.kind
             && self.device == other.device
-            && self.display == other.display
             && match (&self.name, &other.name) {
                 (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
                 (a, b) => a == b,
@@ -253,14 +254,15 @@ mod tests {
         assert_eq!(plan.open, [app("call", "Zoom")]);
         assert_eq!(plan.close, ["call"]);
         let mic = Layer::new("guest".into(), Source::mic("USB".into())).unwrap();
-        let screen = Layer::new("guest".into(), Source::screen(1)).unwrap();
-        assert!(!mic.source.same_capture(&screen.source));
+        let system = Layer::new("guest".into(), Source::system()).unwrap();
+        assert!(!mic.source.same_capture(&system.source));
+        assert!(system.source.same_capture(&Source::system()));
     }
 
     #[test]
     fn what_plays_under_the_voice_ducks_and_another_voice_does_not() {
         assert!(Kind::App.ducks());
-        assert!(Kind::Screen.ducks());
+        assert!(Kind::System.ducks());
         assert!(!Kind::Mic.ducks(), "a second microphone is a voice");
     }
     #[test]
@@ -294,7 +296,7 @@ mod tests {
         assert!(Layer::new("voice_2".into(), Source::mic("a".into())).is_ok());
         assert!(Layer::new("../bad".into(), Source::mic("a".into())).is_err());
         assert!(Layer::new("a".into(), Source::app(" ".into())).is_err());
-        let mut mismatched = Source::screen(1);
+        let mut mismatched = Source::system();
         mismatched.device = Some("wrong".into());
         assert!(Layer::new("a".into(), mismatched).is_err());
     }

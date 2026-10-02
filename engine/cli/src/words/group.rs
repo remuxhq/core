@@ -20,7 +20,7 @@ const AUDIO: &[Action] = &[
         name: "layer",
         target: "audio-layer",
         prefix: &[],
-        args: "add mic|app|screen <id> <source> | volume <id> <percent> | mute <id> on|off | duck <id> on|off|auto | remove <id>",
+        args: "add mic <id> <device> | add app <id> <name> | add system <id> | volume <id> <percent> | mute <id> on|off | duck <id> on|off|auto | remove <id>",
         summary: "Manage the active scene's audio captures by ID; an app or screen ducks under the voice unless told off.",
     },
     Action {
@@ -64,27 +64,6 @@ const AUDIO: &[Action] = &[
         prefix: &[],
         args: "[on|off]",
         summary: "Hear the mix through the speakers.",
-    },
-    Action {
-        name: "screen-sound",
-        target: "screen-sound",
-        prefix: &[],
-        args: "[on|off]",
-        summary: "Include screen audio in the mix.",
-    },
-    Action {
-        name: "app",
-        target: "app-audio",
-        prefix: &[],
-        args: "<running app name|off>",
-        summary: "Capture an application's audio independently of screen sound.",
-    },
-    Action {
-        name: "app-volume",
-        target: "app-audio-volume",
-        prefix: &[],
-        args: "<percent>",
-        summary: "Set the selected application's audio volume.",
     },
     Action {
         name: "levels",
@@ -326,7 +305,7 @@ const SCENE: &[Action] = &[
         name: "layer",
         target: "layer",
         prefix: &[],
-        args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]",
+        args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default",
         summary: "Compose captures, images, text and timers in one back-to-front order.",
     },
     Action {

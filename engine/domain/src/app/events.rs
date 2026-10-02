@@ -143,18 +143,8 @@ pub enum Event {
     MusicToStream {
         on: bool,
     },
-    /// The screen's sound in the mix, and the display layer it comes from.
-    ScreenSound {
-        on: bool,
-        layer: Option<String>,
-    },
     Denoise {
         on: bool,
-    },
-    /// One application's sound on its own fader, `None` when off.
-    AppAudio {
-        app: Option<String>,
-        volume: f64,
     },
     /// The self-view flipped.
     Mirrored {
@@ -217,9 +207,7 @@ impl Event {
             | Self::Gate { .. }
             | Self::Monitoring { .. }
             | Self::MusicToStream { .. }
-            | Self::ScreenSound { .. }
             | Self::Denoise { .. }
-            | Self::AppAudio { .. }
             | Self::Mirrored { .. }
             | Self::Viewers { .. } => Ring::Detail,
             _ => Ring::State,
@@ -232,8 +220,6 @@ impl Event {
 #[serde(rename_all = "kebab-case")]
 pub enum Heard {
     Mic,
-    Screen,
-    App,
 }
 
 /// The three rings, so that what is said often never pushes out what is
@@ -390,8 +376,6 @@ pub struct Snapshot {
     /// The timers of the active scene at 00:00.
     pub timers_done: std::collections::BTreeSet<String>,
     pub mic_complaint: Option<String>,
-    pub screen_complaint: Option<String>,
-    pub app_complaint: Option<String>,
     /// The voice's holes and crackles, counted since the microphone opened.
     pub starved: u64,
     pub dropped: u64,
@@ -399,11 +383,7 @@ pub struct Snapshot {
     pub gate: crate::sound::mixer::gate::GateParams,
     pub monitoring: bool,
     pub music_to_stream: bool,
-    pub screen_sound: bool,
-    pub screen_sound_layer: Option<String>,
     pub denoise: bool,
-    pub app_audio: Option<String>,
-    pub app_audio_volume: f64,
     pub mirrored: bool,
     pub viewers: Option<u32>,
 }
@@ -492,19 +472,13 @@ impl From<&Status> for Snapshot {
             filter: status.shader.clone(),
             timers_done: std::collections::BTreeSet::new(),
             mic_complaint: status.hearing.complaint.clone(),
-            screen_complaint: status.hearing.screen_complaint.clone(),
-            app_complaint: status.hearing.app_complaint.clone(),
             starved: status.hearing.starved,
             dropped: status.hearing.dropped,
             faders: status.faders,
             gate: status.gate,
             monitoring: status.monitoring,
             music_to_stream: status.music_to_stream,
-            screen_sound: status.screen_sound,
-            screen_sound_layer: status.screen_sound_layer.clone(),
             denoise: status.denoise,
-            app_audio: status.app_audio.clone(),
-            app_audio_volume: status.app_audio_volume,
             mirrored: status.mirrored,
             viewers: status.viewers,
         }
@@ -581,15 +555,7 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
 
 /// The captures' complaints, the voice's glitches, the switches and faders.
 fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
-    for (source, was, now) in [
-        (Heard::Mic, &before.mic_complaint, &after.mic_complaint),
-        (
-            Heard::Screen,
-            &before.screen_complaint,
-            &after.screen_complaint,
-        ),
-        (Heard::App, &before.app_complaint, &after.app_complaint),
-    ] {
+    for (source, was, now) in [(Heard::Mic, &before.mic_complaint, &after.mic_complaint)] {
         if was != now {
             events.push(Event::SoundComplaint {
                 source,
@@ -624,22 +590,8 @@ fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
             on: after.music_to_stream,
         });
     }
-    if (before.screen_sound, &before.screen_sound_layer)
-        != (after.screen_sound, &after.screen_sound_layer)
-    {
-        events.push(Event::ScreenSound {
-            on: after.screen_sound,
-            layer: after.screen_sound_layer.clone(),
-        });
-    }
     if before.denoise != after.denoise {
         events.push(Event::Denoise { on: after.denoise });
-    }
-    if (&before.app_audio, before.app_audio_volume) != (&after.app_audio, after.app_audio_volume) {
-        events.push(Event::AppAudio {
-            app: after.app_audio.clone(),
-            volume: after.app_audio_volume,
-        });
     }
     if before.mirrored != after.mirrored {
         events.push(Event::Mirrored { on: after.mirrored });
@@ -1419,10 +1371,7 @@ mod tests {
         after.gate.full = 0.2;
         after.monitoring = true;
         after.music_to_stream = !before.music_to_stream;
-        after.screen_sound = true;
-        after.screen_sound_layer = Some("desk".into());
         after.denoise = true;
-        after.app_audio = Some("Safari".into());
         after.mirrored = true;
         after.viewers = Some(12);
         let said = changed(&before, &after);
@@ -1439,15 +1388,7 @@ mod tests {
                 Event::MusicToStream {
                     on: after.music_to_stream
                 },
-                Event::ScreenSound {
-                    on: true,
-                    layer: Some("desk".into())
-                },
                 Event::Denoise { on: true },
-                Event::AppAudio {
-                    app: Some("Safari".into()),
-                    volume: before.app_audio_volume
-                },
                 Event::Mirrored { on: true },
                 Event::Viewers { total: Some(12) },
             ]

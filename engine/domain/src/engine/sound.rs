@@ -9,8 +9,6 @@ pub struct SoundLevels {
     pub duck_db: f64,
     pub muted: bool,
     pub music_to_stream: bool,
-    pub screen_sound: bool,
-    pub app_audio_volume: f64,
 }
 
 /// The sound's half of the media path: the microphone, the music, the mixer
@@ -30,15 +28,13 @@ pub trait Sound: Send {
     fn audio_layer_duck(&mut self, _id: &str, _ducks: bool) {}
     /// Open a microphone by id, or close the one that is open.
     fn mic(&mut self, device: Option<&str>) -> Result<(), String>;
-    /// Start or stop a dedicated app capture; a failed start leaves the previous one intact.
-    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String>;
 
     /// Play a track, or stop. The engine decides *which* track; this makes the
     /// sound. Stopping is `None` rather than a separate verb because there is
     /// only ever one music track playing and it is either that one or none.
     fn play(&mut self, track: Option<&Track>) -> Result<(), String>;
-    /// Where the faders are, and whether the music and the screen's sound are
-    /// in the mix that leaves. Sent whenever one moves, rather than read by
+    /// Where the faders are, and whether the music is in the mix that
+    /// leaves. Sent whenever one moves, rather than read by
     /// the mixer, so that a fader nobody touched costs nothing.
     fn levels(&mut self, levels: SoundLevels) -> Result<(), String>;
     /// Where the gate's thresholds are now. The whole set, not the patch: the
@@ -158,80 +154,6 @@ impl Engine {
         Reply::Status(Box::new(self.reported()))
     }
 
-    /// A dedicated audio capture independent of the screen sound.
-    pub(super) fn app_audio(&mut self, app: Option<String>) -> Reply {
-        if app
-            .as_ref()
-            .is_some_and(|name| name.len() > 256 || name.chars().any(char::is_control))
-        {
-            return Reply::Error {
-                message: "invalid application name".into(),
-            };
-        }
-        match self.pipeline.app_audio(app.as_deref()) {
-            Ok(selected) => {
-                self.status.app_audio = selected;
-                Reply::Status(Box::new(self.reported()))
-            }
-            Err(message) => Reply::Error { message },
-        }
-    }
-
-    pub(super) fn app_audio_volume(&mut self, level: f64) -> Reply {
-        if !level.is_finite() {
-            return Reply::Error {
-                message: "app audio volume must be finite".into(),
-            };
-        }
-        self.status.app_audio_volume = level.clamp(0.0, 1.0);
-        self.sound()
-    }
-
-    /// The old switch has no implicit choice when several displays are present.
-    pub(super) fn screen_sound(&mut self, on: bool) -> Reply {
-        if !on {
-            if let Err(message) = self.pipeline.screen_audio(None) {
-                return Reply::Error { message };
-            }
-            self.status.screen_sound = false;
-            self.status.screen_sound_layer = None;
-            return self.sound();
-        }
-        let mut screens = self
-            .status
-            .layers
-            .iter()
-            .filter(|layer| layer.source.kind == crate::picture::layers::Kind::Screen);
-        let Some(first) = screens.next() else {
-            return Reply::Error {
-                message: "no display layer; add one before enabling screen sound".into(),
-            };
-        };
-        if screens.next().is_some() {
-            return Reply::Error {
-                message: "more than one display layer; specify its ID with layer screen-sound"
-                    .into(),
-            };
-        }
-        self.layer_screen_sound(first.id.clone(), true)
-    }
-
-    pub(super) fn layer_screen_sound(&mut self, id: String, on: bool) -> Reply {
-        if !self.status.layers.iter().any(|layer| {
-            layer.id == id && layer.source.kind == crate::picture::layers::Kind::Screen
-        }) {
-            return Reply::Error {
-                message: format!("no display layer {id:?}"),
-            };
-        }
-        if let Err(message) = self.pipeline.screen_audio(on.then_some(id.as_str())) {
-            return Reply::Error { message };
-        }
-        self.status.screen_sound = on;
-        self.status.screen_sound_layer = on.then_some(id);
-        self.sound()
-    }
-
     pub(super) fn choose_mic(&mut self, device: Option<String>) -> Reply {
         match device {
             None => match self.pipeline.mic(None) {
@@ -328,14 +250,6 @@ impl Engine {
             duck_db: self.status.faders.duck_db,
             muted: self.status.muted,
             music_to_stream: self.status.music_to_stream,
-            screen_sound: self.status.screen_sound
-                && self.status.screen_sound_layer.as_deref().is_some_and(|id| {
-                    self.status
-                        .layers
-                        .iter()
-                        .any(|layer| layer.id == id && layer.visible)
-                }),
-            app_audio_volume: self.status.app_audio_volume,
         }) {
             Ok(()) => Reply::Status(Box::new(self.reported())),
             Err(why) => Reply::Error { message: why },
@@ -687,110 +601,6 @@ mod tests {
             "a switch that says it is on while nothing is playing is the worst \
                  possible answer for this one"
         );
-    }
-
-    #[test]
-    fn screen_sound_requires_one_display_and_switches_without_summing() {
-        let pipeline = Wrote::default();
-        let mut engine =
-            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
-        let error = engine.handle(Command::ScreenSound { on: true });
-        assert!(matches!(error, Reply::Error { .. }));
-        for id in ["left", "right"] {
-            engine.handle(Command::LayerScreen {
-                id: id.into(),
-                display: 1,
-            });
-        }
-        let error = engine.handle(Command::ScreenSound { on: true });
-        assert!(matches!(error, Reply::Error { .. }));
-        engine.handle(Command::LayerScreenSound {
-            id: "left".into(),
-            on: true,
-        });
-        assert_eq!(engine.status().screen_sound_layer.as_deref(), Some("left"));
-        engine.handle(Command::LayerScreenSound {
-            id: "right".into(),
-            on: true,
-        });
-        assert_eq!(engine.status().screen_sound_layer.as_deref(), Some("right"));
-        engine.handle(Command::LayerRemove { id: "right".into() });
-        assert!(!engine.status().screen_sound);
-        assert_eq!(engine.status().screen_sound_layer, None);
-    }
-
-    // What the Mac plays stays off the air until somebody says so, reaches the
-    // mixer the moment they do, and the panic button takes it back: nothing of
-    // the room reaches the audience after that button until it is asked again.
-    #[test]
-    fn the_screens_sound_is_off_the_air_until_asked_and_the_panic_button_takes_it_back() {
-        let levels: Faders = Default::default();
-        let pipeline = Wrote {
-            levels: levels.clone(),
-            ..Default::default()
-        };
-        let mut engine =
-            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
-        assert!(
-            !engine.status().screen_sound,
-            "the screen is chosen, its sound is not"
-        );
-        engine.handle(Command::LayerScreen {
-            id: "display".into(),
-            display: 1,
-        });
-
-        let Reply::Status(sent) = engine.handle(Command::ScreenSound { on: true }) else {
-            panic!("a switch every face reads answers with a status")
-        };
-        assert!(sent.screen_sound);
-        assert_eq!(
-            levels.lock().expect("levels").map(|l| l.5),
-            Some(true),
-            "the mixer was told to let the screen's sound into the mix"
-        );
-
-        engine.handle(Command::HideEverything);
-        assert!(
-            !engine.status().screen_sound,
-            "the panic button takes it back"
-        );
-        assert_eq!(levels.lock().expect("levels").map(|l| l.5), Some(false));
-    }
-
-    #[test]
-    fn application_audio_is_independent_and_panic_closes_it() {
-        let pipeline = Wrote::default();
-        let mut engine =
-            Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
-        assert_eq!(engine.status().app_audio, None);
-        let Reply::Status(selected) = engine.handle(Command::AppAudio {
-            app: Some("Safari".into()),
-        }) else {
-            panic!("application audio must answer with status");
-        };
-        assert_eq!(selected.app_audio.as_deref(), Some("Safari"));
-        assert!(!selected.screen_sound);
-        engine.handle(Command::LayerScreen {
-            id: "display".into(),
-            display: 1,
-        });
-        engine.handle(Command::ScreenSound { on: true });
-        engine.handle(Command::AppAudioVolume { level: 0.3 });
-        assert_eq!(engine.status().app_audio_volume, 0.3);
-        assert!(engine.status().screen_sound);
-        engine.handle(Command::AppAudio { app: None });
-        assert_eq!(engine.status().app_audio, None);
-        assert!(
-            engine.status().screen_sound,
-            "turning off the app leaves screen sound on"
-        );
-        engine.handle(Command::AppAudio {
-            app: Some("Safari".into()),
-        });
-        engine.handle(Command::HideEverything);
-        assert_eq!(engine.status().app_audio, None);
-        assert!(!engine.status().screen_sound);
     }
 
     // Nobody picks a genre in order to not hear it, so choosing one starts it.

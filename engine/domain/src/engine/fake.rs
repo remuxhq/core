@@ -355,7 +355,6 @@ impl Sound for Wrote {
             .name
             .clone()
             .or_else(|| layer.source.device.clone())
-            .or_else(|| layer.source.display.map(|d| d.to_string()))
             .unwrap_or_default();
         if self.refuse.as_deref() == Some(&format!("audio:{said}")) {
             return Err(format!("no running application called {said}"));
@@ -391,9 +390,6 @@ impl Sound for Wrote {
             .expect("ducked")
             .push((id.to_string(), ducks));
     }
-    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
-        Ok(app.map(str::to_string))
-    }
     fn music_ended(&mut self) -> bool {
         // Exactly once, like the real one: asking twice must not skip a
         // track, which is the bug this shape exists to make impossible.
@@ -426,7 +422,6 @@ impl Sound for Wrote {
             levels.duck_db,
             levels.muted,
             levels.music_to_stream,
-            levels.screen_sound,
         ));
         Ok(())
     }
@@ -456,7 +451,6 @@ impl Sound for Wrote {
             music_peak_db: -26.0,
             music_out_db: -20.0,
             music_out_peak_db: -18.0,
-            app_db: -60.0,
             ducked_db: 0.0,
             playing: true,
             monitor_db: -60.0,
@@ -476,10 +470,6 @@ impl Sound for Wrote {
             starved: 0,
             buffered: 0,
             dropped: 0,
-            screen_samples: 0,
-            screen_complaint: None,
-            app_samples: 0,
-            app_complaint: None,
             complaint: None,
         }
     }
@@ -568,8 +558,7 @@ pub(super) type Shown =
     std::sync::Arc<std::sync::Mutex<Vec<(Vec<Element>, Vec<(String, Duration)>)>>>;
 
 /// Where the faders were last put: microphone, music, duck, muted.
-pub(super) type Faders =
-    std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64, bool, bool, bool)>>>;
+pub(super) type Faders = std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64, bool, bool)>>>;
 
 /// Each `show` the pipeline was given: the elements and the running timers.
 pub(super) type Showings = Vec<(Vec<Element>, Vec<(String, Duration)>)>;

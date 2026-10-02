@@ -150,9 +150,6 @@ impl Sound for NoPipeline {
     fn mic(&mut self, _device: Option<&str>) -> Result<(), String> {
         Ok(())
     }
-    fn app_audio(&mut self, _app: Option<&str>) -> Result<Option<String>, String> {
-        Err("this engine has no application audio capture".into())
-    }
     fn play(&mut self, _track: Option<&Track>) -> Result<(), String> {
         Ok(())
     }
@@ -1093,22 +1090,6 @@ impl Engine {
             self.render_scene();
             return Reply::Error { message };
         }
-        // Preserve screen sound only when its physical display remains in the new scene.
-        let sound_source = self.status.screen_sound_layer.as_ref().and_then(|id| {
-            self.status
-                .layers
-                .iter()
-                .find(|layer| &layer.id == id)
-                .map(crate::picture::scenes::CaptureKey::of)
-        });
-        let new_sound = sound_source.and_then(|key| {
-            next.iter()
-                .find(|layer| {
-                    layer.source.kind == crate::picture::layers::Kind::Screen
-                        && crate::picture::scenes::CaptureKey::of(layer) == key
-                })
-                .map(|layer| layer.id.clone())
-        });
         self.status.scenes = previous_scenes;
         let mut next = next;
         self.renumber(&mut next);
@@ -1117,21 +1098,6 @@ impl Engine {
         self.status.active_scene = name;
         self.counting.clear();
         self.pipeline.layers_changed(&self.status.layers);
-        if self.status.screen_sound_layer != new_sound {
-            if self.pipeline.screen_audio(new_sound.as_deref()).is_err() {
-                let _ = self.pipeline.screen_audio(None);
-                self.status.screen_sound = false;
-                self.status.screen_sound_layer = None;
-            } else {
-                self.status.screen_sound_layer = new_sound;
-                if self.status.screen_sound_layer.is_none() {
-                    self.status.screen_sound = false;
-                }
-            }
-        }
-        // A scene can hide/show the same sound-supplying display without
-        // changing its layer ID; update the mixer gate in that case too.
-        let _ = self.sound();
         let drawn = self.pipeline.show(&next_elements, &[], &next_order);
         if let Err(message) = drawn {
             // A renderer refusal cannot silently commit a scene whose picture
@@ -1152,9 +1118,6 @@ impl Engine {
             self.status = previous;
             self.counting = previous_clock;
             self.pipeline.layers_changed(&self.status.layers);
-            let _ = self
-                .pipeline
-                .screen_audio(self.status.screen_sound_layer.as_deref());
             self.render_scene();
             return Reply::Error { message };
         }
@@ -1308,19 +1271,13 @@ impl Engine {
                 .map(|(id, _)| id.clone())
                 .collect(),
             mic_complaint: heard.complaint,
-            screen_complaint: heard.screen_complaint,
-            app_complaint: heard.app_complaint,
             starved: heard.starved,
             dropped: heard.dropped,
             faders: self.status.faders,
             gate: self.status.gate,
             monitoring: self.status.monitoring,
             music_to_stream: self.status.music_to_stream,
-            screen_sound: self.status.screen_sound,
-            screen_sound_layer: self.status.screen_sound_layer.clone(),
             denoise: self.status.denoise,
-            app_audio: self.status.app_audio.clone(),
-            app_audio_volume: self.status.app_audio_volume,
             mirrored: self.status.mirrored,
             viewers: self.watching.viewers(),
         }
@@ -1415,10 +1372,6 @@ impl Engine {
             Command::Duck { db } => self.duck(db),
             Command::Monitor { on } => self.monitor(on),
             Command::StreamMusic { on } => self.stream_music(on),
-            Command::ScreenSound { on } => self.screen_sound(on),
-            Command::LayerScreenSound { id, on } => self.layer_screen_sound(id, on),
-            Command::AppAudio { app } => self.app_audio(app),
-            Command::AppAudioVolume { level } => self.app_audio_volume(level),
             Command::Screen { display } => self.choose_screen(display),
             Command::Window { query } => self.choose_window(query),
             Command::Camera { device } => self.choose_camera(device),
@@ -1624,17 +1577,6 @@ impl Engine {
         // The bed off the stream too, so music turned back on afterwards
         // plays to the room and not to the audience until somebody says so.
         self.status.music_to_stream = false;
-        // And the screen's sound: the button means nothing of this room
-        // reaches the audience until somebody says so again.
-        self.status.screen_sound = false;
-        self.status.screen_sound_layer = None;
-        if let Err(why) = self.pipeline.screen_audio(None) {
-            return Reply::Error { message: why };
-        }
-        if let Err(why) = self.pipeline.app_audio(None) {
-            return Reply::Error { message: why };
-        }
-        self.status.app_audio = None;
         // Muting is part of the button and has to reach the sound, not only
         // the status. This was missing once and it is the worst half to miss.
         self.sound()

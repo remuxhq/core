@@ -75,10 +75,6 @@ pub trait Picture: Send {
         Err("this pipeline cannot switch scenes".into())
     }
     fn layers_changed(&mut self, _layers: &[crate::picture::layers::Layer]) {}
-    /// Route system audio from exactly one display layer, or disconnect it.
-    fn screen_audio(&mut self, _id: Option<&str>) -> Result<(), String> {
-        Ok(())
-    }
     /// Compile a scene shader before switching the running compositor.
     fn shader(&mut self, path: Option<&str>) -> Result<(), String>;
     /// Compile before replacing this layer's shader. `None` removes it.
@@ -767,7 +763,6 @@ impl Engine {
         } else {
             None
         };
-        let sound_was_here = self.status.screen_sound_layer.as_deref() == Some(&id);
         match self.pipeline.layer_replace(&old, &next) {
             Ok((width, height)) if width > 0 && height > 0 && width <= 8192 && height <= 8192 => {
                 next.source.width = width;
@@ -780,20 +775,13 @@ impl Engine {
                 }
                 self.status.layers[index] = next;
                 self.sync_scene_layers();
-                if sound_was_here
-                    && self.status.layers[index].source.kind != crate::picture::layers::Kind::Screen
-                {
-                    self.status.screen_sound_layer = None;
-                    self.status.screen_sound = false;
-                    return self.sound();
-                }
                 Reply::Status(Box::new(self.reported()))
             }
             Ok(_) => {
                 // Ports must reject an unusable native size; if one violates
                 // that contract, never keep an incorrect capture in Status.
                 self.pipeline.layer_remove(&id);
-                self.drop_failed_layer(index, sound_was_here);
+                self.drop_failed_layer(index);
                 Reply::Error {
                     message: "the replacement has no usable native size; original source lost"
                         .into(),
@@ -806,7 +794,7 @@ impl Engine {
                     // change, or the live stays on the cleared old slot.
                     self.pipeline.layers_changed(&self.status.layers);
                 } else {
-                    self.drop_failed_layer(index, sound_was_here);
+                    self.drop_failed_layer(index);
                 }
                 Reply::Error {
                     message: error.reason,
@@ -815,14 +803,9 @@ impl Engine {
         }
     }
 
-    fn drop_failed_layer(&mut self, index: usize, sound_was_here: bool) {
+    fn drop_failed_layer(&mut self, index: usize) {
         self.status.layers.remove(index);
         self.pipeline.layers_changed(&self.status.layers);
-        if sound_was_here {
-            self.status.screen_sound_layer = None;
-            self.status.screen_sound = false;
-            let _ = self.sound();
-        }
     }
 
     fn validate_layer_id(&self, id: &str) -> Result<(), String> {
@@ -884,9 +867,6 @@ impl Engine {
         }
         self.status.layers[index].visible = on;
         self.pipeline.layers_changed(&self.status.layers);
-        if self.status.screen_sound_layer.as_deref() == Some(&id) {
-            return self.sound();
-        }
         Reply::Status(Box::new(self.reported()))
     }
 
@@ -894,14 +874,6 @@ impl Engine {
         let Some(index) = self.status.layers.iter().position(|layer| layer.id == id) else {
             return self.scene_element_remove(id);
         };
-        if self.status.screen_sound_layer.as_deref() == Some(&id) {
-            if let Err(message) = self.pipeline.screen_audio(None) {
-                return Reply::Error { message };
-            }
-            self.status.screen_sound = false;
-            self.status.screen_sound_layer = None;
-            let _ = self.sound();
-        }
         self.pipeline.layer_remove(&id);
         self.status.layers.remove(index);
         self.sync_scene_layers();
@@ -2407,10 +2379,9 @@ mod tests {
     }
 
     #[test]
-    fn hiding_keeps_capture_preview_layout_and_id_and_pauses_screen_sound() {
+    fn hiding_keeps_capture_preview_layout_and_id() {
         let pipeline = Wrote::default();
         let captured = pipeline.told.clone();
-        let levels = pipeline.levels.clone();
         let shown = pipeline.shown.clone();
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
@@ -2419,11 +2390,6 @@ mod tests {
             display: 1,
         });
         let original = engine.status().layers[0].clone();
-        engine.handle(Command::LayerScreenSound {
-            id: "desk".into(),
-            on: true,
-        });
-        assert!(levels.lock().unwrap().unwrap().5);
 
         let Reply::Status(hidden) = engine.handle(Command::LayerVisible {
             id: "desk".into(),
@@ -2443,11 +2409,6 @@ mod tests {
             engine.handle(Command::LayerShot { id: "desk".into() }),
             Reply::Shot { .. }
         ));
-        assert!(hidden.screen_sound && hidden.screen_sound_layer.as_deref() == Some("desk"));
-        assert!(
-            !levels.lock().unwrap().unwrap().5,
-            "hidden display audio must leave the mix"
-        );
         assert_eq!(engine.status().active_scene, "default");
         assert_eq!(
             captured.lock().unwrap().len(),
@@ -2468,10 +2429,6 @@ mod tests {
             on: true,
         });
         assert!(engine.status().layers[0].visible);
-        assert!(
-            levels.lock().unwrap().unwrap().5,
-            "show resumes requested audio"
-        );
         assert_eq!(engine.status().active_scene, "default");
         assert_eq!(captured.lock().unwrap().len(), 1);
         let before = elements_shown(&shown).len();
@@ -2564,7 +2521,7 @@ mod tests {
     }
 
     #[test]
-    fn a_swap_resets_an_invalid_crop_and_only_disables_audio_for_a_window() {
+    fn a_swap_resets_an_invalid_crop() {
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
         engine.handle(Command::LayerScreen {
@@ -2580,18 +2537,13 @@ mod tests {
                 height: 200,
             }),
         });
-        engine.handle(Command::LayerScreenSound {
-            id: "desk".into(),
-            on: true,
-        });
-        let Reply::Status(display) = engine.handle(Command::LayerReplaceScreen {
-            id: "desk".into(),
-            display: 3,
-        }) else {
-            panic!("display swap")
-        };
-        assert!(display.screen_sound);
-        assert_eq!(display.screen_sound_layer.as_deref(), Some("desk"));
+        assert!(matches!(
+            engine.handle(Command::LayerReplaceScreen {
+                id: "desk".into(),
+                display: 3,
+            }),
+            Reply::Status(_)
+        ));
         let Reply::Status(window) = engine.handle(Command::Window {
             query: "notes".into(),
         }) else {
@@ -2603,8 +2555,6 @@ mod tests {
             crate::picture::layers::Kind::Window
         );
         assert_eq!(window.layers[0].crop, None);
-        assert!(!window.screen_sound);
-        assert_eq!(window.screen_sound_layer, None);
         assert!(matches!(
             engine.handle(Command::LayerReplaceCamera {
                 id: "desk".into(),

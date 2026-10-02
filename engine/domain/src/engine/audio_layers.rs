@@ -1,6 +1,5 @@
-//! Independent audio layers: one capture per ID, separate from the legacy
-//! one-mic/one-app controls, in the active scene. Never report a source that
-//! failed to open.
+//! The active scene's sounds beside the microphone: one capture per ID.
+//! Never report a source that failed to open.
 use super::*;
 use crate::sound::audio_layers::{transition, Duck, Kind, Layer, Source, Transition};
 
