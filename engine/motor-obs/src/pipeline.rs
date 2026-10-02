@@ -859,11 +859,16 @@ impl ObsPipeline {
             let settings = sys::obs_data_create();
             let id = match kind {
                 Kind::Mic => {
-                    // An id as the device list gives it, or a name as it reads.
-                    let device = crate::sources::list(table.mic.source, table.mic.devices)
+                    // An id as the device list gives it, or a name as it reads;
+                    // anything else opened a device nobody has, in silence.
+                    let device = crate::sources::list_of_type(table.mic.source, table.mic.devices)
                         .into_iter()
                         .find(|(name, id)| id == said || name.eq_ignore_ascii_case(said))
-                        .map_or_else(|| said.to_string(), |(_, id)| id);
+                        .map(|(_, id)| id);
+                    let Some(device) = device else {
+                        sys::obs_data_release(settings);
+                        return Err(format!("no microphone called {said}"));
+                    };
                     sys::obs_data_set_string(
                         settings,
                         c(table.mic.device_key).as_ptr(),

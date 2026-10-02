@@ -2,7 +2,7 @@
 //! one-mic/one-app controls, in the active scene. Never report a source that
 //! failed to open.
 use super::*;
-use crate::sound::audio_layers::{transition, Duck, Layer, Source, Transition};
+use crate::sound::audio_layers::{transition, Duck, Kind, Layer, Source, Transition};
 
 /// Names no layer can have (an ID has no colon), so a capture opened or kept
 /// across a switch never meets one of the scene's own on its way.
@@ -78,6 +78,10 @@ impl Engine {
     }
 
     pub(super) fn audio_layer_add(&mut self, id: String, source: Source) -> Reply {
+        let source = match self.a_microphone_here(source) {
+            Ok(source) => source,
+            Err(message) => return Reply::Error { message },
+        };
         let layer = match Layer::new(id, source) {
             Ok(layer) => layer,
             Err(message) => return Reply::Error { message },
@@ -97,6 +101,27 @@ impl Engine {
         }
         self.status.audio_layers.push(layer);
         Reply::Status(Box::new(self.reported()))
+    }
+
+    /// A microphone by a device this machine has, kept by its id, as the main
+    /// microphone is chosen; the other kinds as they were said.
+    fn a_microphone_here(&self, source: Source) -> Result<Source, String> {
+        let Some(query) = source
+            .device
+            .as_deref()
+            .filter(|_| source.kind == Kind::Mic)
+        else {
+            return Ok(source);
+        };
+        let available = self.sources.available()?;
+        pick_device(query, &available.mics)
+            .map(|mic| Source::mic(mic.id.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "no microphone matches {query:?}. There is {}",
+                    list_of(available.mics.iter().map(|m| m.name.clone()))
+                )
+            })
     }
 
     pub(super) fn audio_layer_remove(&mut self, id: String) -> Reply {
@@ -432,5 +457,32 @@ mod tests {
         assert_eq!(restored.status().audio_layers.len(), 1);
         assert!(matches!(switch(&mut restored, "talk"), Reply::Status(_)));
         assert_eq!(restored.status().audio_layers.len(), 1);
+    }
+
+    // A microphone layer on "MacBook" was reported open and was silence: the
+    // motor took the word for a device id that no device has.
+    #[test]
+    fn a_microphone_layer_is_a_microphone_this_machine_has() {
+        let mut engine = machine();
+        assert!(matches!(
+            engine.handle(Command::AudioLayerAdd {
+                id: "room".into(),
+                source: Source::mic("MacBook".into()),
+            }),
+            Reply::Status(_)
+        ));
+        assert_eq!(
+            engine.status().audio_layers[0].source,
+            Source::mic("BuiltInMic".into()),
+            "kept by its id, as the main microphone is"
+        );
+        let Reply::Error { message } = engine.handle(Command::AudioLayerAdd {
+            id: "ghost".into(),
+            source: Source::mic("AirPods".into()),
+        }) else {
+            panic!("a microphone nobody has was added");
+        };
+        assert!(message.contains("no microphone matches"), "{message}");
+        assert_eq!(engine.status().audio_layers.len(), 1);
     }
 }
