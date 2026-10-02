@@ -36,7 +36,7 @@ impl Until {
         match self {
             Until::OnAir => status.on_air,
             Until::OffAir => !status.on_air,
-            Until::Picture => status.scene_flowing.frames >= 30,
+            Until::Picture => status.picture.frames >= 30,
             Until::Recording => status.recording,
             Until::NotRecording => !status.recording,
             Until::Live(which) => status
@@ -70,7 +70,7 @@ mod tests {
         assert!(Until::OffAir.met(&status));
         assert!(!Until::OnAir.met(&status));
         assert!(!Until::Picture.met(&status));
-        status.scene_flowing.frames = 30;
+        status.picture.frames = 30;
         status.on_air = true;
         status.destinations = vec![Destination {
             id: 2,
