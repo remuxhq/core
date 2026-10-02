@@ -22,4 +22,4 @@ base64 = "0.22"
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = "0.8"
+toml = "1.1"
