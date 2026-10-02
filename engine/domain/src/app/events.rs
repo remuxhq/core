@@ -484,14 +484,21 @@ impl LayerSeen {
 }
 
 impl From<&Status> for Snapshot {
+    /// What a face sees, as the events follow it. The voice's glitches and the
+    /// timers at zero are the engine's to count; a status starts them at none.
     fn from(status: &Status) -> Self {
+        let viewers: Vec<u32> = status
+            .destinations
+            .iter()
+            .filter_map(|row| row.viewers)
+            .collect();
         Self {
             on_air: status.on_air,
             recording: status.recording,
-            active_scene: status.active_scene.clone(),
+            active_scene: status.scene.name.clone(),
             muted: status.muted,
             music: status.music.clone(),
-            app: status.app,
+            app: status.app_reachable,
             sending: status
                 .destinations
                 .iter()
@@ -503,36 +510,32 @@ impl From<&Status> for Snapshot {
                 .iter()
                 .filter_map(|row| Some((row.id, row.trouble.clone()?)))
                 .collect(),
-            scenes: status
-                .scenes
-                .iter()
-                .map(|scene| scene.name.clone())
-                .collect(),
+            scenes: status.scenes.iter().cloned().collect(),
             layers: status
+                .scene
                 .layers
                 .iter()
                 .map(LayerSeen::of_layer)
-                .chain(
-                    status
-                        .scenes
-                        .iter()
-                        .filter(|scene| scene.name == status.active_scene)
-                        .flat_map(|scene| scene.elements.iter().map(LayerSeen::of_element)),
-                )
+                .chain(status.scene.elements.iter().map(LayerSeen::of_element))
                 .collect(),
-            filter: status.shader.clone(),
-            audio_layers: status.audio_layers.iter().map(AudioLayerSeen::of).collect(),
+            filter: status.scene.shader.clone(),
+            audio_layers: status
+                .scene
+                .audio_layers
+                .iter()
+                .map(AudioLayerSeen::of)
+                .collect(),
             timers_done: std::collections::BTreeSet::new(),
-            mic_complaint: status.hearing.complaint.clone(),
-            starved: status.hearing.starved,
-            dropped: status.hearing.dropped,
+            mic_complaint: status.mic_complaint.clone(),
+            starved: 0,
+            dropped: 0,
             faders: status.faders,
             gate: status.gate,
             monitoring: status.monitoring,
             music_to_stream: status.music_to_stream,
             denoise: status.denoise,
             mirrored: status.mirrored,
-            viewers: status.viewers,
+            viewers: (!viewers.is_empty()).then(|| viewers.iter().sum()),
         }
     }
 }
@@ -817,7 +820,7 @@ mod tests {
         use crate::sound::audio_layers::{Duck, Layer, Source};
         let call = Layer::new("call".into(), Source::app("Discord".into())).unwrap();
         let mut with = status();
-        with.audio_layers = vec![call.clone()];
+        with.scene.audio_layers = vec![call.clone()];
         assert_eq!(
             changed(&status(), &with),
             vec![Event::AudioLayerAdded {
@@ -826,9 +829,9 @@ mod tests {
             }]
         );
         let mut changed_one = with.clone();
-        changed_one.audio_layers[0].muted = true;
-        changed_one.audio_layers[0].volume = 0.5;
-        changed_one.audio_layers[0].duck = Duck::Off;
+        changed_one.scene.audio_layers[0].muted = true;
+        changed_one.scene.audio_layers[0].volume = 0.5;
+        changed_one.scene.audio_layers[0].duck = Duck::Off;
         assert_eq!(
             changed(&with, &changed_one),
             vec![
@@ -881,10 +884,8 @@ mod tests {
 
     #[test]
     fn a_scene_switch_names_the_scene_switched_to() {
-        let after = Status {
-            active_scene: "break".into(),
-            ..status()
-        };
+        let mut after = status();
+        after.scene.name = "break".into();
         assert_eq!(
             changed(&status(), &after),
             vec![Event::SceneSwitched {
@@ -924,7 +925,7 @@ mod tests {
     #[test]
     fn the_app_coming_and_going_is_an_event() {
         let up = Status {
-            app: true,
+            app_reachable: true,
             ..status()
         };
         assert_eq!(
@@ -939,27 +940,25 @@ mod tests {
 
     #[test]
     fn a_field_nobody_follows_changing_says_nothing() {
-        // The meters move twelve times a second: a feed of them would be the
-        // only thing anybody saw in it. `levels -f` is where they are read.
+        // The frames count thirty times a second: a feed of them would be the
+        // only thing anybody saw in it.
         let mut after = Status {
             version: "9.9.9".into(),
             motor: "obs 99".into(),
             ..status()
         };
-        after.hearing.level_db = -12.0;
-        after.hearing.peak_db = -3.0;
-        after.mixing.level_db = -9.0;
+        after.picture.frames = 900;
         assert_eq!(changed(&status(), &after), vec![]);
     }
 
     #[test]
     fn several_changes_at_once_come_out_air_first() {
-        let after = Status {
+        let mut after = Status {
             on_air: true,
             recording: true,
-            active_scene: "code".into(),
             ..status()
         };
+        after.scene.name = "code".into();
         assert_eq!(
             changed(&status(), &after),
             vec![
@@ -1461,10 +1460,7 @@ mod tests {
     #[test]
     fn a_capture_complaining_and_getting_over_it_is_an_event() {
         let complaining = Status {
-            hearing: crate::protocol::Hearing {
-                complaint: Some("the microphone speaks 8-bit".into()),
-                ..Default::default()
-            },
+            mic_complaint: Some("the microphone speaks 8-bit".into()),
             ..status()
         };
         assert_eq!(
@@ -1512,7 +1508,10 @@ mod tests {
         after.music_to_stream = !before.music_to_stream;
         after.denoise = true;
         after.mirrored = true;
-        after.viewers = Some(12);
+        after.destinations = vec![crate::protocol::Destination {
+            viewers: Some(12),
+            ..Default::default()
+        }];
         let said = changed(&before, &after);
         assert_eq!(
             said,

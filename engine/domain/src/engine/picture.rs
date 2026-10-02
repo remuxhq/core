@@ -1132,7 +1132,7 @@ mod tests {
         let fake = Wrote::default();
         let shown = fake.shown.clone();
         let mut engine = Engine::new().with_pipeline(Box::new(fake));
-        assert_eq!(engine.status().scenes.len(), 1);
+        assert_eq!(engine.state().scenes.len(), 1);
         let a = text("first", "Welcome");
         let b = text("second", "Hello");
         assert!(matches!(
@@ -1143,18 +1143,18 @@ mod tests {
             engine.handle(Command::SceneElementAdd { element: b.clone() }),
             Reply::Status(_)
         ));
-        assert_eq!(engine.status().scenes[0].elements, [a.clone(), b.clone()]);
+        assert_eq!(engine.state().scenes[0].elements, [a.clone(), b.clone()]);
         assert_eq!(shown.lock().unwrap().last().unwrap().0, [a, b]);
         let saved =
             crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
         let mut restored = Engine::new();
         restored.restore(&saved);
-        assert_eq!(restored.status().scenes[0].elements.len(), 2);
+        assert_eq!(restored.state().scenes[0].elements.len(), 2);
         assert!(matches!(
             engine.handle(Command::SceneElementRemove { id: "first".into() }),
             Reply::Status(_)
         ));
-        assert_eq!(engine.status().scenes[0].elements[0].id, "second");
+        assert_eq!(engine.state().scenes[0].elements[0].id, "second");
     }
 
     #[test]
@@ -1179,7 +1179,7 @@ mod tests {
         });
         assert!(
             !engine
-                .status()
+                .state()
                 .layers
                 .iter()
                 .find(|layer| layer.id == "face")
@@ -1192,7 +1192,7 @@ mod tests {
         });
         assert!(
             engine
-                .status()
+                .state()
                 .layers
                 .iter()
                 .find(|layer| layer.id == "face")
@@ -1200,7 +1200,7 @@ mod tests {
                 .mirrored
         );
         assert_eq!(
-            engine.status().scenes[0].ordered_ids(),
+            engine.state().scenes[0].ordered_ids(),
             ["desk", "label", "face"]
         );
         assert!(matches!(
@@ -1214,26 +1214,26 @@ mod tests {
             index: 2,
         });
         assert_eq!(
-            engine.status().scenes[0].ordered_ids(),
+            engine.state().scenes[0].ordered_ids(),
             ["desk", "face", "label"]
         );
         engine.handle(Command::LayerVisible {
             id: "label".into(),
             on: false,
         });
-        assert!(!engine.status().scenes[0].elements[0].visible);
+        assert!(!engine.state().scenes[0].elements[0].visible);
         let saved =
             crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
         let mut restored =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
         restored.restore(&saved);
         assert_eq!(
-            restored.status().scenes[0].ordered_ids(),
+            restored.state().scenes[0].ordered_ids(),
             ["desk", "face", "label"]
         );
         assert!(
             restored
-                .status()
+                .state()
                 .layers
                 .iter()
                 .find(|layer| layer.id == "face")
@@ -1241,7 +1241,7 @@ mod tests {
                 .mirrored
         );
         restored.handle(Command::LayerRemove { id: "label".into() });
-        assert_eq!(restored.status().scenes[0].ordered_ids(), ["desk", "face"]);
+        assert_eq!(restored.state().scenes[0].ordered_ids(), ["desk", "face"]);
     }
 
     #[test]
@@ -1258,7 +1258,7 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(
-            engine.status().scenes[0].elements[0].shader.as_deref(),
+            engine.state().scenes[0].elements[0].shader.as_deref(),
             Some("good.wgsl")
         );
         assert!(matches!(
@@ -1269,7 +1269,7 @@ mod tests {
             Reply::Error { .. }
         ));
         assert_eq!(
-            engine.status().scenes[0].elements[0].shader.as_deref(),
+            engine.state().scenes[0].elements[0].shader.as_deref(),
             Some("good.wgsl")
         );
         let mut invalid = text("invalid", "No");
@@ -1278,7 +1278,7 @@ mod tests {
             engine.handle(Command::SceneElementAdd { element: invalid }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().scenes[0].elements.len(), 1);
+        assert_eq!(engine.state().scenes[0].elements.len(), 1);
         engine.handle(Command::SceneDuplicate {
             name: "next".into(),
         });
@@ -1294,7 +1294,7 @@ mod tests {
         });
         assert_eq!(
             engine
-                .status()
+                .state()
                 .scenes
                 .iter()
                 .find(|s| s.name == "default")
@@ -1317,7 +1317,7 @@ mod tests {
         }));
         restored.restore(&saved);
         assert_eq!(
-            restored.status().scenes[0].elements[0].shader.as_deref(),
+            restored.state().scenes[0].elements[0].shader.as_deref(),
             Some("good.wgsl")
         );
         restored.handle(Command::LayerShader {
@@ -1364,7 +1364,7 @@ mod tests {
         });
         engine.handle(Command::SceneTimerStart { id: "clock".into() });
         assert_eq!(shown.lock().unwrap().last().unwrap().1[0].1, Duration::ZERO);
-        assert_eq!(engine.status().active_scene, "default");
+        assert_eq!(engine.state().active_scene, "default");
         engine.handle(Command::SceneElementSet {
             element: Element {
                 content: ElementContent::Timer { seconds: 90 },
@@ -1396,7 +1396,7 @@ mod tests {
         assert!(engine.counting.is_empty());
         let mut restarted = Engine::new();
         restarted.restore(&saved);
-        assert_eq!(restarted.status().scenes[0].elements, [timer]);
+        assert_eq!(restarted.state().scenes[0].elements, [timer]);
         assert!(restarted.counting.is_empty());
     }
 
@@ -1411,7 +1411,7 @@ mod tests {
         let Reply::Status(status) = set else {
             panic!("expected status")
         };
-        assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
+        assert_eq!(status.scene.layers[0].shader.as_deref(), Some("layer.wgsl"));
         engine.handle(Command::Shader {
             path: Some("global.wgsl".into()),
         });
@@ -1426,7 +1426,7 @@ mod tests {
         engine.handle(Command::SceneSwitch {
             name: "default".into(),
         });
-        let status = engine.status();
+        let status = engine.state();
         assert_eq!(status.shader.as_deref(), Some("global.wgsl"));
         assert_eq!(status.layers[0].shader.as_deref(), Some("layer.wgsl"));
         let saved =
@@ -1448,13 +1448,13 @@ mod tests {
     #[test]
     fn camera_shape_and_position_belong_to_one_named_layer() {
         let (mut engine, _, _) = machine_with_music();
-        assert!(crate::picture::layers::camera(&engine.status().layers, None).is_err());
+        assert!(crate::picture::layers::camera(&engine.state().layers, None).is_err());
         engine.handle(Command::LayerCamera {
             id: "left".into(),
             device: "HP".into(),
         });
         assert_eq!(
-            crate::picture::layers::camera(&engine.status().layers, None)
+            crate::picture::layers::camera(&engine.state().layers, None)
                 .unwrap()
                 .id,
             "left"
@@ -1466,14 +1466,14 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(
-            engine.status().layers[0].shape,
+            engine.state().layers[0].shape,
             Some(crate::picture::scene::CameraShape::Circle)
         );
         engine.handle(Command::LayerCamera {
             id: "right".into(),
             device: "MacBook".into(),
         });
-        assert!(crate::picture::layers::camera(&engine.status().layers, None).is_err());
+        assert!(crate::picture::layers::camera(&engine.state().layers, None).is_err());
         assert!(matches!(
             engine.handle(Command::CameraShape {
                 shape: crate::picture::scene::CameraShape::Rectangle
@@ -1484,7 +1484,7 @@ mod tests {
             engine.handle(Command::CameraPosition { at: None }),
             Reply::Error { .. }
         ));
-        let before = engine.status().layers[1].transform;
+        let before = engine.state().layers[1].transform;
         assert!(matches!(
             engine.handle(Command::LayerShape {
                 id: "missing".into(),
@@ -1507,11 +1507,11 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(
-            engine.status().layers[0].shape,
+            engine.state().layers[0].shape,
             Some(crate::picture::scene::CameraShape::Circle)
         );
         assert_eq!(
-            engine.status().layers[1].shape,
+            engine.state().layers[1].shape,
             Some(crate::picture::scene::CameraShape::Circle)
         );
         engine.handle(Command::LayerPosition {
@@ -1519,20 +1519,20 @@ mod tests {
             at: Some(crate::picture::scene::CameraPosition { x: 1900, y: 1000 }),
         });
         assert_eq!(
-            engine.status().layers[1].transform.x,
+            engine.state().layers[1].transform.x,
             (1920 - before.width) as i32
         );
         assert_eq!(
-            engine.status().layers[1].transform.y,
+            engine.state().layers[1].transform.y,
             (1080 - before.height) as i32
         );
-        assert_eq!(engine.status().layers[1].transform.width, before.width);
-        assert_eq!(engine.status().layers[0].transform.x, 0);
+        assert_eq!(engine.state().layers[1].transform.width, before.width);
+        assert_eq!(engine.state().layers[0].transform.x, 0);
         engine.handle(Command::LayerPosition {
             id: "right".into(),
             at: None,
         });
-        assert_eq!(engine.status().layers[1].transform, before);
+        assert_eq!(engine.state().layers[1].transform, before);
         engine.handle(Command::LayerWindow {
             id: "app".into(),
             query: "tmux".into(),
@@ -1544,7 +1544,7 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().layers[2].shape, None);
+        assert_eq!(engine.state().layers[2].shape, None);
     }
 
     /// A file of this test's own, named by the pid: the engine looks for it.
@@ -1566,7 +1566,7 @@ mod tests {
             }),
             Reply::Status(_)
         ));
-        let layer = &engine.status().layers[0];
+        let layer = &engine.state().layers[0];
         assert_eq!(layer.source.kind, Kind::Image);
         assert_eq!(layer.source.handle, logo);
         assert_eq!((layer.source.width, layer.source.height), (640, 480));
@@ -1579,8 +1579,8 @@ mod tests {
             }),
             Reply::Status(_)
         ));
-        assert_eq!(engine.status().layers[0].source.handle, badge);
-        assert_eq!(engine.status().layers[0].id, "logo");
+        assert_eq!(engine.state().layers[0].source.handle, badge);
+        assert_eq!(engine.state().layers[0].id, "logo");
     }
 
     #[test]
@@ -1594,7 +1594,7 @@ mod tests {
             panic!("a missing file was added");
         };
         assert!(message.contains("no image at"), "{message}");
-        assert!(engine.status().layers.is_empty());
+        assert!(engine.state().layers.is_empty());
     }
 
     #[test]
@@ -1634,7 +1634,7 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert!(engine.status().layers.is_empty());
+        assert!(engine.state().layers.is_empty());
         assert!(matches!(
             engine.handle(Command::LayerScreen {
                 id: "left".into(),
@@ -1650,18 +1650,18 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(
-            engine.status().layers[0].source.kind,
+            engine.state().layers[0].source.kind,
             crate::picture::layers::Kind::Screen
         );
-        assert_eq!(engine.status().layers[0].source.handle, "3");
-        assert_eq!(engine.status().layers[0].source.name, "VG2791R");
+        assert_eq!(engine.state().layers[0].source.handle, "3");
+        assert_eq!(engine.state().layers[0].source.name, "VG2791R");
         engine.handle(Command::LayerMove {
             id: "right".into(),
             index: 0,
         });
-        assert_eq!(engine.status().layers[0].id, "right");
+        assert_eq!(engine.state().layers[0].id, "right");
         engine.handle(Command::LayerRemove { id: "left".into() });
-        assert_eq!(engine.status().layers[0].id, "right");
+        assert_eq!(engine.state().layers[0].id, "right");
     }
 
     #[test]
@@ -1676,18 +1676,18 @@ mod tests {
             id: "code".into(),
             query: "tmux".into(),
         });
-        assert_eq!(engine.status().layers.len(), 2);
-        assert_eq!(engine.status().layers[1].source.kind, Kind::Window);
-        assert_eq!(engine.status().layers[1].source.handle, "10");
+        assert_eq!(engine.state().layers.len(), 2);
+        assert_eq!(engine.state().layers[1].source.kind, Kind::Window);
+        assert_eq!(engine.state().layers[1].source.handle, "10");
         assert_eq!(
             (
-                engine.status().layers[0].source.width,
-                engine.status().layers[0].source.height
+                engine.state().layers[0].source.width,
+                engine.state().layers[0].source.height
             ),
             (1280, 720)
         );
         assert_eq!(
-            engine.status().layers[1].transform,
+            engine.state().layers[1].transform,
             Transform::native((853, 479))
         );
         let transform = Transform {
@@ -1705,8 +1705,8 @@ mod tests {
             id: "face".into(),
             index: 1,
         });
-        assert_eq!(engine.status().layers[1].transform, transform);
-        assert_eq!(engine.status().layers[1].id, "face");
+        assert_eq!(engine.state().layers[1].transform, transform);
+        assert_eq!(engine.state().layers[1].id, "face");
         let crop = crate::picture::layers::Crop {
             x: 10,
             y: 20,
@@ -1717,7 +1717,7 @@ mod tests {
             id: "face".into(),
             crop: Some(crop),
         });
-        assert_eq!(engine.status().layers[1].crop, Some(crop));
+        assert_eq!(engine.state().layers[1].crop, Some(crop));
         assert!(matches!(
             engine.handle(Command::LayerCrop {
                 id: "face".into(),
@@ -1725,12 +1725,12 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().layers[1].crop, Some(crop));
+        assert_eq!(engine.state().layers[1].crop, Some(crop));
         engine.handle(Command::LayerCrop {
             id: "face".into(),
             crop: None,
         });
-        assert_eq!(engine.status().layers[1].crop, None);
+        assert_eq!(engine.state().layers[1].crop, None);
         assert!(matches!(
             engine.handle(Command::LayerCamera {
                 id: "face".into(),
@@ -1745,28 +1745,32 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().layers.len(), 2);
+        assert_eq!(engine.state().layers.len(), 2);
         assert!(crate::remembered::write(&engine.remembered())
             .unwrap()
             .contains("face"));
         engine.handle(Command::LayerRemove { id: "code".into() });
-        assert_eq!(engine.status().layers.len(), 1);
+        assert_eq!(engine.state().layers.len(), 1);
         engine.handle(Command::HideEverything);
-        assert!(engine.status().layers.is_empty());
+        assert!(engine.state().layers.is_empty());
     }
 
-    fn unique_name(status: &Status, kinds: &[crate::picture::layers::Kind]) -> Option<String> {
-        let mut found = status
-            .layers
-            .iter()
-            .filter(|l| kinds.contains(&l.source.kind));
+    fn unique_name(
+        layers: &[crate::picture::layers::Layer],
+        kinds: &[crate::picture::layers::Kind],
+    ) -> Option<String> {
+        let mut found = layers.iter().filter(|l| kinds.contains(&l.source.kind));
         let first = found.next()?;
         found.next().is_none().then(|| first.source.name.clone())
     }
 
-    fn screen_name(status: &Status) -> Option<String> {
+    fn screen_name(state: &State) -> Option<String> {
+        shown_name(&state.layers)
+    }
+
+    fn shown_name(layers: &[crate::picture::layers::Layer]) -> Option<String> {
         unique_name(
-            status,
+            layers,
             &[
                 crate::picture::layers::Kind::Screen,
                 crate::picture::layers::Kind::Window,
@@ -1774,8 +1778,8 @@ mod tests {
         )
     }
 
-    fn camera_name(status: &Status) -> Option<String> {
-        unique_name(status, &[crate::picture::layers::Kind::Camera])
+    fn camera_name(state: &State) -> Option<String> {
+        unique_name(&state.layers, &[crate::picture::layers::Kind::Camera])
     }
 
     // A screen is chosen by its display id, never by its position: the
@@ -1787,7 +1791,7 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Screen { display: 3 }) else {
             panic!("choosing a screen answers with the new status")
         };
-        assert_eq!(screen_name(&status), Some("VG2791R".into()));
+        assert_eq!(shown_name(&status.scene.layers), Some("VG2791R".into()));
     }
 
     // "no display 9" alone sends a person hunting. Saying what there is
@@ -1803,7 +1807,7 @@ mod tests {
             message.contains("Built-in Retina Display and VG2791R"),
             "it should say what there is: {message}"
         );
-        assert!(engine.status().layers.is_empty(), "and change nothing");
+        assert!(engine.state().layers.is_empty(), "and change nothing");
     }
 
     #[test]
@@ -1814,7 +1818,10 @@ mod tests {
         }) else {
             panic!("choosing a window answers with the new status")
         };
-        assert_eq!(screen_name(&status), Some("Ghostty — tmux a".into()));
+        assert_eq!(
+            shown_name(&status.scene.layers),
+            Some("Ghostty — tmux a".into())
+        );
     }
 
     // The CLI has always taken part of a name, and a browser window is titled
@@ -1826,7 +1833,7 @@ mod tests {
             query: "brave".into(),
         });
         assert_eq!(
-            screen_name(engine.status()),
+            screen_name(engine.state()),
             Some("Brave Browser — remux".into())
         );
     }
@@ -1842,7 +1849,7 @@ mod tests {
         };
         assert!(message.contains("photoshop"), "{message}");
         assert_eq!(
-            screen_name(engine.status()),
+            screen_name(engine.state()),
             Some("VG2791R".into()),
             "a miss must not drop what was already chosen"
         );
@@ -1855,18 +1862,15 @@ mod tests {
         let mut engine = machine();
         engine.handle(Command::Screen { display: 1 });
         assert_eq!(
-            screen_name(engine.status()),
+            screen_name(engine.state()),
             Some("Built-in Retina Display".into())
         );
         engine.handle(Command::Window {
             query: "notes".into(),
         });
-        assert_eq!(
-            screen_name(engine.status()),
-            Some("TextEdit — notes".into())
-        );
+        assert_eq!(screen_name(engine.state()), Some("TextEdit — notes".into()));
         engine.handle(Command::Screen { display: 3 });
-        assert_eq!(screen_name(engine.status()), Some("VG2791R".into()));
+        assert_eq!(screen_name(engine.state()), Some("VG2791R".into()));
     }
 
     #[test]
@@ -1889,7 +1893,7 @@ mod tests {
             device: Some("webcam".into()),
         });
         assert_eq!(
-            camera_name(engine.status()),
+            camera_name(engine.state()),
             Some("HP 430/435 FHD Webcam".into())
         );
 
@@ -1897,7 +1901,7 @@ mod tests {
             device: Some("6C707041".into()),
         });
         assert_eq!(
-            camera_name(engine.status()),
+            camera_name(engine.state()),
             Some("MacBook Pro Camera".into()),
             "an id is the handle a saved preference holds"
         );
@@ -1911,9 +1915,9 @@ mod tests {
         engine.handle(Command::Camera {
             device: Some("webcam".into()),
         });
-        assert!(camera_name(engine.status()).is_some());
+        assert!(camera_name(engine.state()).is_some());
         engine.handle(Command::Camera { device: None });
-        assert!(camera_name(engine.status()).is_none());
+        assert!(camera_name(engine.state()).is_none());
     }
 
     #[test]
@@ -1935,6 +1939,7 @@ mod tests {
             panic!("status")
         };
         let face = after
+            .scene
             .layers
             .iter()
             .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
@@ -1960,7 +1965,7 @@ mod tests {
                 Reply::Error { .. }
             ));
             let face = engine
-                .status()
+                .state()
                 .layers
                 .iter()
                 .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
@@ -1973,13 +1978,13 @@ mod tests {
         }
         engine.handle(Command::CameraPosition { at: None });
         let face = engine
-            .status()
+            .state()
             .layers
             .iter()
             .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
             .unwrap();
         assert_eq!((face.transform.x, face.transform.y), (0, 0));
-        assert!(engine.status().on_air);
+        assert!(engine.state().on_air);
     }
 
     #[test]
@@ -2008,6 +2013,7 @@ mod tests {
             panic!("status")
         };
         let face = rectangle
+            .scene
             .layers
             .iter()
             .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
@@ -2031,6 +2037,7 @@ mod tests {
             panic!("status")
         };
         let face = circle
+            .scene
             .layers
             .iter()
             .find(|l| l.source.kind == crate::picture::layers::Kind::Camera)
@@ -2058,13 +2065,13 @@ mod tests {
         }) else {
             panic!("shader selection answers with a status");
         };
-        assert_eq!(status.shader.as_deref(), Some(path.as_str()));
+        assert_eq!(status.scene.shader.as_deref(), Some(path.as_str()));
         assert!(status.on_air);
         assert_eq!(published.lock().unwrap().len(), 1);
         let Reply::Status(status) = engine.handle(Command::Shader { path: None }) else {
             panic!("shader off answers with a status");
         };
-        assert_eq!(status.shader, None);
+        assert_eq!(status.scene.shader, None);
         assert!(status.on_air);
         assert_eq!(published.lock().unwrap().len(), 1);
         engine.handle(Command::Shader {
@@ -2072,7 +2079,7 @@ mod tests {
         });
         engine.handle(Command::HideEverything);
         assert_eq!(
-            engine.status().shader,
+            engine.state().shader,
             None,
             "panic removes even a shader that obscures the emergency card"
         );
@@ -2082,19 +2089,19 @@ mod tests {
             panic!("a broken shader must not be accepted");
         };
         assert_eq!(message, "compiler refused");
-        assert_eq!(refusing.status().shader, None);
+        assert_eq!(refusing.state().shader, None);
     }
 
     #[test]
     fn the_self_view_flips_and_the_status_can_be_read_back() {
         let (mut engine, _) = publishing_engine(None);
-        assert!(!engine.status().mirrored, "a camera starts unflipped");
+        assert!(!engine.state().mirrored, "a camera starts unflipped");
         let Reply::Status(after) = engine.handle(Command::Mirror { on: true }) else {
             panic!("mirror answers with a status, so a panel redraws from one line")
         };
         assert!(after.mirrored);
         engine.handle(Command::Mirror { on: false });
-        assert!(!engine.status().mirrored);
+        assert!(!engine.state().mirrored);
     }
 
     #[test]
@@ -2149,7 +2156,7 @@ mod tests {
         engine.handle(Command::SceneElementAdd {
             element: element.clone(),
         });
-        assert_eq!(engine.status().scenes[0].elements, [element]);
+        assert_eq!(engine.state().scenes[0].elements, [element]);
     }
 
     #[test]
@@ -2298,7 +2305,7 @@ mod tests {
                 Behind::Window(WindowId(12)),
             ]
         );
-        assert!(engine.status().on_air, "and it never left the air");
+        assert!(engine.state().on_air, "and it never left the air");
     }
 
     // The switch that takes the screen off the live. Nothing is a real state
@@ -2311,7 +2318,7 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Share { on: false }) else {
             panic!("the share switch answers a status")
         };
-        assert!(status.layers.is_empty());
+        assert!(status.scene.layers.is_empty());
         assert_eq!(
             told.lock().expect("told").last(),
             Some(&Behind::Nothing),
@@ -2359,11 +2366,11 @@ mod tests {
         };
         assert!(message.contains("refused"));
         assert!(
-            engine.status().layers.is_empty(),
+            engine.state().layers.is_empty(),
             "a failed capture is not in Status"
         );
         assert!(
-            engine.status().layers.is_empty(),
+            engine.state().layers.is_empty(),
             "the status must not claim a capture that never started"
         );
     }
@@ -2395,7 +2402,7 @@ mod tests {
             id: "desk".into(),
             display: 1,
         });
-        let original = engine.status().layers[0].clone();
+        let original = engine.state().layers[0].clone();
 
         let Reply::Status(hidden) = engine.handle(Command::LayerVisible {
             id: "desk".into(),
@@ -2403,19 +2410,22 @@ mod tests {
         }) else {
             panic!("hide")
         };
-        assert_eq!(hidden.layers[0].id, original.id);
-        assert_eq!(hidden.layers[0].source, original.source);
-        assert_eq!(hidden.layers[0].transform, original.transform);
-        assert!(!hidden.layers[0].visible);
+        assert_eq!(hidden.scene.layers[0].id, original.id);
+        assert_eq!(hidden.scene.layers[0].source, original.source);
+        assert_eq!(hidden.scene.layers[0].transform, original.transform);
+        assert!(!hidden.scene.layers[0].visible);
+        let Reply::Levels { layer_flowing, .. } = engine.handle(Command::Levels) else {
+            panic!("levels")
+        };
         assert_eq!(
-            hidden.layer_flowing["desk"].captured, 3,
+            layer_flowing["desk"].captured, 3,
             "capture continues while hidden"
         );
         assert!(matches!(
             engine.handle(Command::LayerShot { id: "desk".into() }),
             Reply::Shot { .. }
         ));
-        assert_eq!(engine.status().active_scene, "default");
+        assert_eq!(engine.state().active_scene, "default");
         assert_eq!(
             captured.lock().unwrap().len(),
             1,
@@ -2427,15 +2437,15 @@ mod tests {
         let mut restored =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
         restored.restore(&saved);
-        assert_eq!(restored.status().layers[0].id, "desk");
-        assert!(!restored.status().layers[0].visible);
+        assert_eq!(restored.state().layers[0].id, "desk");
+        assert!(!restored.state().layers[0].visible);
 
         engine.handle(Command::LayerVisible {
             id: "desk".into(),
             on: true,
         });
-        assert!(engine.status().layers[0].visible);
-        assert_eq!(engine.status().active_scene, "default");
+        assert!(engine.state().layers[0].visible);
+        assert_eq!(engine.state().active_scene, "default");
         assert_eq!(captured.lock().unwrap().len(), 1);
         let before = elements_shown(&shown).len();
         engine.handle(Command::LayerVisible {
@@ -2460,7 +2470,7 @@ mod tests {
         }) else {
             panic!("window")
         };
-        let id = first.layers[0].id.clone();
+        let id = first.scene.layers[0].id.clone();
         assert!(id.starts_with("source-") && !id.contains("legacy"));
         engine.handle(Command::LayerCamera {
             id: "face".into(),
@@ -2492,17 +2502,18 @@ mod tests {
         };
         assert_eq!(
             switched
+                .scene
                 .layers
                 .iter()
                 .map(|layer| layer.id.as_str())
                 .collect::<Vec<_>>(),
             vec![id.as_str(), "face"]
         );
-        assert_eq!(switched.layers[0].transform, transform);
-        assert_eq!(switched.layers[0].crop, Some(crop));
-        assert_eq!(switched.layers[0].source.name, "VG2791R");
+        assert_eq!(switched.scene.layers[0].transform, transform);
+        assert_eq!(switched.scene.layers[0].crop, Some(crop));
+        assert_eq!(switched.scene.layers[0].source.name, "VG2791R");
         assert_eq!(
-            switched.layers[0].source.kind,
+            switched.scene.layers[0].source.kind,
             crate::picture::layers::Kind::Screen
         );
         // The fake records the stop before the new source opens, not two captures
@@ -2518,7 +2529,7 @@ mod tests {
         let Reply::Status(same) = engine.handle(Command::Screen { display: 3 }) else {
             panic!("same source")
         };
-        assert_eq!(same.layers[0].id, id);
+        assert_eq!(same.scene.layers[0].id, id);
         assert_eq!(
             told.lock().unwrap().len(),
             3,
@@ -2555,12 +2566,12 @@ mod tests {
         }) else {
             panic!("window swap")
         };
-        assert_eq!(window.layers[0].id, "desk");
+        assert_eq!(window.scene.layers[0].id, "desk");
         assert_eq!(
-            window.layers[0].source.kind,
+            window.scene.layers[0].source.kind,
             crate::picture::layers::Kind::Window
         );
-        assert_eq!(window.layers[0].crop, None);
+        assert_eq!(window.scene.layers[0].crop, None);
         assert!(matches!(
             engine.handle(Command::LayerReplaceCamera {
                 id: "desk".into(),
@@ -2574,7 +2585,7 @@ mod tests {
     fn failed_swap_keeps_the_id_or_explicitly_drops_an_unrecoverable_capture() {
         let mut engine = Engine::with_sources(Box::new(ThisMachine));
         engine.handle(Command::Screen { display: 1 });
-        let original = engine.status().layers[0].clone();
+        let original = engine.state().layers[0].clone();
         let mut engine = engine.with_pipeline(Box::new(Wrote {
             refuse: Some("new source refused".into()),
             ..Default::default()
@@ -2585,7 +2596,7 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().layers, vec![original.clone()]);
+        assert_eq!(engine.state().layers, vec![original.clone()]);
         // A missing target is validated before the pipeline sees any swap.
         assert!(matches!(
             engine.handle(Command::Window {
@@ -2593,7 +2604,7 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        assert_eq!(engine.status().layers, vec![original.clone()]);
+        assert_eq!(engine.state().layers, vec![original.clone()]);
 
         let mut engine = engine.with_pipeline(Box::new(Wrote {
             refuse: Some("rollback lost".into()),
@@ -2606,7 +2617,7 @@ mod tests {
             Reply::Error { .. }
         ));
         assert!(
-            engine.status().layers.is_empty(),
+            engine.state().layers.is_empty(),
             "a lost capture must not remain in Status"
         );
     }
@@ -2624,8 +2635,8 @@ mod tests {
         }) else {
             panic!("camera swap")
         };
-        assert_eq!(switched.layers[0].id, "host");
-        assert_eq!(switched.layers[0].source.name, "MacBook Pro Camera");
+        assert_eq!(switched.scene.layers[0].id, "host");
+        assert_eq!(switched.scene.layers[0].source.name, "MacBook Pro Camera");
         engine.handle(Command::LayerCamera {
             id: "guest".into(),
             device: "HP".into(),
@@ -2657,7 +2668,7 @@ mod tests {
         assert!(
             matches!(engine.handle(Command::Share { on: false }), Reply::Error { message } if message.contains("layer ID"))
         );
-        assert_eq!(engine.status().layers.len(), 2);
+        assert_eq!(engine.state().layers.len(), 2);
         assert!(
             matches!(engine.handle(Command::Shot { of: Framed::Screen }), Reply::Error { message } if message.contains("layer-shot"))
         );
@@ -2671,15 +2682,11 @@ mod tests {
             }),
             Reply::Error { .. }
         ));
-        let Reply::Status(status) = engine.handle(Command::Status) else {
-            panic!("status")
+        let Reply::Levels { layer_flowing, .. } = engine.handle(Command::Levels) else {
+            panic!("levels")
         };
         assert_eq!(
-            status
-                .layer_flowing
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            layer_flowing.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["left", "right"]
         );
         for id in ["first", "second"] {

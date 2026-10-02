@@ -57,7 +57,7 @@ impl Plan {
         let destinations: Vec<Planned> = status.destinations.iter().map(planned).collect();
         let picture = picture(status);
         let mut blockers = Vec::new();
-        if status.scene_flowing.frames == 0 {
+        if status.picture.frames == 0 {
             blockers.push("there is no picture to send yet".into());
         } else if picture == NOTHING {
             blockers.push(EMPTY.into());
@@ -73,9 +73,10 @@ impl Plan {
         let mut plan = Self {
             on_air: status.on_air,
             recording: status.recording,
-            scene: status.active_scene.clone(),
+            scene: status.scene.name.clone(),
             picture,
             camera: status
+                .scene
                 .layers
                 .iter()
                 .find(|l| l.visible && l.source.kind == crate::picture::layers::Kind::Camera)
@@ -86,6 +87,7 @@ impl Plan {
             music: status.music.clone(),
             music_to_stream: status.music_to_stream,
             sounds: status
+                .scene
                 .audio_layers
                 .iter()
                 .filter(|l| !l.muted)
@@ -136,18 +138,12 @@ pub fn empty(status: &Status) -> bool {
 /// The active scene's layers and elements, back to front, the way a person
 /// reads them before confirming.
 fn picture(status: &Status) -> String {
-    let scene = status.scenes.iter().find(|s| s.name == status.active_scene);
-    // The status's layers are the active scene's, whether or not the scene
-    // in the list has caught up with them yet.
-    let mut ordered = scene
-        .cloned()
-        .unwrap_or_else(|| crate::picture::scenes::defaults().remove(0));
-    ordered.layers = status.layers.clone();
-    let shown: Vec<String> = ordered
+    let scene = &status.scene;
+    let shown: Vec<String> = scene
         .ordered_ids()
         .into_iter()
         .filter_map(|id| {
-            if let Some(layer) = status.layers.iter().find(|l| l.id == id) {
+            if let Some(layer) = scene.layers.iter().find(|l| l.id == id) {
                 return layer.visible.then(|| {
                     let kind = match layer.source.kind {
                         crate::picture::layers::Kind::Screen => "screen",
@@ -158,7 +154,7 @@ fn picture(status: &Status) -> String {
                     format!("{id} ({kind} {})", layer.source.name)
                 });
             }
-            let element = scene?.elements.iter().find(|e| e.id == id)?;
+            let element = scene.elements.iter().find(|e| e.id == id)?;
             element.visible.then(|| match &element.content {
                 crate::picture::scenes::ElementContent::Text { text } => {
                     format!("{id} (text {text})")
@@ -218,15 +214,16 @@ mod tests {
     }
 
     fn ready() -> Status {
-        Status {
-            layers: vec![crate::health::tests::screen_layer("VG2791R")],
-            scene_flowing: Flowing {
+        let mut status = Status {
+            picture: Flowing {
                 frames: 30,
                 ..Flowing::default()
             },
             destinations: vec![twitch(true, true)],
             ..Status::default()
-        }
+        };
+        status.scene.layers = vec![crate::health::tests::screen_layer("VG2791R")];
+        status
     }
 
     #[test]
@@ -244,11 +241,11 @@ mod tests {
     fn the_sounds_that_would_go_out_are_in_the_plan() {
         use crate::sound::audio_layers::{Layer, Source};
         let mut status = ready();
-        status.audio_layers = vec![
+        status.scene.audio_layers = vec![
             Layer::new("call".into(), Source::app("Discord".into())).unwrap(),
             Layer::new("pc".into(), Source::system()).unwrap(),
         ];
-        status.audio_layers[1].muted = true;
+        status.scene.audio_layers[1].muted = true;
         let plan = Plan::of(&status);
         assert_eq!(plan.sounds, ["call (app Discord)"]);
         assert_ne!(plan.fingerprint, Plan::of(&ready()).fingerprint);
@@ -273,7 +270,7 @@ mod tests {
         // Both motors draw an empty scene at the full rate, so the frames
         // cannot say whether anything is in it; the plan says so instead.
         let mut empty = ready();
-        empty.layers[0].visible = false;
+        empty.scene.layers[0].visible = false;
         assert_eq!(
             Plan::of(&empty).blockers,
             vec!["the scene is empty: nothing would be shared"]
@@ -308,18 +305,16 @@ mod tests {
         let mut face = crate::health::tests::screen_layer("FaceTime");
         face.id = "face".into();
         face.source.kind = crate::picture::layers::Kind::Camera;
-        let mut status = Status {
-            layers: vec![face],
-            scenes: vec![scene],
-            ..ready()
-        };
+        scene.layers = vec![face];
+        let mut status = ready();
+        status.scene = scene;
         let plan = Plan::of(&status);
         assert_eq!(
             plan.picture,
             "face (camera FaceTime), title (text Chegando), clock (timer 60 s)"
         );
         assert_eq!(plan.camera.as_deref(), Some("FaceTime"));
-        status.layers.clear();
+        status.scene.layers.clear();
         assert!(
             !empty(&status),
             "a scene with only words in it has a picture"
@@ -334,9 +329,8 @@ mod tests {
         retitled.destinations[0].title = Some("something else".into());
         assert_ne!(a.fingerprint, Plan::of(&retitled).fingerprint);
         let mut louder = ready();
-        louder.hearing.level_db = -3.0;
-        louder.viewers = Some(9);
-        louder.scene_flowing.frames = 3_000;
+        louder.destinations[0].viewers = Some(9);
+        louder.picture.frames = 3_000;
         assert_eq!(a.fingerprint, Plan::of(&louder).fingerprint);
     }
 }

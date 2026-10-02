@@ -211,7 +211,7 @@ mod tests {
                 Reply::Status(_)
             ));
         }
-        assert_eq!(engine.status().audio_layers.len(), 2);
+        assert_eq!(engine.state().audio_layers.len(), 2);
         assert!(matches!(
             engine.handle(Command::AudioLayerVolume {
                 id: "editor".into(),
@@ -226,10 +226,10 @@ mod tests {
             }),
             Reply::Status(_)
         ));
-        assert_eq!(engine.status().audio_layers[0].volume, 1.0);
-        assert!(engine.status().audio_layers[0].muted);
-        assert_eq!(engine.status().audio_layers[1].volume, 0.25);
-        assert!(!engine.status().audio_layers[1].muted);
+        assert_eq!(engine.state().audio_layers[0].volume, 1.0);
+        assert!(engine.state().audio_layers[0].muted);
+        assert_eq!(engine.state().audio_layers[1].volume, 0.25);
+        assert!(!engine.state().audio_layers[1].muted);
         assert!(matches!(
             engine.handle(Command::AudioLayerAdd {
                 id: "browser".into(),
@@ -247,14 +247,14 @@ mod tests {
         let setup = engine.remembered();
         let mut restored = Engine::new();
         restored.restore(&setup);
-        assert_eq!(restored.status().audio_layers, engine.status().audio_layers);
+        assert_eq!(restored.state().audio_layers, engine.state().audio_layers);
         assert!(matches!(
             engine.handle(Command::AudioLayerRemove {
                 id: "browser".into()
             }),
             Reply::Status(_)
         ));
-        assert_eq!(engine.status().audio_layers.len(), 1);
+        assert_eq!(engine.state().audio_layers.len(), 1);
     }
 
     // A call captured as an app ducked under the voice like a video, and the
@@ -269,7 +269,7 @@ mod tests {
             source: Source::app("Discord".into()),
         });
         assert!(
-            engine.status().audio_layers[0].ducks(),
+            engine.state().audio_layers[0].ducks(),
             "an app ducks by its kind"
         );
         assert!(matches!(
@@ -279,7 +279,7 @@ mod tests {
             }),
             Reply::Status(_)
         ));
-        assert!(!engine.status().audio_layers[0].ducks());
+        assert!(!engine.state().audio_layers[0].ducks());
         assert_eq!(*ducked.lock().unwrap(), [("call".to_string(), false)]);
         assert!(matches!(
             engine.handle(Command::AudioLayerDuck {
@@ -293,7 +293,7 @@ mod tests {
         let told = fake.ducked.clone();
         let mut restored = Engine::new().with_pipeline(Box::new(fake));
         restored.restore(&engine.remembered());
-        assert_eq!(restored.status().audio_layers[0].duck, Duck::Off);
+        assert_eq!(restored.state().audio_layers[0].duck, Duck::Off);
         assert_eq!(*told.lock().unwrap(), [("call".to_string(), false)]);
     }
 
@@ -327,7 +327,7 @@ mod tests {
             Reply::Status(_)
         ));
         assert!(
-            engine.status().audio_layers.is_empty(),
+            engine.state().audio_layers.is_empty(),
             "a new scene is quiet"
         );
         add(&mut engine, "guest", "discord");
@@ -336,7 +336,7 @@ mod tests {
         assert!(matches!(switch(&mut engine, "default"), Reply::Status(_)));
         assert_eq!(
             engine
-                .status()
+                .state()
                 .audio_layers
                 .iter()
                 .map(|l| l.id.as_str())
@@ -359,11 +359,11 @@ mod tests {
         let said = heard.lock().unwrap().clone();
         assert!(said.contains(&"close game".to_string()), "{said:?}");
         assert!(!said.iter().any(|s| s.starts_with("open")), "{said:?}");
-        let talk = &engine.status().audio_layers;
+        let talk = &engine.state().audio_layers;
         assert_eq!(talk.len(), 1);
         assert_eq!(talk[0].id, "guest");
         let default = engine
-            .status()
+            .state()
             .scenes
             .iter()
             .find(|s| s.name == "default")
@@ -398,7 +398,7 @@ mod tests {
         assert!(matches!(switch(&mut engine, "default"), Reply::Status(_)));
         assert_eq!(*heard.lock().unwrap(), ["level call 1"]);
         assert_eq!(*ducked.lock().unwrap(), [("call".to_string(), true)]);
-        assert_eq!(engine.status().audio_layers[0].volume, 1.0);
+        assert_eq!(engine.state().audio_layers[0].volume, 1.0);
     }
 
     #[test]
@@ -427,8 +427,8 @@ mod tests {
         });
         heard.lock().unwrap().clear();
         assert!(matches!(switch(&mut engine, "games"), Reply::Error { .. }));
-        assert_eq!(engine.status().active_scene, "default");
-        assert_eq!(engine.status().audio_layers.len(), 1);
+        assert_eq!(engine.state().active_scene, "default");
+        assert_eq!(engine.state().audio_layers.len(), 1);
         assert_eq!(
             *heard.lock().unwrap(),
             ["open 0:switching Spotify muted", "close 0:switching"],
@@ -453,10 +453,10 @@ mod tests {
 
         let mut restored = Engine::new();
         restored.restore(&setup);
-        assert_eq!(restored.status().active_scene, "talk");
-        assert_eq!(restored.status().audio_layers[0].id, "video");
+        assert_eq!(restored.state().active_scene, "talk");
+        assert_eq!(restored.state().audio_layers[0].id, "video");
         assert!(matches!(switch(&mut restored, "default"), Reply::Status(_)));
-        assert_eq!(restored.status().audio_layers[0].id, "call");
+        assert_eq!(restored.state().audio_layers[0].id, "call");
     }
 
     // Saved before a scene had a sound: every scene heard every audio layer,
@@ -473,9 +473,9 @@ mod tests {
             vec![Layer::new("call".into(), Source::app("Discord".into())).unwrap()];
         let mut restored = Engine::new();
         restored.restore(&setup);
-        assert_eq!(restored.status().audio_layers.len(), 1);
+        assert_eq!(restored.state().audio_layers.len(), 1);
         assert!(matches!(switch(&mut restored, "talk"), Reply::Status(_)));
-        assert_eq!(restored.status().audio_layers.len(), 1);
+        assert_eq!(restored.state().audio_layers.len(), 1);
     }
 
     // A microphone layer on "MacBook" was reported open and was silence: the
@@ -491,7 +491,7 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(
-            engine.status().audio_layers[0].source,
+            engine.state().audio_layers[0].source,
             Source::mic("BuiltInMic".into()),
             "kept by its id, as the main microphone is"
         );
@@ -502,7 +502,7 @@ mod tests {
             panic!("a microphone nobody has was added");
         };
         assert!(message.contains("no microphone matches"), "{message}");
-        assert_eq!(engine.status().audio_layers.len(), 1);
+        assert_eq!(engine.state().audio_layers.len(), 1);
     }
 
     // A meter per sound, in the scene's order, so a face can draw one under
