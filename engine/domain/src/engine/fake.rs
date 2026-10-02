@@ -140,6 +140,11 @@ pub(super) struct Wrote {
     pub(super) scene_events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Every audio layer told whether it ducks, in order.
     pub(super) ducked: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+    /// Every audio capture opened, renamed and closed, in order.
+    pub(super) heard: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// The samples each audio layer's capture has handed over, set by a test.
+    pub(super) audio_heard:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 }
 
 impl Picture for Wrote {
@@ -347,14 +352,57 @@ impl Picture for Wrote {
 }
 
 impl Sound for Wrote {
+    fn audio_layer_add(&mut self, layer: &crate::sound::audio_layers::Layer) -> Result<(), String> {
+        let said = layer
+            .source
+            .name
+            .clone()
+            .or_else(|| layer.source.device.clone())
+            .unwrap_or_default();
+        if self.refuse.as_deref() == Some(&format!("audio:{said}")) {
+            return Err(format!("no running application called {said}"));
+        }
+        self.heard.lock().expect("heard").push(format!(
+            "open {} {said}{}",
+            layer.id,
+            if layer.muted { " muted" } else { "" }
+        ));
+        Ok(())
+    }
+    fn audio_layers_heard(&self) -> Vec<crate::protocol::AudioLayerHeard> {
+        self.audio_heard
+            .lock()
+            .expect("audio heard")
+            .iter()
+            .map(|(id, samples)| crate::protocol::AudioLayerHeard {
+                samples: *samples,
+                ..crate::protocol::AudioLayerHeard::silent(id.clone())
+            })
+            .collect()
+    }
+    fn audio_layer_rename(&mut self, from: &str, to: &str) {
+        self.heard
+            .lock()
+            .expect("heard")
+            .push(format!("rename {from} {to}"));
+    }
+    fn audio_layer_remove(&mut self, id: &str) {
+        self.heard
+            .lock()
+            .expect("heard")
+            .push(format!("close {id}"));
+    }
+    fn audio_layer_levels(&mut self, id: &str, volume: f64, muted: bool) {
+        self.heard.lock().expect("heard").push(format!(
+            "level {id} {volume}{}",
+            if muted { " muted" } else { "" }
+        ));
+    }
     fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
         self.ducked
             .lock()
             .expect("ducked")
             .push((id.to_string(), ducks));
-    }
-    fn app_audio(&mut self, app: Option<&str>) -> Result<Option<String>, String> {
-        Ok(app.map(str::to_string))
     }
     fn music_ended(&mut self) -> bool {
         // Exactly once, like the real one: asking twice must not skip a
@@ -388,7 +436,6 @@ impl Sound for Wrote {
             levels.duck_db,
             levels.muted,
             levels.music_to_stream,
-            levels.screen_sound,
         ));
         Ok(())
     }
@@ -418,7 +465,6 @@ impl Sound for Wrote {
             music_peak_db: -26.0,
             music_out_db: -20.0,
             music_out_peak_db: -18.0,
-            app_db: -60.0,
             ducked_db: 0.0,
             playing: true,
             monitor_db: -60.0,
@@ -438,10 +484,6 @@ impl Sound for Wrote {
             starved: 0,
             buffered: 0,
             dropped: 0,
-            screen_samples: 0,
-            screen_complaint: None,
-            app_samples: 0,
-            app_complaint: None,
             complaint: None,
         }
     }
@@ -513,6 +555,8 @@ pub(super) fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
         refuse,
         scene_events: Default::default(),
         ducked: Default::default(),
+        heard: Default::default(),
+        audio_heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -529,8 +573,7 @@ pub(super) type Shown =
     std::sync::Arc<std::sync::Mutex<Vec<(Vec<Element>, Vec<(String, Duration)>)>>>;
 
 /// Where the faders were last put: microphone, music, duck, muted.
-pub(super) type Faders =
-    std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64, bool, bool, bool)>>>;
+pub(super) type Faders = std::sync::Arc<std::sync::Mutex<Option<(f64, f64, f64, bool, bool)>>>;
 
 /// Each `show` the pipeline was given: the elements and the running timers.
 pub(super) type Showings = Vec<(Vec<Element>, Vec<(String, Duration)>)>;
@@ -590,6 +633,8 @@ pub(super) fn machine_with_music() -> (Engine, Played, RanOut) {
         refuse: None,
         scene_events: Default::default(),
         ducked: Default::default(),
+        heard: Default::default(),
+        audio_heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))

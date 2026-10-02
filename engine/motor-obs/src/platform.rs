@@ -24,7 +24,7 @@ pub struct Table {
     pub screen: Screen,
     pub camera: Camera,
     pub mic: Mic,
-    pub screen_sound: ScreenSound,
+    pub system_sound: SystemSound,
     pub video_encoder: &'static str,
     pub audio_encoder: &'static str,
     /// Whether this OS grants the screen, the camera and the microphone
@@ -85,8 +85,8 @@ pub struct Mic {
     pub device_key: &'static str,
 }
 
-/// The sound of the screen (or of one app).
-pub struct ScreenSound {
+/// What the computer plays (or one application of it).
+pub struct SystemSound {
     pub source: &'static str,
     /// Whether it can follow one application (macOS: `type` 1 + `application`).
     pub per_app: bool,
@@ -146,7 +146,7 @@ pub const TABLE: Table = Table {
         devices: "device_id",
         device_key: "device_id",
     },
-    screen_sound: ScreenSound {
+    system_sound: SystemSound {
         source: "sck_audio_capture",
         per_app: true,
     },
@@ -298,7 +298,7 @@ pub const TABLE: Table = Table {
         devices: "device_id",
         device_key: "device_id",
     },
-    screen_sound: ScreenSound {
+    system_sound: SystemSound {
         source: "pulse_output_capture",
         per_app: false,
     },

@@ -252,26 +252,6 @@ pub enum Command {
     StreamMusic {
         on: bool,
     },
-    /// Whether the screen's own sound (what the computer is playing) joins the
-    /// mix that leaves. Off unless asked: a call, a notification or a video
-    /// nobody meant to share is the worse surprise.
-    ScreenSound {
-        on: bool,
-    },
-    /// Select one display layer as the only source of system audio.
-    LayerScreenSound {
-        id: String,
-        on: bool,
-    },
-    /// Capture one running application's sound, independently of screen sound.
-    /// None closes the dedicated capture. Names must match a running app.
-    AppAudio {
-        app: Option<String>,
-    },
-    /// Dedicated application audio fader, 0 to 1.
-    AppAudioVolume {
-        level: f64,
-    },
     Music {
         on: bool,
     },
@@ -282,11 +262,6 @@ pub enum Command {
     /// One sound once, over the mix: a file, or a name in the clips folder.
     Clip {
         name: String,
-    },
-    /// Whose sound the screen's sound is: these applications' alone, or
-    /// everything the computer plays when the list is empty.
-    Hear {
-        apps: Vec<String>,
     },
     /// The room out of the microphone (RNNoise), or as it comes.
     Denoise {
@@ -434,10 +409,13 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reply", rename_all = "kebab-case")]
 pub enum Reply {
-    /// Just the two meters. See [`Command::Levels`].
+    /// Just the meters. See [`Command::Levels`].
     Levels {
         hearing: Hearing,
         mixing: Mixing,
+        /// One per sound of the active scene, in its order.
+        #[serde(default)]
+        audio_layers: Vec<AudioLayerHeard>,
     },
     Ok,
     /// Boxed, and only because of its size: a `Reply` that carried a `Status`
@@ -600,24 +578,35 @@ pub struct Hearing {
     /// is crackling: this is the number that says so.
     #[serde(default)]
     pub dropped: u64,
-    /// Samples of the screen's own sound the capture has handed over, sent
-    /// or not. Zero with the screen shared is a capture that delivers no
-    /// sound, which is a fact about the system and not about the switch.
-    #[serde(default)]
-    pub screen_samples: u64,
-    /// Why the screen's sound is not being read, when it is not: the format
-    /// the capture delivered, in a sentence, the way `complaint` is for the
-    /// microphone.
-    #[serde(default)]
-    pub screen_complaint: Option<String>,
-    /// Samples and latest capture failure from the dedicated app stream.
-    #[serde(default)]
-    pub app_samples: u64,
-    #[serde(default)]
-    pub app_complaint: Option<String>,
     /// Set when a device speaks a format this does not understand. A meter
     /// sitting at zero with no explanation sends a person looking at a cable.
     pub complaint: Option<String>,
+}
+
+/// One audio layer's meter: after its fader, in dBFS, and the samples its
+/// capture has handed over since it opened. None at all is a capture that
+/// never started. On macOS a source that goes away keeps handing over
+/// samples, silent ones: a paused or closed application, a restarted driver,
+/// an iPhone gone out of reach, all measured at about 96,000 a second, so a
+/// count that keeps climbing says nothing about whether anything is heard.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AudioLayerHeard {
+    pub id: String,
+    pub level_db: f64,
+    pub peak_db: f64,
+    pub samples: u64,
+}
+
+impl AudioLayerHeard {
+    /// A layer the motor has nothing on: silent, nothing handed over.
+    pub fn silent(id: String) -> Self {
+        Self {
+            id,
+            level_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            samples: 0,
+        }
+    }
 }
 
 impl Default for Hearing {
@@ -635,10 +624,6 @@ impl Default for Hearing {
             starved: 0,
             buffered: 0,
             dropped: 0,
-            screen_samples: 0,
-            screen_complaint: None,
-            app_samples: 0,
-            app_complaint: None,
             complaint: None,
         }
     }
@@ -666,9 +651,6 @@ pub struct Mixing {
     pub music_out_db: f64,
     #[serde(default = "floor")]
     pub music_out_peak_db: f64,
-    /// Dedicated app bus after its fader, in dBFS.
-    #[serde(default = "floor")]
-    pub app_db: f64,
     pub playing: bool,
     /// How far the duck has the bed stepped back right now, in dB at or
     /// below zero: zero while nobody is talking, easing toward the depth
@@ -696,7 +678,6 @@ impl Default for Mixing {
             music_peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
             music_out_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
             music_out_peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
-            app_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
             playing: false,
             ducked_db: 0.0,
             monitor_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
@@ -779,10 +760,6 @@ pub fn default_scene_name() -> String {
 
 fn floor() -> f64 {
     crate::sound::mixer::levels::Meter::FLOOR_DB
-}
-
-fn yes_volume() -> f64 {
-    1.0
 }
 
 /// Everything a client needs to draw the state of the engine in one line.
@@ -875,25 +852,9 @@ pub struct Status {
     /// independent on purpose.
     #[serde(default = "yes")]
     pub music_to_stream: bool,
-    /// Whether screen sound was requested. Off by default; while its display
-    /// layer is hidden, the mixer gates it out and resumes it on show.
-    #[serde(default)]
-    pub screen_sound: bool,
     /// Whether the microphone goes through the denoiser before the gate.
     #[serde(default)]
     pub denoise: bool,
-    /// The applications whose sound is heard; empty is the whole screen's.
-    #[serde(default)]
-    pub hearing_apps: Vec<String>,
-    /// The display layer supplying system audio; never more than one.
-    #[serde(default)]
-    pub screen_sound_layer: Option<String>,
-    /// Dedicated application capture, independent of the screen's sound.
-    #[serde(default)]
-    pub app_audio: Option<String>,
-    /// Its fader. Kept when the source is off.
-    #[serde(default = "yes_volume")]
-    pub app_audio_volume: f64,
     /// Where recordings are written, as the engine was started with. `None`
     /// is an engine that can capture, mix and publish but cannot record, which
     /// is a real configuration and not a broken one.
@@ -942,7 +903,6 @@ impl Default for Status {
             denoise: false,
             version: String::new(),
             motor: String::new(),
-            hearing_apps: Vec::new(),
             categories: None,
             viewers_peak: None,
             recording_since: None,
@@ -967,10 +927,6 @@ impl Default for Status {
             monitoring: false,
             speakers: None,
             music_to_stream: true,
-            screen_sound: false,
-            screen_sound_layer: None,
-            app_audio: None,
-            app_audio_volume: 1.0,
             record_dir: None,
             server: None,
             preview: None,
@@ -1112,7 +1068,7 @@ pub struct Devices {
     pub windows: Vec<Named>,
     pub cameras: Vec<Named>,
     pub mics: Vec<Named>,
-    /// The running applications: what `hear` and `audio app` pick sound from.
+    /// The running applications: what `audio layer add app` picks sound from.
     #[serde(default)]
     pub apps: Vec<Named>,
     /// The music folders, by the name a person picks them with.
@@ -1221,12 +1177,6 @@ mod tests {
     fn the_verbs_go_out_on_the_wire_under_the_names_the_cli_already_uses() {
         assert_eq!(encode(&Command::GoLive), "{\"cmd\":\"go-live\"}\n");
         assert_eq!(encode(&Command::Status), "{\"cmd\":\"status\"}\n");
-        assert_eq!(
-            encode(&Command::AppAudio {
-                app: Some("Safari".into())
-            }),
-            "{\"cmd\":\"app-audio\",\"app\":\"Safari\"}\n"
-        );
         assert_eq!(
             encode(&Command::Screen { display: 7 }),
             "{\"cmd\":\"screen\",\"display\":7}\n"
