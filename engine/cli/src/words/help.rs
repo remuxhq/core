@@ -133,8 +133,7 @@ scene), timer-finished (a timer at 00:00; the engine never switches for it),
 layer-stalled and layer-flowing (a camera that stopped delivering frames).
 The sound: muted, track-changed (title null when the music stopped),
 sound-complaint (the mic's; null once over it), audio-layer-added (id,
-source), audio-layer-removed, audio-layer-muted, audio-layer-stalled and
-audio-layer-flowing (a sound whose capture stopped handing over samples).
+source), audio-layer-removed, audio-layer-muted.
 The room: app-reachable, chat (line, platform, channel, from, body, id),
 chat-hidden (line); line is what remux chat hide and delete take.
 chat-event is the rest a bridge says, by type: sub, gift, tip (micros to add
@@ -436,7 +435,7 @@ mod tests {
             "refused",
             "timer-finished",
             "layer-stalled",
-            "audio-layer-stalled",
+            "audio-layer-added",
             "audio-glitch",
             "remux schema has every shape",
         ] {

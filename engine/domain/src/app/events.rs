@@ -137,15 +137,6 @@ pub enum Event {
         id: String,
         on: bool,
     },
-    /// A sound whose capture stopped handing over samples for three seconds:
-    /// not silence, which still hands them over, but nothing at all.
-    AudioLayerStalled {
-        id: String,
-    },
-    /// A sound that stalled handing over samples again.
-    AudioLayerFlowing {
-        id: String,
-    },
     /// A capture of sound saying what is wrong with it, a format it does not
     /// read, or `None` once it is over it.
     SoundComplaint {

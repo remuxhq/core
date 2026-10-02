@@ -930,12 +930,6 @@ fn render_events(
                 plain(id),
                 if *ducks { "ducks" } else { "does not duck" }
             ),
-            Event::AudioLayerStalled { id } => {
-                format!("sound {} stopped delivering", plain(id))
-            }
-            Event::AudioLayerFlowing { id } => {
-                format!("sound {} delivering again", plain(id))
-            }
             Event::SoundComplaint { source, complaint } => {
                 let what = match source {
                     Heard::Mic => "mic",
@@ -3327,8 +3321,6 @@ mod reading {
                 id: id(),
                 on: false,
             },
-            Event::AudioLayerStalled { id: id() },
-            Event::AudioLayerFlowing { id: id() },
             Event::AudioLayerRemoved { id: id() },
         ];
         let reply = Reply::Events {
@@ -3346,9 +3338,7 @@ mod reading {
              00:00:00 #3 sound call open\n\
              00:00:00 #4 sound call at 50%\n\
              00:00:00 #5 sound call does not duck\n\
-             00:00:00 #6 sound call stopped delivering\n\
-             00:00:00 #7 sound call delivering again\n\
-             00:00:00 #8 sound call removed"
+             00:00:00 #6 sound call removed"
         );
     }
 

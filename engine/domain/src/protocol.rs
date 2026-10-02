@@ -583,10 +583,12 @@ pub struct Hearing {
     pub complaint: Option<String>,
 }
 
-/// One audio layer's meter: after its fader, in dBFS, and the
-/// samples its capture has handed over since it opened. Samples that stop
-/// climbing are a capture that stopped; a level at the floor with samples
-/// climbing is silence, which is not the same thing.
+/// One audio layer's meter: after its fader, in dBFS, and the samples its
+/// capture has handed over since it opened. None at all is a capture that
+/// never started. On macOS a source that goes away keeps handing over
+/// samples, silent ones: a paused or closed application, a restarted driver,
+/// an iPhone gone out of reach, all measured at about 96,000 a second, so a
+/// count that keeps climbing says nothing about whether anything is heard.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AudioLayerHeard {
     pub id: String,

@@ -1,30 +1,19 @@
-//! A capture that stopped handing over what it captures, told from its count.
+//! A camera that stopped handing over frames, told from its count.
 //!
-//! Cameras, of the pictures: a screen or a window hands over a frame only
-//! when the picture changes (`protocol::Flowing::captured`), so a still one
-//! is a quiet one and not a broken one. A camera delivers at its rate
-//! whatever it sees, a covered lens included, so a count that stops is a
-//! camera that stopped. Sounds hand over samples, silence included, so a
-//! count that stops is a sound that stopped. Pure; the engine feeds it the
-//! counts on its tick.
+//! Cameras alone: a screen or a window hands over a frame only when the
+//! picture changes (`protocol::Flowing::captured`), so a still one is a
+//! quiet one and not a broken one. A camera delivers at its rate whatever it
+//! sees, a covered lens included, so a count that stops is a camera that
+//! stopped. Pure; the engine feeds it the counts on its tick.
 
 use std::collections::BTreeMap;
 
 use crate::app::events::Event;
 
-/// The captures being watched, by layer id, and what their stopping and
-/// starting again are called.
-#[derive(Debug)]
+/// The cameras being watched, by layer id.
+#[derive(Debug, Default)]
 pub struct Stalls {
     seen: BTreeMap<String, Watched>,
-    stalled: fn(String) -> Event,
-    flowing: fn(String) -> Event,
-}
-
-impl Default for Stalls {
-    fn default() -> Self {
-        Self::cameras()
-    }
 }
 
 #[derive(Debug)]
@@ -40,22 +29,6 @@ impl Stalls {
     /// three seconds without one is ninety missing, not jitter. Chosen, not
     /// yet measured against a camera unplugged under a live.
     pub const FLAT_TICKS: u32 = 12;
-
-    pub fn cameras() -> Self {
-        Self {
-            seen: BTreeMap::new(),
-            stalled: |id| Event::LayerStalled { id },
-            flowing: |id| Event::LayerFlowing { id },
-        }
-    }
-
-    pub fn sounds() -> Self {
-        Self {
-            seen: BTreeMap::new(),
-            stalled: |id| Event::AudioLayerStalled { id },
-            flowing: |id| Event::AudioLayerFlowing { id },
-        }
-    }
 
     /// One tick's counts, for the cameras shown now: what changed. A camera
     /// no longer in `counts` is forgotten, hidden or removed, and says
@@ -81,13 +54,13 @@ impl Stalls {
                 watched.flat = 0;
                 if watched.stalled {
                     watched.stalled = false;
-                    events.push((self.flowing)(id.clone()));
+                    events.push(Event::LayerFlowing { id: id.clone() });
                 }
             } else {
                 watched.flat += 1;
                 if !watched.stalled && watched.flat >= Self::FLAT_TICKS {
                     watched.stalled = true;
-                    events.push((self.stalled)(id.clone()));
+                    events.push(Event::LayerStalled { id: id.clone() });
                 }
             }
             now.insert(id, watched);
@@ -121,22 +94,6 @@ mod tests {
         assert_eq!(
             tick(&mut stalls, 91),
             vec![Event::LayerFlowing { id: "face".into() }]
-        );
-    }
-
-    // An application whose capture stopped handing over sound is said as a
-    // sound's, not a camera's.
-    #[test]
-    fn a_sound_whose_samples_stop_is_stalled_as_a_sound() {
-        let mut stalls = Stalls::sounds();
-        let mut said = Vec::new();
-        for _ in 0..=Stalls::FLAT_TICKS {
-            said.extend(stalls.observe([("call".to_string(), 4800)]));
-        }
-        assert_eq!(said, vec![Event::AudioLayerStalled { id: "call".into() }]);
-        assert_eq!(
-            stalls.observe([("call".to_string(), 9600)]),
-            vec![Event::AudioLayerFlowing { id: "call".into() }]
         );
     }
 
