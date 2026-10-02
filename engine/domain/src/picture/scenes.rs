@@ -84,10 +84,11 @@ pub fn defaults() -> Vec<Scene> {
         elements: vec![],
         order: vec![],
         shader: None,
+        audio_layers: vec![],
     }]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Scene {
     pub name: String,
     /// Back-to-front order of capture layers.
@@ -101,6 +102,10 @@ pub struct Scene {
     pub elements: Vec<Element>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shader: Option<String>,
+    /// The sounds this scene hears beside the microphone. A switch keeps the
+    /// captures both scenes hear, as it keeps the pictures'.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
 }
 
 impl Scene {

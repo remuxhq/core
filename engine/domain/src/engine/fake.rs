@@ -140,6 +140,8 @@ pub(super) struct Wrote {
     pub(super) scene_events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Every audio layer told whether it ducks, in order.
     pub(super) ducked: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+    /// Every audio capture opened, renamed and closed, in order.
+    pub(super) heard: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl Picture for Wrote {
@@ -347,6 +349,42 @@ impl Picture for Wrote {
 }
 
 impl Sound for Wrote {
+    fn audio_layer_add(&mut self, layer: &crate::sound::audio_layers::Layer) -> Result<(), String> {
+        let said = layer
+            .source
+            .name
+            .clone()
+            .or_else(|| layer.source.device.clone())
+            .or_else(|| layer.source.display.map(|d| d.to_string()))
+            .unwrap_or_default();
+        if self.refuse.as_deref() == Some(&format!("audio:{said}")) {
+            return Err(format!("no running application called {said}"));
+        }
+        self.heard.lock().expect("heard").push(format!(
+            "open {} {said}{}",
+            layer.id,
+            if layer.muted { " muted" } else { "" }
+        ));
+        Ok(())
+    }
+    fn audio_layer_rename(&mut self, from: &str, to: &str) {
+        self.heard
+            .lock()
+            .expect("heard")
+            .push(format!("rename {from} {to}"));
+    }
+    fn audio_layer_remove(&mut self, id: &str) {
+        self.heard
+            .lock()
+            .expect("heard")
+            .push(format!("close {id}"));
+    }
+    fn audio_layer_levels(&mut self, id: &str, volume: f64, muted: bool) {
+        self.heard.lock().expect("heard").push(format!(
+            "level {id} {volume}{}",
+            if muted { " muted" } else { "" }
+        ));
+    }
     fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
         self.ducked
             .lock()
@@ -513,6 +551,7 @@ pub(super) fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
         refuse,
         scene_events: Default::default(),
         ducked: Default::default(),
+        heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -590,6 +629,7 @@ pub(super) fn machine_with_music() -> (Engine, Played, RanOut) {
         refuse: None,
         scene_events: Default::default(),
         ducked: Default::default(),
+        heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))

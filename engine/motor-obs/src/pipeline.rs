@@ -1310,6 +1310,15 @@ impl Sound for ObsPipeline {
             }
         }
     }
+    fn audio_layer_rename(&mut self, from: &str, to: &str) {
+        if let Some(layer) = self
+            .audio_layers
+            .iter_mut()
+            .find(|(there, _, _, _)| there == from)
+        {
+            layer.0 = to.to_string();
+        }
+    }
     fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
         if let Some(layer) = self
             .audio_layers

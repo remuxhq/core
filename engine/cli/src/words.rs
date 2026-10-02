@@ -3174,6 +3174,7 @@ mod reading {
             order: vec![],
             elements: vec![],
             shader: None,
+            audio_layers: vec![],
         };
         let status = Status {
             scenes: vec![scene("code"), scene("talk")],

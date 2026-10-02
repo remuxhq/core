@@ -179,6 +179,8 @@ Layer choices, layout and visibility survive a restart.
 Use remux audio screen-sound on for a unique display, or remux scene layer
 screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
 one app's sound alone; remux audio app Spotify captures it on its own fader.
+remux audio layer add app game Steam belongs to the active scene: a switch
+keeps the sounds both scenes hear and closes the others, as with pictures.
 
 The microphone goes through the remux gate: your voice opens it, a keyboard
 behind the mic opens it at a lift of its own, and closed it turns the room down

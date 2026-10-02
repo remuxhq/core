@@ -146,9 +146,117 @@ impl Layer {
     }
 }
 
+impl Source {
+    /// Whether two layers hear the same capture, whatever they are called:
+    /// one microphone, one application (by name, as the motor finds it), one
+    /// display.
+    pub fn same_capture(&self, other: &Source) -> bool {
+        self.kind == other.kind
+            && self.device == other.device
+            && self.display == other.display
+            && match (&self.name, &other.name) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                (a, b) => a == b,
+            }
+    }
+}
+
+/// What a scene switch does to the audio layers: the captures both scenes
+/// hear stay open (under the new scene's ID and levels), the new scene's
+/// others open, the old scene's others close. As the pictures' captures do.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Transition {
+    /// The old layer's ID, and what it becomes.
+    pub keep: Vec<(String, Layer)>,
+    pub open: Vec<Layer>,
+    /// The old layers' IDs.
+    pub close: Vec<String>,
+}
+
+/// One old layer to each new one at most: a layer under the same ID and
+/// capture first, then any with the capture, so two layers on one
+/// application in both scenes stay two.
+pub fn transition(from: &[Layer], to: &[Layer]) -> Transition {
+    let mut taken = vec![false; from.len()];
+    let mut kept: Vec<Option<usize>> = vec![None; to.len()];
+    for (next, layer) in to.iter().enumerate() {
+        kept[next] = from
+            .iter()
+            .position(|old| old.id == layer.id && old.source.same_capture(&layer.source));
+        if let Some(at) = kept[next] {
+            taken[at] = true;
+        }
+    }
+    for (next, layer) in to.iter().enumerate() {
+        if kept[next].is_none() {
+            kept[next] = (0..from.len())
+                .find(|&at| !taken[at] && from[at].source.same_capture(&layer.source));
+            if let Some(at) = kept[next] {
+                taken[at] = true;
+            }
+        }
+    }
+    let mut plan = Transition::default();
+    for (layer, old) in to.iter().zip(kept) {
+        match old {
+            Some(at) => plan.keep.push((from[at].id.clone(), layer.clone())),
+            None => plan.open.push(layer.clone()),
+        }
+    }
+    plan.close = from
+        .iter()
+        .zip(taken)
+        .filter(|(_, taken)| !taken)
+        .map(|(old, _)| old.id.clone())
+        .collect();
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app(id: &str, name: &str) -> Layer {
+        Layer::new(id.into(), Source::app(name.into())).unwrap()
+    }
+
+    #[test]
+    fn a_switch_keeps_the_captures_both_scenes_hear_whatever_they_are_called() {
+        let from = [app("call", "Discord"), app("video", "Safari")];
+        let to = [app("guest", "discord"), app("game", "Steam")];
+        let plan = transition(&from, &to);
+        assert_eq!(plan.keep, [("call".to_string(), to[0].clone())]);
+        assert_eq!(plan.open, [to[1].clone()]);
+        assert_eq!(plan.close, ["video"]);
+    }
+
+    #[test]
+    fn a_switch_pairs_each_capture_once_and_its_own_id_first() {
+        let from = [app("a", "Safari"), app("b", "Safari")];
+        let to = [app("b", "Safari"), app("c", "Safari"), app("d", "Safari")];
+        let plan = transition(&from, &to);
+        assert_eq!(
+            plan.keep,
+            [
+                ("b".to_string(), to[0].clone()),
+                ("a".to_string(), to[1].clone())
+            ]
+        );
+        assert_eq!(plan.open, [to[2].clone()]);
+        assert!(plan.close.is_empty());
+    }
+
+    #[test]
+    fn one_id_on_another_capture_is_a_close_and_an_open() {
+        let plan = transition(&[app("call", "Discord")], &[app("call", "Zoom")]);
+        assert!(plan.keep.is_empty());
+        assert_eq!(plan.open, [app("call", "Zoom")]);
+        assert_eq!(plan.close, ["call"]);
+        let mic = Layer::new("guest".into(), Source::mic("USB".into())).unwrap();
+        let screen = Layer::new("guest".into(), Source::screen(1)).unwrap();
+        assert!(!mic.source.same_capture(&screen.source));
+    }
+
     #[test]
     fn what_plays_under_the_voice_ducks_and_another_voice_does_not() {
         assert!(Kind::App.ducks());

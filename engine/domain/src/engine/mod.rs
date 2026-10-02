@@ -715,6 +715,13 @@ impl Engine {
         for scene in &mut scenes {
             scene.normalize_order();
         }
+        // Saved before a scene had a sound of its own, when every scene heard
+        // every audio layer: so it stays, until somebody changes one.
+        if scenes.iter().all(|scene| scene.audio_layers.is_empty()) {
+            for scene in &mut scenes {
+                scene.audio_layers = setup.audio_layers.clone();
+            }
+        }
         let active = if scenes.iter().any(|scene| scene.name == setup.active_scene) {
             setup.active_scene.clone()
         } else {
@@ -733,6 +740,7 @@ impl Engine {
             .clone();
         self.status.scenes = scenes;
         self.status.active_scene = active;
+        let mut saved_audio = Vec::new();
         // Replay capture selections against empty slots, not saved IDs that
         // have not been opened yet. The saved stacking order is restored below.
         if let Some(scene) = self
@@ -743,6 +751,7 @@ impl Engine {
         {
             scene.layers.clear();
             scene.normalize_order();
+            saved_audio = std::mem::take(&mut scene.audio_layers);
         }
         self.render_scene();
         for saved in &saved_layers {
@@ -851,7 +860,7 @@ impl Engine {
         if let Some(path) = selected_shader {
             let _ = self.handle(Command::Shader { path: Some(path) });
         }
-        for saved in &setup.audio_layers {
+        for saved in &saved_audio {
             if matches!(
                 self.handle(Command::AudioLayerAdd {
                     id: saved.id.clone(),
@@ -946,6 +955,7 @@ impl Engine {
             active.layers = self.status.layers.clone();
             active.normalize_order();
             active.shader = self.status.shader.clone();
+            active.audio_layers = self.status.audio_layers.clone();
         }
         scenes
     }
@@ -975,6 +985,7 @@ impl Engine {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         let switched = self.scene_switch(name.clone());
         if matches!(switched, Reply::Error { .. }) {
@@ -1015,6 +1026,7 @@ impl Engine {
                 .map(|s| s.ordered_ids())
                 .unwrap_or_default(),
             shader: self.status.shader.clone(),
+            audio_layers: self.status.audio_layers.clone(),
         });
         self.status.active_scene = name;
         self.counting.clear();
@@ -1057,11 +1069,17 @@ impl Engine {
         let next_shader = target.shader.clone();
         let next_elements = target.elements.clone();
         let next_order = target.ordered_ids();
+        let next_audio = target.audio_layers.clone();
         // Snapshot the outgoing scene *before* the pipeline swaps its active
         // flags to the incoming programs (a runtime-disabled shader stays off).
         let previous_scenes = self.remembered().scenes;
+        let heard = match self.audio_prepare(&next_audio) {
+            Ok(heard) => heard,
+            Err(message) => return Reply::Error { message },
+        };
         if !next_elements.is_empty() {
             if let Err(message) = self.pipeline.show(&next_elements, &[], &next_order) {
+                self.audio_abandon(&heard);
                 return Reply::Error { message };
             }
         }
@@ -1071,6 +1089,7 @@ impl Engine {
             &next_elements,
             next_shader.as_deref(),
         ) {
+            self.audio_abandon(&heard);
             self.render_scene();
             return Reply::Error { message };
         }
@@ -1129,6 +1148,7 @@ impl Engine {
                     .unwrap_or_default(),
                 previous.shader.as_deref(),
             );
+            self.audio_abandon(&heard);
             self.status = previous;
             self.counting = previous_clock;
             self.pipeline.layers_changed(&self.status.layers);
@@ -1138,6 +1158,7 @@ impl Engine {
             self.render_scene();
             return Reply::Error { message };
         }
+        self.audio_commit(heard, next_audio);
         Reply::Status(Box::new(self.reported()))
     }
 
@@ -2101,6 +2122,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         engine.status.on_air = true;
         engine.status.recording = true;
@@ -2144,6 +2166,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         assert!(matches!(
             engine.handle(Command::SceneSwitch {
@@ -2180,6 +2203,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         assert!(matches!(
             engine.handle(Command::SceneSwitch {
@@ -2217,6 +2241,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         setup.active_scene = "camera".into();
         let saved = crate::remembered::read(&crate::remembered::write(&setup).unwrap());
@@ -2246,6 +2271,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: None,
+            audio_layers: vec![],
         });
         assert!(matches!(
             engine.handle(Command::SceneSwitch {
@@ -2278,6 +2304,7 @@ mod tests {
             elements: vec![],
             order: vec![],
             shader: Some("bad.wgsl".into()),
+            audio_layers: vec![],
         });
         assert!(matches!(
             engine.handle(Command::SceneSwitch {
@@ -2343,6 +2370,7 @@ mod tests {
                     elements: vec![],
                     order: vec![],
                     shader: Some("bad.wgsl".into()),
+                    audio_layers: vec![],
                 },
                 Scene {
                     name: "later".into(),
@@ -2350,6 +2378,7 @@ mod tests {
                     elements: vec![],
                     order: vec![],
                     shader: Some("good.wgsl".into()),
+                    audio_layers: vec![],
                 },
             ],
             ..Default::default()
@@ -2577,6 +2606,7 @@ mod tests {
             ran_out: Default::default(),
             refuse: None,
             ducked: Default::default(),
+            heard: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))

@@ -23,6 +23,8 @@ pub trait Sound: Send {
         Ok(())
     }
     fn audio_layer_remove(&mut self, _id: &str) {}
+    /// The audio layer `from` is called `to` now: its capture stays open.
+    fn audio_layer_rename(&mut self, _from: &str, _to: &str) {}
     fn audio_layer_levels(&mut self, _id: &str, _volume: f64, _muted: bool) {}
     /// Whether one audio layer steps back under the voice now.
     fn audio_layer_duck(&mut self, _id: &str, _ducks: bool) {}
@@ -637,6 +639,7 @@ mod tests {
             refuse: None,
             scene_events: Default::default(),
             ducked: Default::default(),
+            heard: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
