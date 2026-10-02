@@ -2117,6 +2117,7 @@ mod tests {
             scene_events: Default::default(),
             ducked: Default::default(),
             heard: Default::default(),
+            audio_heard: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
@@ -2237,6 +2238,7 @@ mod tests {
             refuse: None,
             ducked: Default::default(),
             heard: Default::default(),
+            audio_heard: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))
@@ -2338,6 +2340,7 @@ mod tests {
             scene_events: Default::default(),
             ducked: Default::default(),
             heard: Default::default(),
+            audio_heard: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(refusing));

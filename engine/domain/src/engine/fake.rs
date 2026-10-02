@@ -142,6 +142,9 @@ pub(super) struct Wrote {
     pub(super) ducked: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
     /// Every audio capture opened, renamed and closed, in order.
     pub(super) heard: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// The samples each audio layer's capture has handed over, set by a test.
+    pub(super) audio_heard:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u64>>>,
 }
 
 impl Picture for Wrote {
@@ -366,6 +369,17 @@ impl Sound for Wrote {
         ));
         Ok(())
     }
+    fn audio_layers_heard(&self) -> Vec<crate::protocol::AudioLayerHeard> {
+        self.audio_heard
+            .lock()
+            .expect("audio heard")
+            .iter()
+            .map(|(id, samples)| crate::protocol::AudioLayerHeard {
+                samples: *samples,
+                ..crate::protocol::AudioLayerHeard::silent(id.clone())
+            })
+            .collect()
+    }
     fn audio_layer_rename(&mut self, from: &str, to: &str) {
         self.heard
             .lock()
@@ -542,6 +556,7 @@ pub(super) fn publishing_engine(refuse: Option<String>) -> (Engine, Published) {
         scene_events: Default::default(),
         ducked: Default::default(),
         heard: Default::default(),
+        audio_heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))
@@ -619,6 +634,7 @@ pub(super) fn machine_with_music() -> (Engine, Played, RanOut) {
         scene_events: Default::default(),
         ducked: Default::default(),
         heard: Default::default(),
+        audio_heard: Default::default(),
     };
     (
         Engine::with_sources(Box::new(ThisMachine))

@@ -479,6 +479,7 @@ pub struct Engine {
     seen: Option<crate::app::events::Snapshot>,
     /// The cameras shown, watched for a count that stops.
     stalls: crate::picture::stall::Stalls,
+    audio_stalls: crate::picture::stall::Stalls,
     /// Where the picture goes when somebody presses Go live.
     ///
     /// It carries a credential, so the engine takes it from whoever started it
@@ -533,7 +534,8 @@ impl Engine {
             chat: Default::default(),
             events: Default::default(),
             seen: None,
-            stalls: Default::default(),
+            stalls: crate::picture::stall::Stalls::cameras(),
+            audio_stalls: crate::picture::stall::Stalls::sounds(),
             pipeline: Box::new(NoPipeline),
             library: Box::new(NoLibrary),
             playing: None,
@@ -1155,6 +1157,13 @@ impl Engine {
             .collect();
         let stalled = self.stalls.observe(cameras);
         self.keep(stalled);
+        let sounds: Vec<(String, u64)> = self
+            .audio_layers_heard()
+            .into_iter()
+            .map(|heard| (heard.id, heard.samples))
+            .collect();
+        let stalled = self.audio_stalls.observe(sounds);
+        self.keep(stalled);
         self.notice();
     }
 
@@ -1264,6 +1273,12 @@ impl Engine {
                 .chain(self.active_elements().iter().map(LayerSeen::of_element))
                 .collect(),
             filter: self.status.shader.clone(),
+            audio_layers: self
+                .status
+                .audio_layers
+                .iter()
+                .map(crate::app::events::AudioLayerSeen::of)
+                .collect(),
             timers_done: self
                 .counting
                 .iter()
@@ -2547,6 +2562,7 @@ mod tests {
             refuse: None,
             ducked: Default::default(),
             heard: Default::default(),
+            audio_heard: Default::default(),
         };
         (
             Engine::with_sources(Box::new(ThisMachine))
@@ -3097,6 +3113,32 @@ mod tests {
         }
         assert!(
             said(&events).contains(&Event::LayerStalled { id }),
+            "got {:?}",
+            said(&events)
+        );
+    }
+
+    // The microphone layer on "MacBook" was silence for a whole recording
+    // and nothing said so: a sound whose capture stops is an event too.
+    #[test]
+    fn a_sound_whose_capture_stops_is_an_event_on_the_ticks() {
+        use crate::app::events::Event;
+        let events = followed();
+        let fake = Wrote::default();
+        let heard = fake.audio_heard.clone();
+        let mut engine = Engine::new()
+            .with_pipeline(Box::new(fake))
+            .with_events(std::sync::Arc::clone(&events));
+        engine.handle(Command::AudioLayerAdd {
+            id: "call".into(),
+            source: crate::sound::audio_layers::Source::app("Discord".into()),
+        });
+        heard.lock().unwrap().insert("call".into(), 4800);
+        for _ in 0..=crate::picture::stall::Stalls::FLAT_TICKS {
+            engine.tick();
+        }
+        assert!(
+            said(&events).contains(&Event::AudioLayerStalled { id: "call".into() }),
             "got {:?}",
             said(&events)
         );

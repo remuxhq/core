@@ -769,8 +769,12 @@ pub fn render(reply: &Reply) -> String {
         // The panel's meters on one line: bar and held peak for the mic, the
         // gate's lamp with the gain it applies, what its two detectors hear,
         // then the mix and the bed with how far the duck has it.
-        Reply::Levels { hearing, mixing } => format!(
-            "mic {:.1} dB (peak {:.1}) gate {}{}, voice {:.0} highs {:.0}, mix {:.1} dB, music {:.1} dB{}",
+        Reply::Levels {
+            hearing,
+            mixing,
+            audio_layers,
+        } => format!(
+            "mic {:.1} dB (peak {:.1}) gate {}{}, voice {:.0} highs {:.0}, mix {:.1} dB, music {:.1} dB{}{}",
             hearing.level_db,
             hearing.peak_db,
             if hearing.gate_open { "open" } else { "closed" },
@@ -787,7 +791,15 @@ pub fn render(reply: &Reply) -> String {
                 format!(" (ducking {:.0})", mixing.ducked_db)
             } else {
                 String::new()
-            }
+            },
+            audio_layers
+                .iter()
+                .map(|layer| if layer.samples == 0 {
+                    format!(", sound {} hears nothing", plain(&layer.id))
+                } else {
+                    format!(", sound {} {:.1} dB", plain(&layer.id), layer.level_db)
+                })
+                .collect::<String>()
         ),
         // Every one of them, always, including the ones that are fine: a
         // person reading this is looking for the one that is not, and a list
@@ -899,6 +911,31 @@ fn render_events(
             Event::TimerFinished { id } => format!("timer {} at zero", plain(id)),
             Event::LayerStalled { id } => format!("camera {} stopped delivering", plain(id)),
             Event::LayerFlowing { id } => format!("camera {} delivering again", plain(id)),
+            Event::AudioLayerAdded { id, source } => {
+                format!("sound {} added ({})", plain(id), plain(source))
+            }
+            Event::AudioLayerRemoved { id } => format!("sound {} removed", plain(id)),
+            Event::AudioLayerMuted { id, on: muted } => {
+                format!(
+                    "sound {} {}",
+                    plain(id),
+                    if *muted { "muted" } else { "open" }
+                )
+            }
+            Event::AudioLayerVolume { id, volume } => {
+                format!("sound {} at {:.0}%", plain(id), volume * 100.0)
+            }
+            Event::AudioLayerDucked { id, on: ducks } => format!(
+                "sound {} {}",
+                plain(id),
+                if *ducks { "ducks" } else { "does not duck" }
+            ),
+            Event::AudioLayerStalled { id } => {
+                format!("sound {} stopped delivering", plain(id))
+            }
+            Event::AudioLayerFlowing { id } => {
+                format!("sound {} delivering again", plain(id))
+            }
             Event::SoundComplaint { source, complaint } => {
                 let what = match source {
                     Heard::Mic => "mic",
@@ -3265,6 +3302,77 @@ mod reading {
              01:01:07 #8 app unreachable\n\
              01:01:08 #9 mic open\n\
              01:01:09 #10 off air"
+        );
+    }
+
+    #[test]
+    fn a_sound_and_what_happens_to_it_read_as_lines() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let id = || "call".to_string();
+        let events = [
+            Event::AudioLayerAdded {
+                id: id(),
+                source: "app Discord".into(),
+            },
+            Event::AudioLayerMuted { id: id(), on: true },
+            Event::AudioLayerMuted {
+                id: id(),
+                on: false,
+            },
+            Event::AudioLayerVolume {
+                id: id(),
+                volume: 0.5,
+            },
+            Event::AudioLayerDucked {
+                id: id(),
+                on: false,
+            },
+            Event::AudioLayerStalled { id: id() },
+            Event::AudioLayerFlowing { id: id() },
+            Event::AudioLayerRemoved { id: id() },
+        ];
+        let reply = Reply::Events {
+            gap: None,
+            events: events
+                .into_iter()
+                .zip(1..)
+                .map(|(event, seq)| Numbered { seq, at: 0, event })
+                .collect(),
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 sound call added (app Discord)\n\
+             00:00:00 #2 sound call muted\n\
+             00:00:00 #3 sound call open\n\
+             00:00:00 #4 sound call at 50%\n\
+             00:00:00 #5 sound call does not duck\n\
+             00:00:00 #6 sound call stopped delivering\n\
+             00:00:00 #7 sound call delivering again\n\
+             00:00:00 #8 sound call removed"
+        );
+    }
+
+    // A sound whose capture hands over nothing reads as such, not as a
+    // quiet one: that was a microphone layer silent for a whole recording.
+    #[test]
+    fn levels_name_each_sound_and_the_one_that_hears_nothing() {
+        use remuxd_domain::protocol::{AudioLayerHeard, Hearing, Mixing};
+        let said = render(&Reply::Levels {
+            hearing: Hearing::default(),
+            mixing: Mixing::default(),
+            audio_layers: vec![
+                AudioLayerHeard {
+                    id: "call".into(),
+                    level_db: -30.24,
+                    peak_db: -20.0,
+                    samples: 9600,
+                },
+                AudioLayerHeard::silent("ghost".into()),
+            ],
+        });
+        assert!(
+            said.ends_with(", sound call -30.2 dB, sound ghost hears nothing"),
+            "{said}"
         );
     }
 

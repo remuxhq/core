@@ -63,7 +63,7 @@ pub struct ObsPipeline {
     height: u32,
     /// The independent audio captures, each on its own channel from 8, and
     /// whether it steps back under the voice.
-    audio_layers: Vec<(String, *mut sys::obs_source_t, u32, bool)>,
+    audio_layers: Vec<AudioLayer>,
     /// H264 and AAC (the OS's encoders, from the table), made on first use and shared
     /// by the stream and the recording.
     video_encoder: *mut sys::obs_encoder_t,
@@ -84,6 +84,8 @@ struct Heard {
     level_mdb: AtomicU64,
     peak_mdb: AtomicU64,
     updates: AtomicU64,
+    /// Samples the source handed over, both channels, when followed.
+    samples: AtomicU64,
 }
 
 impl Heard {
@@ -105,6 +107,102 @@ impl Heard {
     }
     fn db(&self, mdb: &AtomicU64) -> f64 {
         mdb.load(Ordering::Relaxed) as f64 / 1000.0 - 120.0
+    }
+    unsafe extern "C" fn on_audio(
+        param: *mut c_void,
+        _source: *mut sys::obs_source_t,
+        data: *const sys::audio_data,
+        _muted: bool,
+    ) {
+        // SAFETY: `param` is the boxed `Heard`; `data` is libobs's for the
+        // call. Counted in both channels, as the native motor counts them.
+        unsafe {
+            let heard = &*(param as *const Self);
+            heard
+                .samples
+                .fetch_add(u64::from((*data).frames) * 2, Ordering::Relaxed);
+        }
+    }
+}
+
+/// One audio layer: its source on a channel of its own, whether it steps
+/// back under the voice, and its meter, the level off a volmeter (after the
+/// source's fader) and the samples off the source's own audio.
+struct AudioLayer {
+    id: String,
+    source: *mut sys::obs_source_t,
+    channel: u32,
+    ducks: bool,
+    meter: *mut sys::obs_volmeter_t,
+    heard: Box<Heard>,
+}
+
+impl AudioLayer {
+    fn param(&self) -> *mut c_void {
+        &*self.heard as *const Heard as *mut c_void
+    }
+
+    /// SAFETY: `source` is live and ours until `release`.
+    unsafe fn metered(
+        id: String,
+        source: *mut sys::obs_source_t,
+        channel: u32,
+        ducks: bool,
+    ) -> Self {
+        let mut layer = Self {
+            id,
+            source,
+            channel,
+            ducks,
+            meter: std::ptr::null_mut(),
+            heard: Box::default(),
+        };
+        // SAFETY: the box outlives both registrations, removed in `release`.
+        unsafe {
+            layer.meter = sys::obs_volmeter_create(sys::obs_fader_type_OBS_FADER_LOG);
+            sys::obs_volmeter_add_callback(layer.meter, Some(Heard::on_level), layer.param());
+            sys::obs_volmeter_attach_source(layer.meter, source);
+            sys::obs_source_add_audio_capture_callback(
+                source,
+                Some(Heard::on_audio),
+                layer.param(),
+            );
+        }
+        layer
+    }
+
+    /// Off its channel, its meter gone, its source released.
+    fn release(self) {
+        // SAFETY: the callbacks come off before the source and the box go.
+        unsafe {
+            sys::obs_set_output_source(self.channel, std::ptr::null_mut());
+            sys::obs_source_remove_audio_capture_callback(
+                self.source,
+                Some(Heard::on_audio),
+                self.param(),
+            );
+            sys::obs_volmeter_remove_callback(self.meter, Some(Heard::on_level), self.param());
+            sys::obs_volmeter_destroy(self.meter);
+            sys::obs_source_release(self.source);
+        }
+    }
+
+    fn heard(&self) -> remuxd_domain::protocol::AudioLayerHeard {
+        let floor = remuxd_domain::sound::mixer::levels::Meter::FLOOR_DB;
+        let level = |mdb: &AtomicU64| {
+            // Nothing measured yet is silence, not the loudest sound there is.
+            if self.heard.updates.load(Ordering::Relaxed) == 0 {
+                floor
+            } else {
+                self.heard.db(mdb).max(floor)
+            }
+        };
+        remuxd_domain::protocol::AudioLayerHeard {
+            id: self.id.clone(),
+            level_db: level(&self.heard.level_mdb),
+            peak_db: level(&self.heard.peak_mdb),
+            samples: self.heard.samples.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -447,8 +545,8 @@ impl ObsPipeline {
             .chain(
                 self.audio_layers
                     .iter()
-                    .filter(|(_, _, _, ducks)| *ducks)
-                    .map(|(_, source, _, _)| *source),
+                    .filter(|layer| layer.ducks)
+                    .map(|layer| layer.source),
             )
             .filter(|source| !source.is_null())
             .collect::<Vec<_>>();
@@ -763,7 +861,8 @@ impl Drop for ObsPipeline {
         self.recording = None;
         self.publishing.clear();
         self.clear_picture();
-        for (id, _, _, _) in self.audio_layers.clone() {
+        let ids: Vec<String> = self.audio_layers.iter().map(|l| l.id.clone()).collect();
+        for id in ids {
             self.audio_layer_remove(&id);
         }
         let _ = self.play(None);
@@ -1052,7 +1151,7 @@ impl Sound for ObsPipeline {
         }
         .ok_or("an audio layer names its source")?;
         let channel = (8..64)
-            .find(|ch| self.audio_layers.iter().all(|(_, _, used, _)| used != ch))
+            .find(|ch| self.audio_layers.iter().all(|layer| layer.channel != *ch))
             .ok_or("every audio channel is taken")?;
         let source = self.audio_source(layer.source.kind, &said)?;
         // SAFETY: ours until removed; on its own channel.
@@ -1062,57 +1161,42 @@ impl Sound for ObsPipeline {
             sys::obs_set_output_source(channel, source);
         }
         self.meter_the_mix();
-        self.audio_layers
-            .push((layer.id.clone(), source, channel, layer.ducks()));
+        // SAFETY: ours, and released by `audio_layer_remove`.
+        let metered =
+            unsafe { AudioLayer::metered(layer.id.clone(), source, channel, layer.ducks()) };
+        self.audio_layers.push(metered);
         self.apply_duck();
         Ok(())
     }
     fn audio_layer_remove(&mut self, id: &str) {
-        if let Some(at) = self
-            .audio_layers
-            .iter()
-            .position(|(there, _, _, _)| there == id)
-        {
-            let (_, source, channel, _) = self.audio_layers.remove(at);
-            self.unduck(source);
-            // SAFETY: off its channel before release.
-            unsafe {
-                sys::obs_set_output_source(channel, std::ptr::null_mut());
-                sys::obs_source_release(source);
-            }
+        if let Some(at) = self.audio_layers.iter().position(|layer| layer.id == id) {
+            let layer = self.audio_layers.remove(at);
+            self.unduck(layer.source);
+            layer.release();
         }
     }
     fn audio_layer_rename(&mut self, from: &str, to: &str) {
-        if let Some(layer) = self
-            .audio_layers
-            .iter_mut()
-            .find(|(there, _, _, _)| there == from)
-        {
-            layer.0 = to.to_string();
+        if let Some(layer) = self.audio_layers.iter_mut().find(|layer| layer.id == from) {
+            layer.id = to.to_string();
         }
     }
     fn audio_layer_duck(&mut self, id: &str, ducks: bool) {
-        if let Some(layer) = self
-            .audio_layers
-            .iter_mut()
-            .find(|(there, _, _, _)| there == id)
-        {
-            layer.3 = ducks;
+        if let Some(layer) = self.audio_layers.iter_mut().find(|layer| layer.id == id) {
+            layer.ducks = ducks;
             self.apply_duck();
         }
     }
     fn audio_layer_levels(&mut self, id: &str, volume: f64, muted: bool) {
-        if let Some((_, source, _, _)) = self
-            .audio_layers
-            .iter()
-            .find(|(there, _, _, _)| there == id)
-        {
+        if let Some(layer) = self.audio_layers.iter().find(|layer| layer.id == id) {
             // SAFETY: ours and live.
             unsafe {
-                sys::obs_source_set_volume(*source, volume as f32);
-                sys::obs_source_set_muted(*source, muted);
+                sys::obs_source_set_volume(layer.source, volume as f32);
+                sys::obs_source_set_muted(layer.source, muted);
             }
         }
+    }
+    fn audio_layers_heard(&self) -> Vec<remuxd_domain::protocol::AudioLayerHeard> {
+        self.audio_layers.iter().map(AudioLayer::heard).collect()
     }
     fn speakers(&self) -> Option<String> {
         self.monitoring.then(|| "Default".to_string())

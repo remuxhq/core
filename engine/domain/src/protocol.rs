@@ -409,10 +409,13 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reply", rename_all = "kebab-case")]
 pub enum Reply {
-    /// Just the two meters. See [`Command::Levels`].
+    /// Just the meters. See [`Command::Levels`].
     Levels {
         hearing: Hearing,
         mixing: Mixing,
+        /// One per sound of the active scene, in its order.
+        #[serde(default)]
+        audio_layers: Vec<AudioLayerHeard>,
     },
     Ok,
     /// Boxed, and only because of its size: a `Reply` that carried a `Status`
@@ -578,6 +581,30 @@ pub struct Hearing {
     /// Set when a device speaks a format this does not understand. A meter
     /// sitting at zero with no explanation sends a person looking at a cable.
     pub complaint: Option<String>,
+}
+
+/// One audio layer's meter: after its fader, in dBFS, and the
+/// samples its capture has handed over since it opened. Samples that stop
+/// climbing are a capture that stopped; a level at the floor with samples
+/// climbing is silence, which is not the same thing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AudioLayerHeard {
+    pub id: String,
+    pub level_db: f64,
+    pub peak_db: f64,
+    pub samples: u64,
+}
+
+impl AudioLayerHeard {
+    /// A layer the motor has nothing on: silent, nothing handed over.
+    pub fn silent(id: String) -> Self {
+        Self {
+            id,
+            level_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            peak_db: crate::sound::mixer::levels::Meter::FLOOR_DB,
+            samples: 0,
+        }
+    }
 }
 
 impl Default for Hearing {

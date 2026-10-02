@@ -132,7 +132,9 @@ The picture: scene-switched, scene-created, scene-deleted, layer-added
 scene), timer-finished (a timer at 00:00; the engine never switches for it),
 layer-stalled and layer-flowing (a camera that stopped delivering frames).
 The sound: muted, track-changed (title null when the music stopped),
-sound-complaint (mic, screen or app; null once over it).
+sound-complaint (the mic's; null once over it), audio-layer-added (id,
+source), audio-layer-removed, audio-layer-muted, audio-layer-stalled and
+audio-layer-flowing (a sound whose capture stopped handing over samples).
 The room: app-reachable, chat (line, platform, channel, from, body, id),
 chat-hidden (line); line is what remux chat hide and delete take.
 chat-event is the rest a bridge says, by type: sub, gift, tip (micros to add
@@ -140,8 +142,8 @@ up), raid, follow, deleted, banned, cleared, custom (a platform's own, named
 <platform>.<what>); deleted, banned and cleared also hide what they took down.
 remux chat say [--to <channel>] <words> answers; the line comes back as chat.
 Detail, said often and kept apart so it never pushes the rest out:
-audio-glitch, faders, gate, monitoring, music-to-stream, denoise, mirrored,
-viewers.
+audio-glitch, faders, gate, monitoring, music-to-stream, denoise,
+audio-layer-volume, audio-layer-ducked, mirrored, viewers.
 {\"gap\":{\"from\",\"to\"}} means some of those were lost while you were
 behind: read remux status --json before trusting what you knew. Without -f,
 remux events --json is what the engine still holds. React to them rather than
@@ -434,6 +436,7 @@ mod tests {
             "refused",
             "timer-finished",
             "layer-stalled",
+            "audio-layer-stalled",
             "audio-glitch",
             "remux schema has every shape",
         ] {

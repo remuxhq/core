@@ -32,6 +32,23 @@ impl Engine {
         Ok(plan)
     }
 
+    /// The scene's sounds' meters, in its order; one the motor has nothing
+    /// on reads as silent with nothing handed over.
+    pub(super) fn audio_layers_heard(&self) -> Vec<crate::protocol::AudioLayerHeard> {
+        let mut heard = self.pipeline.audio_layers_heard();
+        self.status
+            .audio_layers
+            .iter()
+            .map(|layer| {
+                heard
+                    .iter()
+                    .position(|h| h.id == layer.id)
+                    .map(|at| heard.swap_remove(at))
+                    .unwrap_or_else(|| crate::protocol::AudioLayerHeard::silent(layer.id.clone()))
+            })
+            .collect()
+    }
+
     /// A switch that did not happen: what was prepared is let go.
     pub(super) fn audio_abandon(&mut self, plan: &Transition) {
         for at in (0..plan.open.len()).rev() {
@@ -483,5 +500,27 @@ mod tests {
         };
         assert!(message.contains("no microphone matches"), "{message}");
         assert_eq!(engine.status().audio_layers.len(), 1);
+    }
+
+    // A meter per sound, in the scene's order, so a face can draw one under
+    // each fader and a person can see the one that is silent.
+    #[test]
+    fn levels_meter_each_sound_of_the_scene() {
+        let fake = Wrote::default();
+        let heard = fake.audio_heard.clone();
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        add(&mut engine, "music", "Spotify");
+        add(&mut engine, "call", "Discord");
+        heard.lock().unwrap().insert("call".into(), 9600);
+        let Reply::Levels { audio_layers, .. } = engine.handle(Command::Levels) else {
+            panic!("levels");
+        };
+        assert_eq!(
+            audio_layers
+                .iter()
+                .map(|l| (l.id.as_str(), l.samples))
+                .collect::<Vec<_>>(),
+            [("music", 0), ("call", 9600)]
+        );
     }
 }

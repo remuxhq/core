@@ -26,6 +26,10 @@ pub trait Sound: Send {
     fn audio_layer_levels(&mut self, _id: &str, _volume: f64, _muted: bool) {}
     /// Whether one audio layer steps back under the voice now.
     fn audio_layer_duck(&mut self, _id: &str, _ducks: bool) {}
+    /// The meters of the audio layers the motor has open, in any order.
+    fn audio_layers_heard(&self) -> Vec<crate::protocol::AudioLayerHeard> {
+        Vec::new()
+    }
     /// Open a microphone by id, or close the one that is open.
     fn mic(&mut self, device: Option<&str>) -> Result<(), String>;
 
@@ -79,6 +83,7 @@ impl Engine {
         Reply::Levels {
             hearing: self.pipeline.hearing(),
             mixing: self.pipeline.mixing(),
+            audio_layers: self.audio_layers_heard(),
         }
     }
 
@@ -474,6 +479,7 @@ mod tests {
             scene_events: Default::default(),
             ducked: Default::default(),
             heard: Default::default(),
+            audio_heard: Default::default(),
         };
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(pipeline));
