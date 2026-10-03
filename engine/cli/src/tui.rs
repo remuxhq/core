@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -22,6 +22,9 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         other => Err(format!("the engine answered {other:?}")),
     };
     let mut terminal = ratatui::init();
+    // A click focuses a panel and picks its row.
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::EnableMouseCapture);
+    let mut placed: Vec<(Panel, ratatui::layout::Rect)> = Vec::new();
     let mut status = read();
     let mut read_at = Instant::now();
     let mut screen = Screen {
@@ -113,7 +116,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         screen.said_fresh = screen.said.is_some() && said_at.elapsed() < Duration::from_secs(4);
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
         if let Err(why) = terminal.draw(|frame| {
-            draw(
+            placed = draw(
                 frame,
                 &status,
                 levels.as_ref(),
@@ -121,7 +124,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 &screen,
                 &chat,
                 now(),
-            )
+            );
         }) {
             break Err(why);
         }
@@ -132,6 +135,18 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         }
         let key = match event::read() {
             Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => key.code,
+            Ok(Event::Mouse(mouse)) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                let open = screen.picker.is_some()
+                    || screen.asking.is_some()
+                    || screen.showing_keys
+                    || screen.typing.is_some();
+                if let (false, Some((panel, row)), Ok(now_status)) =
+                    (open, panel_at(&placed, mouse.column, mouse.row), &status)
+                {
+                    clicked(&mut screen, now_status, panel, row);
+                }
+                continue;
+            }
             Ok(_) => continue,
             Err(why) => break Err(why),
         };
@@ -244,6 +259,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             }
         }
     };
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), event::DisableMouseCapture);
     ratatui::restore();
     outcome
 }
@@ -256,7 +272,8 @@ fn draw(
     screen: &Screen,
     chat: &Chat,
     now: i64,
-) {
+) -> Vec<(Panel, ratatui::layout::Rect)> {
+    let mut placed = Vec::new();
     let [top, middle, typed, bottom] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(3),
@@ -272,7 +289,7 @@ fn draw(
                 .style(Style::new().fg(Color::Red)),
             top,
         );
-        return;
+        return placed;
     };
     let colour = if status.on_air {
         Color::Red
@@ -336,6 +353,7 @@ fn draw(
             Layout::vertical(panels.iter().map(|(_, w)| Constraint::Fill(*w))).split(*column);
         for ((panel, _), area) in panels.iter().zip(rows.iter()) {
             draw_panel(frame, *panel, *area, status, levels, meters, screen, chat);
+            placed.push((*panel, *area));
         }
     }
     if let Some(line) = &screen.typing {
@@ -391,6 +409,44 @@ fn draw(
     }
     if let Some(picker) = &screen.picker {
         draw_picker(frame, picker);
+    }
+    placed
+}
+
+/// The panel drawn at a point, and the row inside its border the point is on.
+pub fn panel_at(
+    placed: &[(Panel, ratatui::layout::Rect)],
+    x: u16,
+    y: u16,
+) -> Option<(Panel, Option<usize>)> {
+    let (panel, area) = placed
+        .iter()
+        .find(|(_, a)| x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height)?;
+    let inside = y > area.y && y + 1 < area.y + area.height;
+    Some((*panel, inside.then(|| (y - area.y - 1) as usize)))
+}
+
+/// A click: the panel in focus, and in a list the row under it picked.
+pub fn clicked(screen: &mut Screen, status: &Status, panel: Panel, row: Option<usize>) {
+    screen.focus = panel;
+    let Some(row) = row else { return };
+    match panel {
+        Panel::Scenes if row < status.scenes.len() && row != screen.picked => {
+            screen.picked = row;
+            screen.picked_layer = 0;
+        }
+        Panel::Layers => {
+            let rows = status
+                .scenes
+                .get(screen.picked)
+                .map_or(0, |scene| scene.ordered_ids().len());
+            if row < rows {
+                screen.picked_layer = row;
+            }
+        }
+        Panel::Destinations if row < status.destinations.len() => screen.picked_destination = row,
+        Panel::Companions if row < screen.companions.len() => screen.picked_companion = row,
+        _ => {}
     }
 }
 
@@ -3589,6 +3645,41 @@ mod tests {
             Act::Stay
         );
         assert!(screen.picker.is_none());
+    }
+
+    #[test]
+    fn a_click_lands_on_the_panel_drawn_there_and_on_the_row_inside_its_border() {
+        use ratatui::layout::Rect;
+        let placed = vec![
+            (Panel::Scenes, Rect::new(0, 4, 40, 10)),
+            (Panel::Chat, Rect::new(40, 4, 40, 20)),
+        ];
+        assert_eq!(
+            panel_at(&placed, 5, 7),
+            Some((Panel::Scenes, Some(2))),
+            "the third row"
+        );
+        assert_eq!(
+            panel_at(&placed, 5, 4),
+            Some((Panel::Scenes, None)),
+            "the border is no row"
+        );
+        assert_eq!(panel_at(&placed, 50, 10), Some((Panel::Chat, Some(5))));
+        assert_eq!(panel_at(&placed, 90, 10), None);
+    }
+
+    #[test]
+    fn a_click_on_a_panel_focuses_it_and_picks_the_row() {
+        let status = with_scenes(&["Screen", "BRB", "Old"], "Screen");
+        let mut screen = Screen {
+            focus: Panel::Chat,
+            ..Screen::default()
+        };
+        clicked(&mut screen, &status, Panel::Scenes, Some(1));
+        assert_eq!(screen.focus, Panel::Scenes);
+        assert_eq!(screen.picked, 1);
+        clicked(&mut screen, &status, Panel::Scenes, Some(9));
+        assert_eq!(screen.picked, 1, "a row below the last picks nothing new");
     }
 
     #[test]
