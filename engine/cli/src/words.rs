@@ -8,7 +8,7 @@
 //! they are in people's fingers and in their shell history.
 
 mod group;
-mod help;
+pub(crate) mod help;
 pub use group::normalize;
 pub use help::{guide, help, usage};
 

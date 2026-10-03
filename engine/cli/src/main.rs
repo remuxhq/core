@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 
+mod agent;
 mod bench;
 mod companion;
 mod daemon;
