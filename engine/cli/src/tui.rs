@@ -299,7 +299,13 @@ fn draw(
     let [top, middle, typed, bottom] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(3),
-        Constraint::Length(if screen.typing.is_some() { 3 } else { 0 }),
+        Constraint::Length(
+            if screen.typing.is_some() && screen.typing_for != Typing::Chat {
+                3
+            } else {
+                0
+            },
+        ),
         // Two lines, always: the panel's keys and the screen's. A bar whose height
         // followed the panel made the whole screen jump on every tab.
         Constraint::Length(2),
@@ -378,7 +384,7 @@ fn draw(
             placed.push((*panel, *area));
         }
     }
-    if let Some(line) = &screen.typing {
+    if let (Some(line), false) = (&screen.typing, screen.typing_for == Typing::Chat) {
         frame.render_widget(
             Paragraph::new(format!("{line}▏")).block(
                 Block::bordered()
@@ -413,7 +419,7 @@ fn draw(
     let bright = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
     let mut lines = vec![line(own, bright)];
     let mut screen_line = vec![Span::styled(
-        " screen ",
+        " controls ",
         Style::new()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::REVERSED),
@@ -589,6 +595,26 @@ fn draw_panel(
                 (true, 0) => "chat".to_string(),
                 (true, back) => format!("chat · {back} back · j to come forward"),
             };
+            // A line said in the chat is typed in the chat, below what was said.
+            let saying = screen
+                .typing
+                .as_deref()
+                .filter(|_| screen.typing_for == Typing::Chat);
+            let [area, typed] = Layout::vertical([
+                Constraint::Min(3),
+                Constraint::Length(if saying.is_some() { 3 } else { 0 }),
+            ])
+            .areas(area);
+            if let Some(line) = saying {
+                frame.render_widget(
+                    Paragraph::new(format!("{line}▏")).block(
+                        Block::bordered()
+                            .title(" say · enter sends · esc lets it go ")
+                            .border_style(Style::new().fg(Color::Yellow)),
+                    ),
+                    typed,
+                );
+            }
             let fits = area.height.saturating_sub(2) as usize;
             let width = area.width.saturating_sub(2) as usize;
             let read = chat.lines.len().saturating_sub(screen.chat_back);
@@ -1269,7 +1295,7 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
         Panel::Chat => &["[c] say", "[k] older", "[j] newer", "[h] hide"],
         Panel::Companions => &[
             "[space] start/stop",
-            "[e] send words",
+            "[e] give it a command (camera: dvd, bubble, full)",
             "[j/k] pick",
             "[h] hide",
         ],
@@ -1289,7 +1315,6 @@ pub const GLOBAL_KEYS: &[&str] = &[
     "[m] mute",
     "[n] next track",
     "[p] pause",
-    "[c] chat",
     "[?] all keys",
     "[q] quit",
 ];
@@ -1530,7 +1555,10 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('\t', focus) => screen.focus = screen.next_shown(focus),
         ('\u{19}', focus) => screen.focus = screen.previous_shown(focus),
-        ('c', _) => screen.typing = Some(String::new()),
+        ('c', Panel::Chat) => {
+            screen.typing_for = Typing::Chat;
+            screen.typing = Some(String::new());
+        }
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
         ('n', _) => return Act::Send(Command::NextTrack),
@@ -2861,7 +2889,10 @@ mod tests {
 
     #[test]
     fn c_opens_a_line_where_every_key_is_a_letter_and_enter_says_it() {
-        let mut screen = Screen::default();
+        let mut screen = Screen {
+            focus: Panel::Chat,
+            ..Screen::default()
+        };
         let status = Status::default();
         assert_eq!(press('c', &mut screen, 0, &status), Act::Stay);
         for key in "oi q\u{8}m".chars() {
@@ -2884,7 +2915,10 @@ mod tests {
 
     #[test]
     fn escape_lets_a_line_go_unsaid_and_an_empty_one_is_not_sent() {
-        let mut screen = Screen::default();
+        let mut screen = Screen {
+            focus: Panel::Chat,
+            ..Screen::default()
+        };
         let status = Status::default();
         press('c', &mut screen, 0, &status);
         press('x', &mut screen, 0, &status);
@@ -2893,6 +2927,17 @@ mod tests {
         press('c', &mut screen, 0, &status);
         assert_eq!(press('\n', &mut screen, 0, &status), Act::Stay);
         assert_eq!(screen.typing, None);
+    }
+
+    #[test]
+    fn c_says_in_the_chat_from_the_chat_panel_alone() {
+        let mut screen = Screen::default();
+        press('c', &mut screen, 0, &Status::default());
+        assert_eq!(screen.typing, None, "away from the chat, c opens nothing");
+        assert!(
+            !GLOBAL_KEYS.iter().any(|k| k.contains("[c]")),
+            "c is the chat panel's key"
+        );
     }
 
     #[test]
