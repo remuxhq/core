@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 
 mod daemon;
+mod tui;
 mod words;
 
 use remuxd_domain::protocol::{decode_reply, encode, Command, Reply};
@@ -83,6 +84,16 @@ fn main() {
             View::ChatKeep(url) => keep_a_chat_source(&path, url),
             View::Daemon(verb) => daemon::run_verb(verb, &path, &self::ask),
             View::Bug { open } => report_a_bug(&path, *open),
+            View::Tui => {
+                let read = || match self::ask(&path, &Command::Status)? {
+                    Reply::Status(status) => Ok(*status),
+                    other => Err(format!("the engine answered {other:?}")),
+                };
+                if let Err(why) = tui::run(read) {
+                    fail(&why.to_string(), json, 1);
+                }
+                return;
+            }
             _ => {}
         }
         println!("{}", cli::local(&ask.view, ask.format));
