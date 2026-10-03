@@ -399,7 +399,7 @@ pub(super) const GROUPS: &[Group] = &[
 pub(super) const TOP: &[&str] = &[
     "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
     "health", "wait", "events", "history", "log", "login", "logout", "config", "daemon", "bug",
-    "schema",
+    "schema", "tui",
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static Group> {

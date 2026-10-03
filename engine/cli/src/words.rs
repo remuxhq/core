@@ -2374,6 +2374,8 @@ pub enum View {
     DestinationRemove(String),
     /// `history`: every live on record, newest first, off the file here.
     History,
+    /// `tui`: the engine on one screen, in the terminal, drawn here.
+    Tui,
     /// `health`: could this engine go live now, and what stands in the way.
     /// The shell asks the grants too and joins the two.
     Health,
@@ -2603,6 +2605,14 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         return Ok(Ask {
             command: Some(Command::Status),
             view: View::Wait { until, for_secs },
+            format,
+            follow: false,
+        });
+    }
+    if words.first().map(String::as_str) == Some("tui") {
+        return Ok(Ask {
+            command: None,
+            view: View::Tui,
             format,
             follow: false,
         });
@@ -3013,6 +3023,13 @@ mod reading {
 
     fn w(line: &str) -> Vec<String> {
         line.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn tui_is_the_shell_s_own_screen_and_sends_nothing_by_itself() {
+        let ask = read(&w("tui")).unwrap();
+        assert_eq!(ask.command, None);
+        assert_eq!(ask.view, View::Tui);
     }
 
     #[test]
