@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use remuxd_domain::air::plan::Plan;
+use remuxd_domain::companions::State;
 use remuxd_domain::picture::scenes::Scene;
 use remuxd_domain::protocol::{ChatLine, Command, Destination, Hearing, Mixing, Reply, Status};
 
@@ -27,6 +28,9 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut chat = Chat::default();
     let fresh = chat.read(&ask);
     chat.hold(&mut screen, fresh);
+    // What a companion's start or stop came to, from the thread that ran it.
+    let (told, heard) = std::sync::mpsc::channel::<String>();
+    look_at_companions(&mut screen);
     let mut meters = Meters::default();
     let mut heard_at = Instant::now();
     let outcome = loop {
@@ -34,7 +38,12 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             status = read();
             let fresh = chat.read(&ask);
             chat.hold(&mut screen, fresh);
+            look_at_companions(&mut screen);
             read_at = Instant::now();
+        }
+        if let Ok(said) = heard.try_recv() {
+            screen.said = Some(said);
+            look_at_companions(&mut screen);
         }
         // The meters, every turn of the loop: one line on the socket, no device opened.
         let levels = match ask(&Command::Levels) {
@@ -99,6 +108,35 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Act::Stay => {}
             Act::Quit => break Ok(()),
             Act::Say(why) => screen.said = Some(why.into()),
+            Act::Companion { name, start } => {
+                screen.said = Some(format!(
+                    "{} {name}…",
+                    if start { "starting" } else { "stopping" }
+                ));
+                let told = told.clone();
+                // By this shell's own `remux companion`, which leaves the
+                // companion to the system when it exits: a companion that
+                // dies is then gone, not a zombie of this screen's.
+                std::thread::spawn(move || {
+                    let verb = if start { "start" } else { "stop" };
+                    let said = std::env::current_exe()
+                        .and_then(|me| {
+                            std::process::Command::new(me)
+                                .args(["companion", verb, &name])
+                                .output()
+                        })
+                        .map(|out| {
+                            let text = if out.status.success() {
+                                out.stdout
+                            } else {
+                                out.stderr
+                            };
+                            String::from_utf8_lossy(&text).trim().to_string()
+                        })
+                        .unwrap_or_else(|why| why.to_string());
+                    let _ = told.send(crate::words::plain(&said));
+                });
+            }
             Act::Plan => match ask(&Command::Plan) {
                 Ok(Reply::Plan(plan)) => screen.planned(plan),
                 Ok(other) => screen.said = Some(format!("the engine answered {other:?}")),
@@ -171,8 +209,13 @@ fn draw(
     ])
     .areas(middle);
     draw_chat(frame, chat, screen, talk);
-    let [left, below] =
-        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(left);
+    let [left, below, beside] = Layout::vertical([
+        Constraint::Percentage(30),
+        Constraint::Percentage(45),
+        Constraint::Percentage(25),
+    ])
+    .areas(left);
+    draw_companions(frame, screen, beside);
     let scenes: Vec<ListItem> = status
         .scenes
         .iter()
@@ -273,7 +316,8 @@ fn draw(
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
         Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck · s music to the live",
-        Panel::Chat => "q quit · tab scenes · k older · j newer",
+        Panel::Chat => "q quit · tab companions · k older · j newer",
+        Panel::Companions => "q quit · tab scenes · j/k move · space start/stop",
     };
     let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat");
     let footer = screen
@@ -414,6 +458,8 @@ pub enum Panel {
     Sound,
     /// The chat, read back through.
     Chat,
+    /// The operator's programs beside the engine.
+    Companions,
 }
 
 /// What the screen holds between keys: the panel in focus, the picked row in each, and
@@ -428,6 +474,11 @@ pub struct Screen {
     pub picked_sound: usize,
     /// How many lines of chat back from the last the panel ends: zero follows the chat.
     pub chat_back: usize,
+    pub picked_companion: usize,
+    /// Each companion and its state as last read.
+    pub companions: Vec<(String, State)>,
+    /// Why there is no list of companions, when there is none.
+    pub companion_trouble: Option<String>,
     /// Whether the music plays, as the meters last said.
     pub playing: bool,
     pub asking: Option<Lever>,
@@ -455,6 +506,11 @@ pub enum Act {
     Send(Command),
     /// Send nothing, and say why.
     Say(&'static str),
+    /// Start or stop a companion, by the shell's own `remux companion`.
+    Companion {
+        name: String,
+        start: bool,
+    },
 }
 
 /// A key. `j`/`k` move the pick without leaving the list, Enter switches to it, `q` quits.
@@ -526,7 +582,22 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
         ('\t', Panel::Destinations) => screen.focus = Panel::Sound,
         ('\t', Panel::Sound) => screen.focus = Panel::Chat,
-        ('\t', Panel::Chat) => screen.focus = Panel::Scenes,
+        ('\t', Panel::Chat) => screen.focus = Panel::Companions,
+        ('\t', Panel::Companions) => screen.focus = Panel::Scenes,
+        ('j', Panel::Companions) if screen.picked_companion + 1 < screen.companions.len() => {
+            screen.picked_companion += 1
+        }
+        ('k', Panel::Companions) => {
+            screen.picked_companion = screen.picked_companion.saturating_sub(1)
+        }
+        (' ', Panel::Companions) => {
+            if let Some((name, state)) = screen.companions.get(screen.picked_companion) {
+                return Act::Companion {
+                    name: name.clone(),
+                    start: !matches!(state, State::Up(_)),
+                };
+            }
+        }
         ('k', Panel::Chat) => screen.chat_back += 1,
         ('j', Panel::Chat) => screen.chat_back = screen.chat_back.saturating_sub(1),
         ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
@@ -939,6 +1010,68 @@ pub fn scene_line(status: &Status) -> String {
     }
 }
 
+/// The companions, as last read: a lamp each, green up, red fallen.
+fn look_at_companions(screen: &mut Screen) {
+    match crate::companion::states() {
+        Ok(list) => {
+            screen.companions = list;
+            screen.companion_trouble = None;
+        }
+        Err(why) => {
+            screen.companions.clear();
+            screen.companion_trouble = Some(why);
+        }
+    }
+}
+
+fn draw_companions(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect) {
+    let focused = screen.focus == Panel::Companions;
+    let rows: Vec<ListItem> = match &screen.companion_trouble {
+        Some(why) => vec![ListItem::new(why.clone()).style(Style::new().fg(Color::DarkGray))],
+        None => screen
+            .companions
+            .iter()
+            .map(|(name, state)| {
+                let colour = match state {
+                    State::Up(_) => Color::Green,
+                    State::Fell(_) => Color::Red,
+                    State::Down => Color::DarkGray,
+                };
+                ListItem::new(companion_row(name, *state)).style(Style::new().fg(colour))
+            })
+            .collect(),
+    };
+    let count = rows.len();
+    frame.render_stateful_widget(
+        List::new(rows)
+            .block(
+                Block::bordered()
+                    .title(" companions ")
+                    .border_style(Style::new().fg(if focused {
+                        Color::Yellow
+                    } else {
+                        Color::DarkGray
+                    })),
+            )
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        area,
+        &mut ListState::default().with_selected(
+            (focused && screen.companion_trouble.is_none())
+                .then(|| screen.picked_companion.min(count.saturating_sub(1))),
+        ),
+    );
+}
+
+/// A companion: its lamp, its name, and its state; one that fell says where
+/// to read why.
+pub fn companion_row(name: &str, state: State) -> String {
+    match state {
+        State::Up(_) => format!("● {name}  up"),
+        State::Fell(_) => format!("✕ {name}  fell: remux companion log {name}"),
+        State::Down => format!("○ {name}  down"),
+    }
+}
+
 /// Whether a scene's layer or element is shown.
 fn shown(scene: &Scene, id: &str) -> bool {
     scene
@@ -1337,6 +1470,8 @@ mod tests {
         assert_eq!(screen.focus, Panel::Sound);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Chat);
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::Companions);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
@@ -2044,6 +2179,60 @@ mod tests {
         assert_eq!(scene_line(&status), "scene: Screen");
         status.staged = Some("BRB".into());
         assert_eq!(scene_line(&status), "scene: Screen · preview: BRB");
+    }
+
+    use remuxd_domain::companions::Record;
+
+    fn on_companions(picked: usize) -> Screen {
+        Screen {
+            focus: Panel::Companions,
+            picked_companion: picked,
+            companions: vec![
+                ("first".into(), State::Up(Record { pid: 7, since: 0 })),
+                ("second".into(), State::Down),
+            ],
+            ..Screen::default()
+        }
+    }
+
+    #[test]
+    fn space_stops_a_companion_that_is_up_and_starts_one_that_is_not() {
+        assert_eq!(
+            press(' ', &mut on_companions(0), 0, &Status::default()),
+            Act::Companion {
+                name: "first".into(),
+                start: false
+            }
+        );
+        assert_eq!(
+            press(' ', &mut on_companions(1), 0, &Status::default()),
+            Act::Companion {
+                name: "second".into(),
+                start: true
+            }
+        );
+    }
+
+    #[test]
+    fn j_and_k_move_among_the_companions_and_stop_at_the_ends() {
+        let mut screen = on_companions(0);
+        press('j', &mut screen, 0, &Status::default());
+        press('j', &mut screen, 0, &Status::default());
+        assert_eq!(screen.picked_companion, 1);
+        press('k', &mut screen, 0, &Status::default());
+        press('k', &mut screen, 0, &Status::default());
+        assert_eq!(screen.picked_companion, 0);
+    }
+
+    #[test]
+    fn a_companion_reads_as_a_lamp_its_name_and_its_state() {
+        let record = Record { pid: 7, since: 0 };
+        assert_eq!(companion_row("first", State::Up(record)), "● first  up");
+        assert_eq!(
+            companion_row("first", State::Fell(record)),
+            "✕ first  fell: remux companion log first"
+        );
+        assert_eq!(companion_row("first", State::Down), "○ first  down");
     }
 
     #[test]
