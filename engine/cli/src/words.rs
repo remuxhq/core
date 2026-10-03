@@ -1005,7 +1005,7 @@ fn grant(grant: &Grant) -> &'static str {
 
 /// The plan the way a person confirms it: what leaves, where to, and what
 /// would stop it, with the fingerprint `live --confirm` takes on the last line.
-fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
+pub(crate) fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
     let mut lines = Vec::new();
     if plan.on_air {
         lines.push("already on air".to_string());

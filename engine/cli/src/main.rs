@@ -85,11 +85,7 @@ fn main() {
             View::Daemon(verb) => daemon::run_verb(verb, &path, &self::ask),
             View::Bug { open } => report_a_bug(&path, *open),
             View::Tui => {
-                let read = || match self::ask(&path, &Command::Status)? {
-                    Reply::Status(status) => Ok(*status),
-                    other => Err(format!("the engine answered {other:?}")),
-                };
-                if let Err(why) = tui::run(read) {
+                if let Err(why) = tui::run(|command| self::ask(&path, command)) {
                     fail(&why.to_string(), json, 1);
                 }
                 return;
