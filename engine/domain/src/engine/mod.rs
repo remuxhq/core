@@ -349,6 +349,12 @@ impl Library for NoLibrary {
 /// need to be.
 pub trait Sources: Send {
     fn available(&self) -> Result<Available, String>;
+    /// The microphones alone. A motor that can list them without listing
+    /// cameras says so: listing a camera opens it, and the one on the air
+    /// stutters.
+    fn mics(&self) -> Result<Vec<Named>, String> {
+        self.available().map(|available| available.mics)
+    }
     /// A number that moves when a device is plugged in or pulled out. A face
     /// reads the list when it changes and never otherwise: enumerating
     /// cameras wakes them, and a list read only when empty missed the headset
@@ -1572,6 +1578,13 @@ impl Engine {
             Command::Present => self.present(),
             Command::Levels => self.levels(),
             Command::Sources => self.sources(),
+            Command::Mics => match self.sources.mics() {
+                Ok(mics) => Reply::Sources(Devices {
+                    mics,
+                    ..Devices::default()
+                }),
+                Err(message) => Reply::Error { message },
+            },
             Command::Genres => Reply::Sources(Devices {
                 genres: self.genres(),
                 ..Devices::default()
@@ -3063,6 +3076,48 @@ mod tests {
             Reply::Ok
         );
         assert!(engine.status().on_air);
+    }
+
+    /// A machine whose full listing fails, as one that would have to open a
+    /// camera to list it, and whose microphones are read alone.
+    struct MicsAlone;
+    impl Sources for MicsAlone {
+        fn available(&self) -> Result<Available, String> {
+            Err("listing everything opens a camera".into())
+        }
+        fn mics(&self) -> Result<Vec<Named>, String> {
+            Ok(vec![Named {
+                id: "c9bf".into(),
+                name: "HyperX DuoCast".into(),
+            }])
+        }
+    }
+
+    #[test]
+    fn the_microphones_come_alone_without_a_camera_being_opened() {
+        let mut engine = Engine::with_sources(Box::new(MicsAlone));
+        let Reply::Sources(devices) = engine.handle(Command::Mics) else {
+            panic!("mics answers as sources do, with the microphones alone")
+        };
+        assert_eq!(
+            devices
+                .mics
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["HyperX DuoCast"]
+        );
+        assert!(devices.cameras.is_empty());
+    }
+
+    #[test]
+    fn the_microphones_of_a_machine_that_lists_them_with_the_rest_are_those() {
+        let mut engine = Engine::with_sources(Box::new(ThisMachine));
+        let Reply::Sources(devices) = engine.handle(Command::Mics) else {
+            panic!("mics answers")
+        };
+        assert_eq!(devices.mics.len(), 2);
+        assert!(devices.cameras.is_empty());
     }
 
     #[test]
