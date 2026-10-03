@@ -76,6 +76,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["login"], args: "[--url <web>]", summary: "Sign in to the web with a code typed there.", note: "The token is kept in ~/.config/remux/session.json; restart the engine to use it." },
     Topic { names: &["logout"], args: "", summary: "Forget the web session.", note: "" },
     Topic { names: &["config"], args: "", summary: "What is in effect and where each value came from.", note: "The environment, then ~/.config/remux/config.toml, then the defaults." },
+    Topic { names: &["bench"], args: "export|import <file.tar.gz> [--anyway]", summary: "A setup to hand to another machine: scenes, filters, pictures, sound and companions.", note: "Export packs the scenes (their pictures and .wgsl beside them), the audio layers, the gate, the faders and the companions list; never a key, a token, the destinations, the chat URL or the session. Import adds the scenes beside yours under free names, hides a layer whose device is not here, lists the companions without starting them, and applies no sound; one made on another system is refused unless --anyway." },
     Topic { names: &["companion"], args: "[list] | start|stop|log <name> | send <name> <words>", summary: "Your own programs beside the engine: started, stopped and watched here.", note: "The list is a file of yours (REMUX_COMPANIONS, or `[companions] file` in config.toml): each [[companion]] a name, run (an argv, never a shell), cwd, an optional env_file kept 0600, and input = true for one that reads words: send writes a line to it. Each is told its own name in REMUX_COMPANION, to stop itself with. The engine never runs them." },
     Topic { names: &["daemon"], args: "start|stop|restart|status|log|path", summary: "The engine as a service of your session.", note: "" },
     Topic { names: &["bug"], args: "[--open <title>]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form, titled with the words after it, for a person to submit." },
@@ -218,7 +219,10 @@ layers (on the air or in the preview), destinations, sound, chat and the
 companions; the footer says each panel's keys. remux companion list|start|stop|log
 <name> runs the operator's own programs beside the engine (a chat bridge, a
 window, a bot) from a file of theirs (REMUX_COMPANIONS, or [companions] file in
-config.toml), each an argv, never a shell. The music's genres without listing any
+config.toml), each an argv, never a shell. remux bench export <file.tar.gz> packs
+the scenes, their pictures and filters, the sound and the companions list for
+another machine, no key or token; remux bench import adds them beside the
+scenes there. The music's genres without listing any
 device: {\"cmd\":\"genres\"} (sources lists cameras by opening one, and the camera
 on the air stutters: never poll sources).
 remux live sends the active scene, so switch to the opening one first; remux plan
@@ -359,7 +363,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 68, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 69, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
@@ -454,6 +458,7 @@ mod tests {
             "--staged",
             "remux scene restore",
             "remux companion",
+            "remux bench",
             "remux tui",
             "genres",
         ] {

@@ -9,6 +9,7 @@
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 
+mod bench;
 mod companion;
 mod daemon;
 mod tui;
@@ -85,6 +86,13 @@ fn main() {
             View::ChatKeep(url) => keep_a_chat_source(&path, url),
             View::Daemon(verb) => daemon::run_verb(verb, &path, &self::ask),
             View::Bug { open } => report_a_bug(&path, open.as_deref()),
+            View::Bench(verb) => match bench::run(verb, &mut |command| self::ask(&path, command)) {
+                Ok(said) => {
+                    println!("{said}");
+                    return;
+                }
+                Err(why) => fail(&why, json, 1),
+            },
             View::Companion(verb) => match companion::run(verb) {
                 Ok(said) => {
                     println!("{said}");

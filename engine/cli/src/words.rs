@@ -2468,6 +2468,8 @@ pub enum View {
     /// `companion`: the operator's programs beside the engine, run by the
     /// shell, never the engine.
     Companion(crate::companion::Verb),
+    /// `bench export|import <file.tar.gz>`: a setup to hand to another machine.
+    Bench(crate::bench::Verb),
     /// `health`: could this engine go live now, and what stands in the way.
     /// The shell asks the grants too and joins the two.
     Health,
@@ -2666,6 +2668,14 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         return Ok(Ask {
             command: None,
             view: View::Guide,
+            format,
+            follow: false,
+        });
+    }
+    if words.first().map(String::as_str) == Some("bench") {
+        return Ok(Ask {
+            command: None,
+            view: View::Bench(crate::bench::Verb::parse(&words[1..])?),
             format,
             follow: false,
         });
@@ -3233,6 +3243,10 @@ mod reading {
             }
         );
         assert_eq!(read(&w("bug")).unwrap().view, View::Bug { open: None });
+        assert_eq!(
+            read(&w("bench export setup.tar.gz")).unwrap().view,
+            View::Bench(crate::bench::Verb::Export("setup.tar.gz".into()))
+        );
         let refused = read(&w("bug --open")).unwrap_err();
         assert!(refused.contains("title"), "{refused}");
         assert_eq!(

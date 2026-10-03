@@ -3786,7 +3786,7 @@ mod tests {
     #[test]
     fn a_timer_reaching_zero_is_an_event() {
         use crate::app::events::Event;
-        use crate::picture::scenes::{Element, ElementContent, Scene};
+        use crate::picture::scenes::{Element, ElementContent};
         let events = followed();
         let mut engine = engine().with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::SceneElementAdd {

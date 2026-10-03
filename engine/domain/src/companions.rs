@@ -28,7 +28,7 @@ pub struct Companion {
     pub run: Vec<String>,
     #[serde(default)]
     pub cwd: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<String>,
     /// Whether it reads words on its standard input: `remux companion send`
     /// writes a line there.

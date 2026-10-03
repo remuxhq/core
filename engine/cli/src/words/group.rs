@@ -448,6 +448,7 @@ pub(super) const TOP: &[&str] = &[
     "schema",
     "tui",
     "companion",
+    "bench",
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static Group> {
