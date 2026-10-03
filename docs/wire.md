@@ -79,18 +79,19 @@ on). The broadcast has to exist first:
 
 - `GET https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=<video id>&key=<key>`
   gives `items[0].liveStreamingDetails.activeLiveChatId`.
-- Then open one `streamList` and keep it open: gRPC over HTTP/2 to
-  `youtube.googleapis.com:443`, `youtube.api.v3.V3DataLiveChatMessageService/StreamList`,
-  the key in the `x-goog-api-key` metadata, a request of `live_chat_id` and `part`
-  (`snippet`, `authorDetails`). Its `.proto` is on Google's "Streaming live chat" page.
-  YouTube pushes the messages down the open connection as they are said (`id`,
-  `author_details.display_name`, `snippet.display_message`); every answer carries a
-  `next_page_token`, and when the stream ends or drops, opening it again with that token
-  reads nothing twice. An `offline_at` says the broadcast ended.
-- Do not poll `liveChat/messages` instead unless your language has no gRPC. Every call
-  spends the key's daily quota (10,000 units, reset at midnight Pacific time), and a
-  bridge polling at the `pollingIntervalMillis` YouTube asks for ran it out two hours
-  into a live: `403 quotaExceeded`, and no YouTube chat until the next day.
+- Then read the chat by `streamList`: `GET https://youtube.googleapis.com/youtube/v3/liveChat/messages/stream?liveChatId=<id>&part=snippet,authorDetails&key=<key>`
+  answers a JSON array that grows while the connection is open, one page each time YouTube
+  has messages (`items[].id`, `authorDetails.displayName`, `snippet.displayMessage`), each
+  page with a `nextPageToken`. The first page is the chat from before you came. YouTube ends
+  the connection after about ten seconds: open it again at once with `pageToken` set to the
+  last `nextPageToken`, and nothing is read twice. An `offlineAt` says the broadcast ended.
+  The same method is gRPC at `youtube.googleapis.com:443`
+  (`youtube.api.v3.V3DataLiveChatMessageService/StreamList`), with the key in the
+  `x-goog-api-key` metadata.
+- Do not poll `liveChat/messages` instead. Every call spends the key's daily quota (10,000
+  units, reset at midnight Pacific time), and a bridge polling at the `pollingIntervalMillis`
+  YouTube asks for can run it out within hours: `403 quotaExceeded`, and no YouTube chat until
+  the next day.
 
 **5. Events, optionally.** On Twitch, from the same connection: a `USERNOTICE` whose
 `msg-id` tag is `sub` or `resub` is a `sub`, `subgift` a `gift`, `raid` a `raid`; a
