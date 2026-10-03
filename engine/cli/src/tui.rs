@@ -1295,7 +1295,7 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
         Panel::Chat => &["[c] say", "[k] older", "[j] newer", "[h] hide"],
         Panel::Companions => &[
             "[space] start/stop",
-            "[e] give it a command (camera: dvd, bubble, full)",
+            "[e] type a command to it",
             "[j/k] pick",
             "[h] hide",
         ],
