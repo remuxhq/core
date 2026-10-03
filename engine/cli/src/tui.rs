@@ -155,7 +155,7 @@ fn draw(
     } else {
         Color::DarkGray
     };
-    let line = format!("{} · scene: {}", air(status, now), status.active_scene);
+    let line = format!("{} · {}", air(status, now), scene_line(status));
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(line, Style::new().fg(colour).add_modifier(Modifier::BOLD)),
@@ -179,6 +179,8 @@ fn draw(
         .map(|scene| {
             let mark = if scene.name == status.active_scene {
                 "▶ "
+            } else if status.staged.as_deref() == Some(scene.name.as_str()) {
+                "◇ "
             } else {
                 "  "
             };
@@ -262,7 +264,7 @@ fn draw(
     );
     let keys = match screen.focus {
         Panel::Scenes => {
-            "q quit · tab layers · j/k move · enter switch · L live · S stop · R record · ! cut"
+            "q quit · tab layers · j/k move · enter preview · t take · L live · S stop · R record · ! cut"
         }
         Panel::Layers => {
             "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · ! cut"
@@ -595,16 +597,19 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                 });
             }
         }
-        // Switching is the live's everyday gesture: at once, no question.
+        // As a studio does: Enter stages the scene, off the air, and `t` takes
+        // it. The scene on the air staged is nothing staged.
         ('\n', Panel::Scenes) => {
             if let Some(scene) = status.scenes.get(screen.picked) {
-                if scene.name != status.active_scene {
-                    return Act::Send(Command::SceneSwitch {
+                if scene.name != status.active_scene || status.staged.is_some() {
+                    return Act::Send(Command::SceneStage {
                         name: scene.name.clone(),
                     });
                 }
             }
         }
+        ('t', _) if status.staged.is_some() => return Act::Send(Command::SceneTake),
+        ('t', _) => return Act::Say("nothing staged: enter stages a scene"),
         ('L', _) if !status.on_air => return Act::Plan,
         ('S', _) if status.on_air => screen.asking = Some(Lever::Stop),
         ('R', _) => {
@@ -924,6 +929,14 @@ pub fn chat_rows(lines: &[ChatLine], width: usize) -> Vec<Line<'static>> {
         );
     }
     rows
+}
+
+/// The scene on the air, and the one staged in the preview when there is one.
+pub fn scene_line(status: &Status) -> String {
+    match &status.staged {
+        Some(staged) => format!("scene: {} · preview: {staged}", status.active_scene),
+        None => format!("scene: {}", status.active_scene),
+    }
 }
 
 /// Whether a scene's layer or element is shown.
@@ -2000,7 +2013,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_switches_to_the_picked_scene_at_once() {
+    fn enter_stages_the_picked_scene_and_the_air_does_not_move() {
         let status = with_scenes(&["Screen", "Starting soon", "BRB"], "Screen");
         let mut screen = Screen {
             picked: 2,
@@ -2008,15 +2021,47 @@ mod tests {
         };
         assert_eq!(
             press('\n', &mut screen, 3, &status),
-            Act::Send(Command::SceneSwitch { name: "BRB".into() })
+            Act::Send(Command::SceneStage { name: "BRB".into() })
         );
     }
 
     #[test]
-    fn enter_on_the_scene_already_out_does_nothing() {
-        let status = with_scenes(&["Screen", "BRB"], "Screen");
-        let mut screen = Screen::default();
-        assert_eq!(press('\n', &mut screen, 2, &status), Act::Stay);
+    fn enter_on_the_scene_on_the_air_lets_the_staged_one_go_or_does_nothing() {
+        let mut status = with_scenes(&["Screen", "BRB"], "Screen");
+        assert_eq!(press('\n', &mut Screen::default(), 2, &status), Act::Stay);
+        status.staged = Some("BRB".into());
+        assert_eq!(
+            press('\n', &mut Screen::default(), 2, &status),
+            Act::Send(Command::SceneStage {
+                name: "Screen".into()
+            })
+        );
+    }
+
+    #[test]
+    fn the_top_says_the_scene_on_the_air_and_the_one_in_preview() {
+        let mut status = with_scenes(&["Screen", "BRB"], "Screen");
+        assert_eq!(scene_line(&status), "scene: Screen");
+        status.staged = Some("BRB".into());
+        assert_eq!(scene_line(&status), "scene: Screen · preview: BRB");
+    }
+
+    #[test]
+    fn t_takes_the_staged_scene_to_the_air_from_any_panel() {
+        let mut status = with_scenes(&["Screen", "BRB"], "Screen");
+        let mut screen = Screen {
+            focus: Panel::Sound,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('t', &mut screen, 2, &status),
+            Act::Say("nothing staged: enter stages a scene")
+        );
+        status.staged = Some("BRB".into());
+        assert_eq!(
+            press('t', &mut screen, 2, &status),
+            Act::Send(Command::SceneTake)
+        );
     }
 
     #[test]
