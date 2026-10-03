@@ -270,7 +270,7 @@ fn draw(
         Panel::Destinations => {
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
-        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck",
+        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck · s music to the live",
         Panel::Chat => "q quit · tab scenes · k older · j newer",
     };
     let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat");
@@ -531,8 +531,8 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             screen.picked_sound += 1
         }
         ('k', Panel::Sound) => screen.picked_sound = screen.picked_sound.saturating_sub(1),
-        (' ' | '+' | '-' | 'd', Panel::Sound) => {
-            if let Some(command) = sound_verb(key, screen.picked_sound, status) {
+        (' ' | '+' | '-' | 'd' | 's', Panel::Sound) => {
+            if let Some(command) = sound_verb(key, screen.picked_sound, screen.playing, status) {
                 return Act::Send(command);
             }
         }
@@ -631,8 +631,9 @@ fn louder(level: f64, ceiling: f64) -> f64 {
 }
 
 /// What a key does to a row of the sound panel: space turns it off or on, `+` and `-`
-/// move its fader, `d` steps its duck.
-fn sound_verb(key: char, row: usize, status: &Status) -> Option<Command> {
+/// move its fader, `d` steps its duck, and `s` on the music says whether the live hears
+/// it.
+fn sound_verb(key: char, row: usize, playing: bool, status: &Status) -> Option<Command> {
     use remuxd_domain::sound::audio_layers::Duck;
     Some(match (key, row) {
         (' ', 0) => Command::Mute { on: !status.muted },
@@ -642,7 +643,10 @@ fn sound_verb(key: char, row: usize, status: &Status) -> Option<Command> {
         ('-', 0) => Command::Volume {
             level: quieter(status.faders.mic),
         },
-        (' ', 1) => Command::StreamMusic {
+        // Off is silent: off the live alone, the music still plays in the speakers and
+        // on its meter, which read as a key that did nothing.
+        (' ', 1) => Command::Music { on: !playing },
+        ('s', 1) => Command::StreamMusic {
             on: !status.music_to_stream,
         },
         ('+', 1) => Command::MusicVolume {
@@ -1061,8 +1065,12 @@ fn sound(
                 } else {
                     format!("{:.0} dB", status.faders.duck_db)
                 },
-                if status.music_to_stream { "on" } else { "off" },
                 if mixing.playing { "playing" } else { "paused" },
+                if status.music_to_stream {
+                    "to the live"
+                } else {
+                    "off the live"
+                },
             )),
         ]),
         row(
@@ -1688,16 +1696,19 @@ mod tests {
 
     #[test]
     fn space_turns_the_picked_sound_off_and_on() {
-        let mut status = sounding();
-        status.music_to_stream = false;
+        let status = sounding();
         assert_eq!(
             press(' ', &mut on_sound(0), 0, &status),
             Act::Send(Command::Mute { on: true })
         );
+        let mut playing = Screen {
+            playing: true,
+            ..on_sound(1)
+        };
         assert_eq!(
-            press(' ', &mut on_sound(1), 0, &status),
-            Act::Send(Command::StreamMusic { on: true }),
-            "the music's switch is whether the audience hears it"
+            press(' ', &mut playing, 0, &status),
+            Act::Send(Command::Music { on: false }),
+            "the music off is the music silent, not only off the live"
         );
         assert_eq!(
             press(' ', &mut on_sound(2), 0, &status),
@@ -1705,6 +1716,21 @@ mod tests {
                 id: "guest".into(),
                 on: true
             })
+        );
+    }
+
+    #[test]
+    fn s_on_the_music_says_whether_the_live_hears_it() {
+        let mut status = sounding();
+        status.music_to_stream = true;
+        assert_eq!(
+            press('s', &mut on_sound(1), 0, &status),
+            Act::Send(Command::StreamMusic { on: false })
+        );
+        assert_eq!(
+            press('s', &mut on_sound(0), 0, &status),
+            Act::Stay,
+            "only the music goes to the live or not"
         );
     }
 
