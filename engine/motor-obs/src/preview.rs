@@ -348,6 +348,20 @@ impl Ring {
             if it.source != source {
                 it.readback.turns.forget();
                 it.last.clear();
+                // On no channel, the staged scene is shown nowhere libobs counts,
+                // and a capture shown nowhere stops refreshing: a layer hidden on
+                // the air froze in the preview, measured. Counted shown while
+                // staged, as OBS's own studio mode does with its preview scene.
+                // SAFETY: the staged scene's source, alive while staged (the
+                // motor unstages before it releases the scene).
+                unsafe {
+                    if !it.source.is_null() {
+                        sys::obs_source_dec_showing(it.source);
+                    }
+                    if !source.is_null() {
+                        sys::obs_source_inc_showing(source);
+                    }
+                }
             }
             it.source = source;
         }
