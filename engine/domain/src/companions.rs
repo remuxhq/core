@@ -18,11 +18,11 @@
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One companion: what it is called, the argv that runs it, the folder it
 /// runs in, and the file its environment is read from.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Companion {
     pub name: String,
     pub run: Vec<String>,

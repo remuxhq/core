@@ -6,7 +6,7 @@
 //! `cargo test` and one you can only find out about by running it. The
 //! transport is [`crate::server`], and it is thin enough to read in one go.
 
-use crate::picture::scenes::{Element, ElementContent};
+use crate::picture::scenes::{Element, ElementContent, Scene};
 use crate::picture::sources::{pick, pick_device, DisplayId, Screen, Window, WindowId};
 use crate::protocol::{
     Command, Destination, Devices, Flowing, Found, Framed, Grant, Hearing, Mixing, Named, Reply,
@@ -1214,13 +1214,20 @@ impl Engine {
                 message: format!("no scene {name:?} in the trash"),
             };
         };
-        let mut scene = self.status.trash.remove(at);
+        let scene = self.status.trash.remove(at);
+        self.scene_add(scene, "restored")
+    }
+
+    /// A scene beside the others, under its name, or `name (why)`, `name (why
+    /// 2)`… when that is taken. Nothing on the air moves.
+    fn scene_add(&mut self, mut scene: Scene, why: &str) -> Reply {
+        let name = scene.name.clone();
         let taken = |n: &str| self.status.scenes.iter().any(|s| s.name == n);
-        if taken(&scene.name) {
-            let mut again = format!("{name} (restored)");
+        if taken(&name) {
+            let mut again = format!("{name} ({why})");
             let mut n = 2;
             while taken(&again) {
-                again = format!("{name} (restored {n})");
+                again = format!("{name} ({why} {n})");
                 n += 1;
             }
             scene.name = again;
@@ -1568,6 +1575,7 @@ impl Engine {
             Command::SceneTake => self.scene_take(),
             Command::SceneDraft { name, from } => self.scene_draft(name, from),
             Command::SceneRestore { name } => self.scene_restore(name),
+            Command::SceneAdd { scene } => self.scene_add(*scene, "imported"),
             Command::Staged { command } => self.staged_verb(*command),
             Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
@@ -2564,6 +2572,44 @@ mod tests {
                 Reply::Error { .. }
             ),
             "a scene that is not there"
+        );
+    }
+
+    #[test]
+    fn a_scene_from_a_bench_is_added_beside_the_others_under_a_free_name() {
+        let mut engine = with_next(Wrote::default());
+        let mut theirs = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "next")
+            .cloned()
+            .expect("next");
+        theirs.layers[0].id = "theirs".into();
+        let added = engine.handle(Command::SceneAdd {
+            scene: Box::new(theirs),
+        });
+        assert!(matches!(added, Reply::Status(_)), "{added:?}");
+        let names: Vec<_> = engine
+            .status
+            .scenes
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(names.contains(&"next (imported)"), "{names:?}");
+        let ours = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "next")
+            .expect("kept");
+        assert_eq!(
+            ours.layers[0].id, "keys",
+            "the scene that was there is untouched"
+        );
+        assert_eq!(
+            engine.status.active_scene, "default",
+            "nothing on the air moves"
         );
     }
 
@@ -3740,7 +3786,7 @@ mod tests {
     #[test]
     fn a_timer_reaching_zero_is_an_event() {
         use crate::app::events::Event;
-        use crate::picture::scenes::{Element, ElementContent};
+        use crate::picture::scenes::{Element, ElementContent, Scene};
         let events = followed();
         let mut engine = engine().with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::SceneElementAdd {

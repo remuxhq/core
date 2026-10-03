@@ -64,6 +64,11 @@ pub enum Command {
     SceneRestore {
         name: String,
     },
+    /// A whole scene from elsewhere (a bench), beside the others, under its
+    /// name or another when it is taken. Nothing on the air moves.
+    SceneAdd {
+        scene: Box<crate::picture::scenes::Scene>,
+    },
     AudioLayerAdd {
         id: String,
         source: crate::sound::audio_layers::Source,
