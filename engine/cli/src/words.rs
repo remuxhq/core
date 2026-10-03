@@ -1094,23 +1094,33 @@ pub(crate) fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
 }
 
 pub fn render_scene_list(status: &Status) -> String {
-    status
+    let staged = status.staged.as_deref();
+    let mut lines: Vec<String> = status
         .scenes
         .iter()
         .map(|scene| {
+            let (mark, said) = if scene.name == status.active_scene {
+                ("* ", "")
+            } else if Some(scene.name.as_str()) == staged {
+                ("~ ", ", in the preview")
+            } else {
+                ("  ", "")
+            };
             format!(
-                "{}{} ({} layers)",
-                if scene.name == status.active_scene {
-                    "* "
-                } else {
-                    "  "
-                },
+                "{mark}{} ({} layers{said})",
                 scene.name,
                 scene.ordered_ids().len()
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if !status.trash.is_empty() {
+        let names: Vec<&str> = status.trash.iter().map(|s| s.name.as_str()).collect();
+        lines.push(format!(
+            "trash: {} (remux scene restore <name>)",
+            names.join(", ")
+        ));
+    }
+    lines.join("\n")
 }
 
 fn render_status(status: &Status) -> String {
@@ -2870,7 +2880,9 @@ pub fn show(reply: &Reply, view: &View, format: Format, ink: Ink, now: i64) -> S
         (Format::Json, View::Gate, Reply::Status(status)) => json(&status.gate),
         (Format::Json, View::Scenes, Reply::Status(status)) => json(&serde_json::json!({
             "scenes": status.scenes,
-            "active_scene": status.active_scene
+            "active_scene": status.active_scene,
+            "staged": status.staged,
+            "trash": status.trash
         })),
         (Format::Prose, View::Scenes, Reply::Status(status)) => render_scene_list(status),
         (Format::Prose, View::Gate, Reply::Status(status)) => render_gate(&status.gate),
@@ -3309,6 +3321,24 @@ mod reading {
                 0
             ),
             "  code (0 layers)\n* talk (0 layers)"
+        );
+        let status = Status {
+            scenes: vec![scene("code"), scene("talk")],
+            active_scene: "talk".into(),
+            staged: Some("code".into()),
+            trash: vec![scene("old"), scene("older")],
+            ..Status::default()
+        };
+        assert_eq!(
+            show(
+                &Reply::Status(Box::new(status)),
+                &View::Scenes,
+                Format::Prose,
+                Ink::Plain,
+                0
+            ),
+            "~ code (0 layers, in the preview)\n* talk (0 layers)\n\
+             trash: old, older (remux scene restore <name>)"
         );
     }
 
