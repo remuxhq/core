@@ -152,7 +152,19 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 // Arming during a live changes the next one: the engine picks its
                 // destinations when a live starts.
                 let later = now_status.on_air && matches!(command, Command::Arm { .. });
-                screen.said = Some(match ask(&command) {
+                let answered = ask(&command);
+                let reply = match &answered {
+                    Ok(reply) => reply.clone(),
+                    Err(why) => Reply::Error {
+                        message: why.clone(),
+                    },
+                };
+                if let Some(line) = history_line(&command, &reply, &local_time()) {
+                    screen.history.push(line);
+                    let over = screen.history.len().saturating_sub(HISTORY);
+                    screen.history.drain(..over);
+                }
+                screen.said = Some(match answered {
                     Ok(Reply::Error { message }) => message,
                     Ok(_) if later => "done: from the next live on".into(),
                     // The engine keeps no copy of a said line: the platform hands it back.
@@ -333,7 +345,7 @@ fn draw(
         Panel::Chat => "q quit · tab companions · k older · j newer",
         Panel::Companions => "q quit · tab scenes · j/k move · space start/stop",
     };
-    let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat");
+    let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat · H history");
     let footer = screen
         .said
         .as_ref()
@@ -345,6 +357,71 @@ fn draw(
     if let Some(lever) = &screen.asking {
         ask_about(frame, lever);
     }
+    if screen.showing_history {
+        draw_history(frame, &screen.history);
+    }
+}
+
+/// What this screen sent, oldest first, in a box over the rest.
+fn draw_history(frame: &mut Frame, history: &[String]) {
+    let area = frame.area();
+    let [_, middle, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Percentage(70),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, middle, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Percentage(70),
+        Constraint::Fill(1),
+    ])
+    .areas(middle);
+    let fits = middle.height.saturating_sub(2) as usize;
+    let lines: Vec<ListItem> = if history.is_empty() {
+        vec![ListItem::new("nothing sent from this screen yet")]
+    } else {
+        history[history.len().saturating_sub(fits)..]
+            .iter()
+            .map(|line| {
+                let style = if line.contains("  ! ") {
+                    Style::new().fg(Color::Red)
+                } else {
+                    Style::new()
+                };
+                ListItem::new(line.as_str()).style(style)
+            })
+            .collect()
+    };
+    frame.render_widget(ratatui::widgets::Clear, middle);
+    frame.render_widget(
+        List::new(lines).block(
+            Block::bordered()
+                .title(" what this screen sent · any key closes ")
+                .border_style(Style::new().fg(Color::Yellow)),
+        ),
+        middle,
+    );
+}
+
+/// How many lines of history a screen keeps.
+const HISTORY: usize = 200;
+
+/// A command sent, as a line: when, and what the journal says of it, or of its
+/// refusal. A read is no line.
+pub fn history_line(command: &Command, reply: &Reply, at: &str) -> Option<String> {
+    remuxd_domain::air::journal::said(command, reply).map(|line| format!("{at}  {line}"))
+}
+
+/// The time of day here, HH:MM:SS.
+fn local_time() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as libc::time_t);
+    // SAFETY: localtime_r writes into the struct given and reads only `now`.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&now, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 /// The question a lever puts, over the middle of the screen.
@@ -606,6 +683,9 @@ pub struct Screen {
     pub genre: Option<String>,
     /// The filters on offer: the WGSL files of the shaders folder.
     pub filters: Vec<String>,
+    /// What this screen sent, as lines, and whether they are shown.
+    pub history: Vec<String>,
+    pub showing_history: bool,
     /// What the last thing sent came to, in the footer.
     pub said: Option<String>,
 }
@@ -661,6 +741,11 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         return Act::Stay;
     }
+    // The history is read, not acted on: any key closes it.
+    if screen.showing_history {
+        screen.showing_history = false;
+        return Act::Stay;
+    }
     if let Some(lever) = screen.asking.take() {
         return match (key, lever.command()) {
             ('y', Some(command)) => Act::Send(command),
@@ -691,6 +776,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     };
     match (key, screen.focus) {
         ('q' | '\u{1b}', _) => return Act::Quit,
+        ('H', _) => screen.showing_history = true,
         ('c', _) => screen.typing = Some(String::new()),
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
@@ -2562,6 +2648,45 @@ mod tests {
                 from: Some("BRB".into())
             })
         );
+    }
+
+    #[test]
+    fn a_command_sent_is_a_line_of_history_in_the_journal_s_words_or_its_refusal() {
+        let deleted = history_line(
+            &Command::SceneDelete { name: "BRB".into() },
+            &Reply::Ok,
+            "12:00:01",
+        );
+        assert_eq!(deleted.as_deref(), Some("12:00:01  scene BRB deleted"));
+        let refused = history_line(
+            &Command::SceneDelete { name: "BRB".into() },
+            &Reply::Error {
+                message: "no scene \"BRB\"".into(),
+            },
+            "12:00:02",
+        );
+        assert_eq!(
+            refused.as_deref(),
+            Some("12:00:02  ! scene: no scene \"BRB\"")
+        );
+        assert_eq!(
+            history_line(&Command::Status, &Reply::Ok, "12:00:03"),
+            None,
+            "reads are not history"
+        );
+    }
+
+    #[test]
+    fn h_opens_the_history_and_any_key_closes_it() {
+        let mut screen = Screen::default();
+        press('H', &mut screen, 0, &Status::default());
+        assert!(screen.showing_history);
+        assert_eq!(
+            press('q', &mut screen, 0, &Status::default()),
+            Act::Stay,
+            "q closes it, it does not quit"
+        );
+        assert!(!screen.showing_history);
     }
 
     #[test]
