@@ -25,13 +25,15 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut read_at = Instant::now();
     let mut screen = Screen::default();
     let mut chat = Chat::default();
-    chat.read(&ask);
+    let fresh = chat.read(&ask);
+    chat.hold(&mut screen, fresh);
     let mut meters = Meters::default();
     let mut heard_at = Instant::now();
     let outcome = loop {
         if read_at.elapsed() >= Duration::from_secs(1) {
             status = read();
-            chat.read(&ask);
+            let fresh = chat.read(&ask);
+            chat.hold(&mut screen, fresh);
             read_at = Instant::now();
         }
         // The meters, every turn of the loop: one line on the socket, no device opened.
@@ -91,7 +93,9 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             }
             continue;
         };
-        match press(typed, &mut screen, rows, now_status) {
+        let act = press(typed, &mut screen, rows, now_status);
+        chat.hold(&mut screen, Vec::new());
+        match act {
             Act::Stay => {}
             Act::Quit => break Ok(()),
             Act::Say(why) => screen.said = Some(why.into()),
@@ -166,7 +170,7 @@ fn draw(
         Constraint::Percentage(30),
     ])
     .areas(middle);
-    draw_chat(frame, chat, screen.typing.as_deref(), talk);
+    draw_chat(frame, chat, screen, talk);
     let [left, below] =
         Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(left);
     let scenes: Vec<ListItem> = status
@@ -266,7 +270,8 @@ fn draw(
         Panel::Destinations => {
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
-        Panel::Sound => "q quit · tab scenes · j/k move · space on/off · +/- volume · d duck",
+        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck",
+        Panel::Chat => "q quit · tab scenes · k older · j newer",
     };
     let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat");
     let footer = screen
@@ -405,6 +410,8 @@ pub enum Panel {
     Destinations,
     /// The mic, the music and each audio layer.
     Sound,
+    /// The chat, read back through.
+    Chat,
 }
 
 /// What the screen holds between keys: the panel in focus, the picked row in each, and
@@ -417,6 +424,8 @@ pub struct Screen {
     pub picked_destination: usize,
     /// The mic is row 0, the music row 1, the audio layers after them.
     pub picked_sound: usize,
+    /// How many lines of chat back from the last the panel ends: zero follows the chat.
+    pub chat_back: usize,
     /// Whether the music plays, as the meters last said.
     pub playing: bool,
     pub asking: Option<Lever>,
@@ -514,7 +523,10 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('\t', Panel::Scenes) => screen.focus = Panel::Layers,
         ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
         ('\t', Panel::Destinations) => screen.focus = Panel::Sound,
-        ('\t', Panel::Sound) => screen.focus = Panel::Scenes,
+        ('\t', Panel::Sound) => screen.focus = Panel::Chat,
+        ('\t', Panel::Chat) => screen.focus = Panel::Scenes,
+        ('k', Panel::Chat) => screen.chat_back += 1,
+        ('j', Panel::Chat) => screen.chat_back = screen.chat_back.saturating_sub(1),
         ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
             screen.picked_sound += 1
         }
@@ -699,46 +711,61 @@ impl Chat {
     const KEPT: usize = 200;
 
     /// The lines after the last one held: the engine answers only what is new.
-    fn read(&mut self, ask: &impl Fn(&Command) -> Result<Reply, String>) {
+    fn read(&mut self, ask: &impl Fn(&Command) -> Result<Reply, String>) -> Vec<ChatLine> {
         let since = self.lines.last().map_or(0, |line| line.seq);
         let Ok(Reply::Chat { reachable, lines }) = ask(&Command::Chat {
             since,
             follow: false,
         }) else {
             self.reachable = false;
-            return;
+            return Vec::new();
         };
         self.reachable = reachable;
-        self.lines.extend(lines);
+        lines
+    }
+
+    /// Keeps the lines that arrived, and keeps a person reading back on the line they
+    /// read: new lines below push the panel's end back by as many. Back stops at the
+    /// first line held.
+    pub fn hold(&mut self, screen: &mut Screen, fresh: Vec<ChatLine>) {
+        if screen.chat_back > 0 {
+            screen.chat_back += fresh.len();
+        }
+        self.lines.extend(fresh);
         let over = self.lines.len().saturating_sub(Self::KEPT);
         self.lines.drain(..over);
+        screen.chat_back = screen.chat_back.min(self.lines.len().saturating_sub(1));
     }
 }
 
-fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui::layout::Rect) {
+fn draw_chat(frame: &mut Frame, chat: &Chat, screen: &Screen, area: ratatui::layout::Rect) {
+    let typing = screen.typing.as_deref();
     let [lines_area, typed] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(if typing.is_some() { 3 } else { 0 }),
     ])
     .areas(area);
-    let title = if chat.reachable {
-        " chat "
-    } else {
-        " chat · no wire "
+    let title = match (chat.reachable, screen.chat_back) {
+        (false, _) => " chat · no wire ".to_string(),
+        (true, 0) => " chat ".to_string(),
+        (true, back) => format!(" chat · {back} back · j to come forward "),
     };
     let fits = lines_area.height.saturating_sub(2) as usize;
     let width = lines_area.width.saturating_sub(2) as usize;
-    let mut rows = chat_rows(&chat.lines, width);
+    let read = chat.lines.len().saturating_sub(screen.chat_back);
+    let mut rows = chat_rows(&chat.lines[..read], width);
     let shown: Vec<ListItem> = rows
         .drain(rows.len().saturating_sub(fits)..)
         .map(ListItem::new)
         .collect();
     frame.render_widget(
-        List::new(shown).block(
-            Block::bordered()
-                .title(title)
-                .border_style(Style::new().fg(Color::DarkGray)),
-        ),
+        List::new(shown).block(Block::bordered().title(title).border_style(Style::new().fg(
+            if screen.focus == Panel::Chat {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            },
+        ))),
         lines_area,
     );
     if let Some(line) = typing {
@@ -1278,6 +1305,8 @@ mod tests {
         );
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Sound);
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::Chat);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
@@ -1852,6 +1881,75 @@ mod tests {
             Some(Color::Indexed(238)),
             "the rule is faint"
         );
+    }
+
+    #[test]
+    fn k_on_the_chat_goes_back_a_line_at_a_time_and_j_comes_forward_to_the_last() {
+        let mut screen = Screen {
+            focus: Panel::Chat,
+            ..Screen::default()
+        };
+        press('k', &mut screen, 0, &Status::default());
+        press('k', &mut screen, 0, &Status::default());
+        assert_eq!(screen.chat_back, 2);
+        press('j', &mut screen, 0, &Status::default());
+        press('j', &mut screen, 0, &Status::default());
+        press('j', &mut screen, 0, &Status::default());
+        assert_eq!(
+            screen.chat_back, 0,
+            "the last line is as far forward as it goes"
+        );
+    }
+
+    #[test]
+    fn going_back_stops_at_the_first_line_held() {
+        let mut chat = Chat {
+            lines: chat_lines(3),
+            ..Chat::default()
+        };
+        let mut screen = Screen {
+            chat_back: 9,
+            ..Screen::default()
+        };
+        chat.hold(&mut screen, Vec::new());
+        assert_eq!(
+            screen.chat_back, 2,
+            "three lines: the first is two back from the last"
+        );
+    }
+
+    #[test]
+    fn a_line_arriving_while_reading_back_does_not_move_what_is_read() {
+        let mut chat = Chat {
+            lines: chat_lines(3),
+            ..Chat::default()
+        };
+        let mut screen = Screen {
+            chat_back: 1,
+            ..Screen::default()
+        };
+        chat.hold(&mut screen, chat_lines(5).split_off(3));
+        assert_eq!(
+            screen.chat_back, 3,
+            "two new lines below: still on the same line"
+        );
+        screen.chat_back = 0;
+        chat.hold(&mut screen, chat_lines(6).split_off(5));
+        assert_eq!(
+            screen.chat_back, 0,
+            "at the last line, the newest stays in view"
+        );
+    }
+
+    fn chat_lines(n: u64) -> Vec<ChatLine> {
+        (1..=n)
+            .map(|seq| {
+                serde_json::from_value(serde_json::json!({
+                    "seq": seq, "from": "a", "body": "b", "platform": "twitch", "id": seq.to_string()
+                }))
+                .expect("a chat line")
+            })
+            .collect()
     }
 
     #[test]
