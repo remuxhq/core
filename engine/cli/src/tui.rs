@@ -201,6 +201,28 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 to_log(&mut screen, format!("{} ! {why}", local_time()));
                 screen.said = Some(why);
             }
+            Act::CompanionSend { name, words } => {
+                let said = std::env::current_exe()
+                    .and_then(|me| {
+                        std::process::Command::new(me)
+                            .args(["companion", "send", &name, &words])
+                            .output()
+                    })
+                    .map(|out| {
+                        let text = if out.status.success() {
+                            out.stdout
+                        } else {
+                            out.stderr
+                        };
+                        String::from_utf8_lossy(&text).trim().to_string()
+                    })
+                    .unwrap_or_else(|why| why.to_string());
+                to_log(
+                    &mut screen,
+                    format!("{} {}", local_time(), crate::words::plain(&said)),
+                );
+                screen.said = Some(crate::words::plain(&said));
+            }
             Act::Companion { name, start } => {
                 screen.said = Some(format!(
                     "{} {name}…",
@@ -367,6 +389,7 @@ fn draw(
                         }
                         Typing::Layer { .. } => " image <id> <path> · enter adds it ",
                         Typing::LayerId { .. } => " the new layer's id · enter adds it ",
+                        Typing::Companion(_) => " words to the companion · enter sends them ",
                     })
                     .border_style(Style::new().fg(Color::Yellow)),
             ),
@@ -1080,6 +1103,8 @@ pub enum Typing {
     Layer { staged: bool },
     /// The id of a layer whose source was picked.
     LayerId { pick: Pick, staged: bool },
+    /// Words to a companion that takes input.
+    Companion(String),
 }
 
 /// The line typed, done: said, drafted or added.
@@ -1093,6 +1118,10 @@ fn typed_line(line: String, typing_for: Typing) -> Act {
             name: line.trim().to_string(),
             from,
         }),
+        Typing::Companion(name) => Act::CompanionSend {
+            name,
+            words: line.trim().to_string(),
+        },
         Typing::LayerId { pick, staged } => {
             let id = line.trim().to_string();
             let command = match pick {
@@ -1238,7 +1267,12 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
             "[h] hide",
         ],
         Panel::Chat => &["[c] say", "[k] older", "[j] newer", "[h] hide"],
-        Panel::Companions => &["[space] start/stop", "[j/k] pick", "[h] hide"],
+        Panel::Companions => &[
+            "[space] start/stop",
+            "[e] send words",
+            "[j/k] pick",
+            "[h] hide",
+        ],
         Panel::Log => &["[k] older", "[j] newer", "[h] hide"],
     }
 }
@@ -1376,6 +1410,11 @@ pub enum Act {
     Said(String),
     /// Ask the engine for a list, to offer it.
     Ask(Asking),
+    /// Words to a companion's standard input, by the shell's own `remux companion`.
+    CompanionSend {
+        name: String,
+        words: String,
+    },
     /// Start or stop a companion, by the shell's own `remux companion`.
     Companion {
         name: String,
@@ -1515,6 +1554,12 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('k', Panel::Companions) => {
             screen.picked_companion = screen.picked_companion.saturating_sub(1)
+        }
+        ('e', Panel::Companions) => {
+            if let Some((name, _)) = screen.companions.get(screen.picked_companion) {
+                screen.typing_for = Typing::Companion(name.clone());
+                screen.typing = Some(String::new());
+            }
         }
         (' ', Panel::Companions) => {
             if let Some((name, state)) = screen.companions.get(screen.picked_companion) {
@@ -3246,6 +3291,23 @@ mod tests {
             Act::Companion {
                 name: "second".into(),
                 start: true
+            }
+        );
+    }
+
+    #[test]
+    fn e_opens_a_line_of_words_for_the_picked_companion_and_enter_sends_them() {
+        let mut screen = on_companions(0);
+        assert_eq!(press('e', &mut screen, 0, &Status::default()), Act::Stay);
+        assert_eq!(screen.typing.as_deref(), Some(""));
+        for key in "dvd".chars() {
+            press(key, &mut screen, 0, &Status::default());
+        }
+        assert_eq!(
+            press('\n', &mut screen, 0, &Status::default()),
+            Act::CompanionSend {
+                name: "first".into(),
+                words: "dvd".into()
             }
         );
     }

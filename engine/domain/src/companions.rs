@@ -30,6 +30,10 @@ pub struct Companion {
     pub cwd: Option<String>,
     #[serde(default)]
     pub env_file: Option<String>,
+    /// Whether it reads words on its standard input: `remux companion send`
+    /// writes a line there.
+    #[serde(default)]
+    pub input: bool,
 }
 
 #[derive(Deserialize)]

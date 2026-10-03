@@ -19,6 +19,8 @@ pub enum Verb {
     Start(String),
     Stop(String),
     Log(String),
+    /// A line of words to a companion's standard input.
+    Send(String, String),
 }
 
 impl Verb {
@@ -29,7 +31,10 @@ impl Verb {
             [verb, name] if verb == "start" => Ok(Self::Start(name.clone())),
             [verb, name] if verb == "stop" => Ok(Self::Stop(name.clone())),
             [verb, name] if verb == "log" => Ok(Self::Log(name.clone())),
-            _ => Err("companion: list, or start|stop|log <name>".into()),
+            [verb, name, words @ ..] if verb == "send" && !words.is_empty() => {
+                Ok(Self::Send(name.clone(), words.join(" ")))
+            }
+            _ => Err("companion: list, start|stop|log <name>, or send <name> <words>".into()),
         }
     }
 }
@@ -49,6 +54,7 @@ pub fn run(verb: &Verb) -> Result<String, String> {
         Verb::Start(name) => start(name),
         Verb::Stop(name) => stop(name),
         Verb::Log(name) => log(name, 40),
+        Verb::Send(name, words) => send(name, words),
     }
 }
 
@@ -67,6 +73,11 @@ fn named(name: &str) -> Result<Companion, String> {
         .into_iter()
         .find(|companion| companion.name == name)
         .ok_or_else(|| format!("no companion {name} in the companions file"))
+}
+
+/// The pipe a companion that takes input reads as its standard input.
+fn input_file(name: &str) -> PathBuf {
+    companions::dir().join(format!("{name}.in"))
 }
 
 fn pid_file(name: &str) -> PathBuf {
@@ -169,11 +180,34 @@ pub fn start(name: &str) -> Result<String, String> {
         .mode(0o600)
         .open(log_file(name))
         .map_err(|why| format!("{name}: its log: {why}"))?;
+    // A companion that takes input reads a pipe of its own, opened for reading
+    // and writing so that it never sees its end: words come when they are sent.
+    let input = if companion.input {
+        let pipe = input_file(name);
+        let _ = std::fs::remove_file(&pipe);
+        let path = std::ffi::CString::new(pipe.to_string_lossy().as_bytes())
+            .map_err(|_| format!("{name}: its input's path"))?;
+        // SAFETY: a path made above, a mode of the owner's alone.
+        if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
+            return Err(format!(
+                "{name}: its input: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pipe)
+            .map_err(|why| format!("{name}: its input: {why}"))?;
+        Stdio::from(pipe)
+    } else {
+        Stdio::null()
+    };
     let mut command = Command::new(&program);
     command
         .args(&companion.run[1..])
         .envs(environment)
-        .stdin(Stdio::null())
+        .stdin(input)
         .stdout(log.try_clone().map_err(|why| why.to_string())?)
         .stderr(log)
         .process_group(0);
@@ -240,6 +274,29 @@ fn signal(pid: u32, signal: i32) {
     }
 }
 
+/// A line of words to a companion that takes input, as it would be typed on
+/// its standard input; control characters are taken out.
+pub fn send(name: &str, words: &str) -> Result<String, String> {
+    let companion = named(name)?;
+    if !companion.input {
+        return Err(format!(
+            "{name} takes no words: set input = true for it in the companions file"
+        ));
+    }
+    if !matches!(state_of(name), State::Up(_)) {
+        return Err(format!("{name} is not running"));
+    }
+    let line: String = words.chars().filter(|c| !c.is_control()).collect();
+    let mut pipe = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(input_file(name))
+        .map_err(|why| format!("{name}: its input: {why}"))?;
+    std::io::Write::write_all(&mut pipe, format!("{line}\n").as_bytes())
+        .map_err(|why| format!("{name}: its input: {why}"))?;
+    Ok(format!("{name}: {line}"))
+}
+
 /// The last lines of a companion's log, made plain for a terminal.
 pub fn log(name: &str, lines: usize) -> Result<String, String> {
     named(name)?;
@@ -280,8 +337,40 @@ mod tests {
         );
         assert_eq!(Verb::parse(&w(&["stop", "a"])), Ok(Verb::Stop("a".into())));
         assert_eq!(Verb::parse(&w(&["log", "a"])), Ok(Verb::Log("a".into())));
+        assert_eq!(
+            Verb::parse(&w(&["send", "a", "size", "480"])),
+            Ok(Verb::Send("a".into(), "size 480".into()))
+        );
         assert!(Verb::parse(&w(&["start"])).is_err());
         assert!(Verb::parse(&w(&["launch", "a"])).is_err());
+    }
+
+    #[test]
+    fn words_sent_to_a_companion_that_takes_input_reach_its_standard_input() {
+        place("[[companion]]\nname = \"echo\"\nrun = [\"cat\"]\ninput = true\n");
+        start("echo").expect("it starts");
+        send("echo", "dvd").expect("it takes the words");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read_to_string(log_file("echo"))
+            .unwrap_or_default()
+            .contains("dvd")
+        {
+            assert!(
+                std::time::Instant::now() < until,
+                "the words never reached it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        stop("echo").expect("it stops");
+    }
+
+    #[test]
+    fn a_companion_without_input_or_down_takes_no_words() {
+        place("[[companion]]\nname = \"deaf\"\nrun = [\"sleep\", \"30\"]\n[[companion]]\nname = \"idle\"\nrun = [\"cat\"]\ninput = true\n");
+        start("deaf").expect("it starts");
+        assert!(send("deaf", "x").unwrap_err().contains("input = true"));
+        stop("deaf").expect("it stops");
+        assert!(send("idle", "x").unwrap_err().contains("not running"));
     }
 
     const SLEEPER: &str = "[[companion]]\nname = \"sleeper\"\nrun = [\"sleep\", \"30\"]\n";
