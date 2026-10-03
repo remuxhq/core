@@ -739,9 +739,15 @@ fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui
         " chat · no wire "
     };
     let fits = lines_area.height.saturating_sub(2) as usize;
-    let shown: Vec<ListItem> = chat.lines[chat.lines.len().saturating_sub(fits)..]
+    let width = lines_area.width.saturating_sub(2) as usize;
+    let rows: Vec<String> = chat
+        .lines
         .iter()
-        .map(|line| ListItem::new(chat_row(line)))
+        .flat_map(|line| wrapped(&chat_row(line), width))
+        .collect();
+    let shown: Vec<ListItem> = rows[rows.len().saturating_sub(fits)..]
+        .iter()
+        .map(|row| ListItem::new(row.as_str()))
         .collect();
     frame.render_widget(
         List::new(shown).block(
@@ -761,6 +767,51 @@ fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui
             typed,
         );
     }
+}
+
+/// A line of text in a column `width` cells wide: broken between words, the rest of it
+/// indented two cells, and a word longer than the column cut where the column ends.
+/// A character counts as one cell.
+pub fn wrapped(text: &str, width: usize) -> Vec<String> {
+    const INDENT: &str = "  ";
+    let width = width.max(INDENT.len() + 1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let close = |out: &mut Vec<String>, line: &mut String| {
+        let indent = if out.is_empty() { "" } else { INDENT };
+        out.push(format!("{indent}{}", std::mem::take(line)));
+    };
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let mut word: Vec<char> = word.chars().collect();
+        while !word.is_empty() {
+            let room = if out.is_empty() {
+                width
+            } else {
+                width - INDENT.len()
+            };
+            let used = line.chars().count();
+            let needed = if used == 0 {
+                word.len()
+            } else {
+                used + 1 + word.len()
+            };
+            if needed <= room {
+                if used > 0 {
+                    line.push(' ');
+                }
+                line.extend(word.drain(..));
+            } else if used > 0 {
+                close(&mut out, &mut line);
+            } else {
+                line.extend(word.drain(..room));
+                close(&mut out, &mut line);
+            }
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        close(&mut out, &mut line);
+    }
+    out
 }
 
 /// A line of chat as the terminal shows it: whoever said it and what, with every
@@ -1640,6 +1691,23 @@ mod tests {
         assert_eq!(
             press('p', &mut screen, 0, &Status::default()),
             Act::Send(Command::Music { on: true })
+        );
+    }
+
+    #[test]
+    fn a_long_line_of_chat_breaks_between_words_and_its_rest_is_indented() {
+        assert_eq!(
+            wrapped("ana: com certeza deve ter chess de terminal", 20),
+            vec!["ana: com certeza", "  deve ter chess de", "  terminal"]
+        );
+        assert_eq!(wrapped("curta", 20), vec!["curta"]);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_column_is_cut_where_the_column_ends() {
+        assert_eq!(
+            wrapped("KKKKKKKKKKKK", 5),
+            vec!["KKKKK", "  KKK", "  KKK", "  K"]
         );
     }
 
