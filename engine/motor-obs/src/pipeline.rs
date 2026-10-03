@@ -82,6 +82,10 @@ pub struct ObsPipeline {
     app_audio: *mut sys::obs_source_t,
     app_heard: Followed,
     app_audio_volume: f64,
+    /// The music's last gain, given to every new track before it is heard: a
+    /// new source starts at full volume, and the first instant of each track
+    /// was loud until the faders came (#46). Silent until the faders first come.
+    music_volume: f64,
     /// The independent audio captures, each on its own channel from 8, and
     /// whether it steps back under the voice.
     audio_layers: Vec<(String, *mut sys::obs_source_t, u32, bool)>,
@@ -399,6 +403,7 @@ impl ObsPipeline {
             app_audio: std::ptr::null_mut(),
             app_heard: Followed::default(),
             app_audio_volume: 1.0,
+            music_volume: 0.0,
             audio_layers: Vec::new(),
             video_encoder: std::ptr::null_mut(),
             audio_encoder: std::ptr::null_mut(),
@@ -1173,6 +1178,7 @@ impl Sound for ObsPipeline {
             if source.is_null() {
                 return Err("libobs could not open the track".into());
             }
+            sys::obs_source_set_volume(source, self.music_volume as f32);
             sys::obs_set_output_source(2, source);
             self.music = source;
             if self.music_meter.is_null() {
@@ -1266,6 +1272,7 @@ impl Sound for ObsPipeline {
             self.apply_duck();
         }
         self.set_screen_sound(levels.screen_sound)?;
+        self.music_volume = levels.music;
         if !self.music.is_null() {
             // SAFETY: ours and live.
             unsafe { sys::obs_source_set_volume(self.music, levels.music as f32) };
