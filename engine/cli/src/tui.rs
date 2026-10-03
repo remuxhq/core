@@ -29,10 +29,8 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             read_at = Instant::now();
         }
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
-        let mut list =
-            ListState::default().with_selected(Some(screen.picked.min(rows.saturating_sub(1))));
         if let Err(why) =
-            terminal.draw(|frame| draw(frame, &status, &screen, said.as_deref(), &mut list, now()))
+            terminal.draw(|frame| draw(frame, &status, &screen, said.as_deref(), now()))
         {
             break Err(why);
         }
@@ -50,6 +48,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             KeyCode::Char(c) => c,
             KeyCode::Esc => 'q',
             KeyCode::Enter => '\n',
+            KeyCode::Tab => '\t',
             KeyCode::Down => 'j',
             KeyCode::Up => 'k',
             _ => continue,
@@ -69,8 +68,12 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 Err(why) => said = Some(why),
             },
             Act::Send(command) => {
+                // Arming during a live changes the next one: the engine picks its
+                // destinations when a live starts.
+                let later = now_status.on_air && matches!(command, Command::Arm { .. });
                 said = Some(match ask(&command) {
                     Ok(Reply::Error { message }) => message,
+                    Ok(_) if later => "done: from the next live on".into(),
                     Ok(_) => "done".into(),
                     Err(why) => why,
                 });
@@ -88,7 +91,6 @@ fn draw(
     status: &Result<Status, String>,
     screen: &Screen,
     said: Option<&str>,
-    list: &mut ListState,
     now: i64,
 ) {
     let [top, middle, bottom] = Layout::vertical([
@@ -131,12 +133,26 @@ fn draw(
             ListItem::new(format!("{mark}{}", scene.name))
         })
         .collect();
+    // The panel in focus has the bright border and the highlighted row.
+    let panel = |title: &'static str, focused: bool| {
+        Block::bordered()
+            .title(title)
+            .border_style(Style::new().fg(if focused {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            }))
+    };
+    let picked = |row: usize, rows: usize, focused: bool| {
+        ListState::default().with_selected(focused.then(|| row.min(rows.saturating_sub(1))))
+    };
+    let on_scenes = screen.focus == Panel::Scenes;
     frame.render_stateful_widget(
         List::new(scenes)
-            .block(Block::bordered().title(" scenes "))
+            .block(panel(" scenes ", on_scenes))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         left,
-        list,
+        &mut picked(screen.picked, status.scenes.len(), on_scenes),
     );
     let destinations: Vec<ListItem> = status
         .destinations
@@ -150,17 +166,29 @@ fn draw(
                 "·"
             };
             let armed = if d.armed { "armed" } else { "off" };
+            let sandbox = if d.sandbox { " sandbox" } else { "" };
             ListItem::new(format!(
-                "{lamp} {} ({}) {armed} {}",
+                "{lamp} {} ({}) {armed}{sandbox} {}",
                 d.name, d.platform, d.status
             ))
         })
         .collect();
-    frame.render_widget(
-        List::new(destinations).block(Block::bordered().title(" destinations ")),
+    frame.render_stateful_widget(
+        List::new(destinations)
+            .block(panel(" destinations ", !on_scenes))
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         right,
+        &mut picked(
+            screen.picked_destination,
+            status.destinations.len(),
+            !on_scenes,
+        ),
     );
-    let keys = "q quit · j/k move · enter switch · L live · S stop · R record · ! cut";
+    let keys = if on_scenes {
+        "q quit · tab destinations · j/k move · enter switch · L live · S stop · R record · ! cut"
+    } else {
+        "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
+    };
     let footer = said.map_or(keys.to_string(), |said| format!("{said} · {keys}"));
     frame.render_widget(
         Paragraph::new(footer).style(Style::new().fg(Color::DarkGray)),
@@ -284,10 +312,21 @@ impl Lever {
     }
 }
 
-/// What the screen holds between keys: the picked row, and the question open, if any.
+/// Which list the keys move in.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    #[default]
+    Scenes,
+    Destinations,
+}
+
+/// What the screen holds between keys: the panel in focus, the picked row in each, and
+/// the question open, if any.
 #[derive(Debug, Default)]
 pub struct Screen {
+    pub focus: Panel,
     pub picked: usize,
+    pub picked_destination: usize,
     pub asking: Option<Lever>,
 }
 
@@ -325,12 +364,37 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             _ => Act::Stay,
         };
     }
-    match key {
-        'q' => return Act::Quit,
-        'j' if screen.picked + 1 < rows => screen.picked += 1,
-        'k' => screen.picked = screen.picked.saturating_sub(1),
+    let destination = status.destinations.get(screen.picked_destination);
+    match (key, screen.focus) {
+        ('q', _) => return Act::Quit,
+        ('\t', Panel::Scenes) => screen.focus = Panel::Destinations,
+        ('\t', Panel::Destinations) => screen.focus = Panel::Scenes,
+        ('j', Panel::Scenes) if screen.picked + 1 < rows => screen.picked += 1,
+        ('k', Panel::Scenes) => screen.picked = screen.picked.saturating_sub(1),
+        ('j', Panel::Destinations) if screen.picked_destination + 1 < status.destinations.len() => {
+            screen.picked_destination += 1
+        }
+        ('k', Panel::Destinations) => {
+            screen.picked_destination = screen.picked_destination.saturating_sub(1)
+        }
+        ('a', Panel::Destinations) => {
+            if let Some(d) = destination {
+                return Act::Send(Command::Arm {
+                    adapter: d.id,
+                    on: !d.armed,
+                });
+            }
+        }
+        ('s', Panel::Destinations) => {
+            if let Some(d) = destination {
+                return Act::Send(Command::Sandbox {
+                    adapter: d.id,
+                    on: !d.sandbox,
+                });
+            }
+        }
         // Switching is the live's everyday gesture: at once, no question.
-        '\n' => {
+        ('\n', Panel::Scenes) => {
             if let Some(scene) = status.scenes.get(screen.picked) {
                 if scene.name != status.active_scene {
                     return Act::Send(Command::SceneSwitch {
@@ -339,14 +403,14 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                 }
             }
         }
-        'L' if !status.on_air => return Act::Plan,
-        'S' if status.on_air => screen.asking = Some(Lever::Stop),
-        'R' => {
+        ('L', _) if !status.on_air => return Act::Plan,
+        ('S', _) if status.on_air => screen.asking = Some(Lever::Stop),
+        ('R', _) => {
             screen.asking = Some(Lever::Record {
                 on: !status.recording,
             })
         }
-        '!' => screen.asking = Some(Lever::Cut),
+        ('!', _) => screen.asking = Some(Lever::Cut),
         _ => {}
     }
     Act::Stay
@@ -411,6 +475,87 @@ mod tests {
             active_scene: active.to_string(),
             ..Status::default()
         }
+    }
+
+    fn with_destinations(rows: &[(i64, bool, bool)]) -> Status {
+        Status {
+            destinations: rows
+                .iter()
+                .map(|(id, armed, sandbox)| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "name": format!("d{id}"), "platform": "twitch",
+                        "status": "off", "armed": armed, "sandbox": sandbox
+                    }))
+                    .expect("a destination")
+                })
+                .collect(),
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn tab_moves_to_the_destinations_and_j_k_move_there_alone() {
+        let status = with_destinations(&[(1, true, false), (2, false, false)]);
+        let mut screen = Screen::default();
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::Destinations);
+        press('j', &mut screen, 3, &status);
+        assert_eq!(screen.picked_destination, 1);
+        assert_eq!(screen.picked, 0, "the scenes keep their own pick");
+        press('j', &mut screen, 3, &status);
+        assert_eq!(
+            screen.picked_destination, 1,
+            "two destinations, so the second is the last"
+        );
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::Scenes);
+    }
+
+    #[test]
+    fn a_arms_what_is_not_armed_and_disarms_what_is() {
+        let status = with_destinations(&[(1, true, false), (2, false, false)]);
+        let mut screen = Screen {
+            focus: Panel::Destinations,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('a', &mut screen, 0, &status),
+            Act::Send(Command::Arm {
+                adapter: 1,
+                on: false
+            })
+        );
+        screen.picked_destination = 1;
+        assert_eq!(
+            press('a', &mut screen, 0, &status),
+            Act::Send(Command::Arm {
+                adapter: 2,
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn s_on_a_destination_flips_its_sandbox() {
+        let status = with_destinations(&[(7, true, false)]);
+        let mut screen = Screen {
+            focus: Panel::Destinations,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('s', &mut screen, 0, &status),
+            Act::Send(Command::Sandbox {
+                adapter: 7,
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn a_does_nothing_while_the_scenes_have_the_focus() {
+        let status = with_destinations(&[(1, false, false)]);
+        let mut screen = Screen::default();
+        assert_eq!(press('a', &mut screen, 0, &status), Act::Stay);
     }
 
     #[test]
