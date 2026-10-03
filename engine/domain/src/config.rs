@@ -69,6 +69,9 @@ pub struct Daemon {
     pub music_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clips_dir: Option<String>,
+    /// Where a face finds the WGSL filters it offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shaders_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub obs_app: Option<String>,
 }
@@ -174,6 +177,15 @@ pub fn clips_dir() -> PathBuf {
         .unwrap_or_else(|| home().join("Music/remux/clips"))
 }
 
+/// Where a face finds the filters it offers: `REMUX_SHADERS_DIR`, else
+/// `[daemon] shaders_dir`, else `shaders` beside the config.
+pub fn shaders_dir() -> PathBuf {
+    env("REMUX_SHADERS_DIR")
+        .or_else(|| read(&path()).daemon.shaders_dir)
+        .map(|p| expand(&p))
+        .unwrap_or_else(|| crate::os::config_dir().join("shaders"))
+}
+
 pub fn obs_app() -> String {
     env("OBS_APP")
         .or_else(|| read(&path()).daemon.obs_app)
@@ -201,6 +213,7 @@ pub fn describe() -> String {
          record_dir {}{}\n\
          music_dir  {}{}\n\
          clips_dir  {}{}\n\
+         shaders_dir {}{}\n\
          obs_app    {}{}\n\
          companions {}{}\n\
          byo.twitch  {}  (config, read by byo/bridge.py)\n\
@@ -223,6 +236,8 @@ pub fn describe() -> String {
         from("REMUX_MUSIC_DIR", kept.daemon.music_dir.is_some()),
         clips_dir().display(),
         from("REMUX_CLIPS_DIR", kept.daemon.clips_dir.is_some()),
+        shaders_dir().display(),
+        from("REMUX_SHADERS_DIR", kept.daemon.shaders_dir.is_some()),
         obs_app(),
         from("OBS_APP", kept.daemon.obs_app.is_some()),
         crate::companions::path().map_or_else(|| "none".into(), |p| p.display().to_string()),

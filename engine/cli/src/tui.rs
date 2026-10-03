@@ -43,6 +43,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             let fresh = chat.read(&ask);
             chat.hold(&mut screen, fresh);
             look_at_companions(&mut screen);
+            screen.filters = filters_in(&remuxd_domain::config::shaders_dir());
             read_at = Instant::now();
         }
         if let Ok(said) = heard.try_recv() {
@@ -320,7 +321,7 @@ fn draw(
             "q quit · tab layers · j/k move · enter preview · t take · N new · D copy · X delete · L live · S stop · R record · ! cut"
         }
         Panel::Layers => {
-            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · A add · x remove · ! cut"
+            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · A add · x remove · f filter · F scene filter · ! cut"
         }
         Panel::Destinations => {
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
@@ -491,6 +492,31 @@ impl Lever {
     }
 }
 
+/// The filter after this one in the list, the first when it is none or one not
+/// in the list, and none after the last: a key steps through and back to off.
+pub fn next_filter(list: &[String], now: Option<&str>) -> Option<String> {
+    match now.and_then(|now| list.iter().position(|f| f == now)) {
+        Some(at) => list.get(at + 1).cloned(),
+        None => list.first().cloned(),
+    }
+}
+
+/// The WGSL files of a folder, by name.
+pub fn filters_in(dir: &std::path::Path) -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
 /// What a line typed is for.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum Typing {
@@ -575,6 +601,8 @@ pub struct Screen {
     /// engine does not say which plays).
     pub genres: Vec<remuxd_domain::protocol::Named>,
     pub genre: Option<String>,
+    /// The filters on offer: the WGSL files of the shaders folder.
+    pub filters: Vec<String>,
     /// What the last thing sent came to, in the footer.
     pub said: Option<String>,
 }
@@ -730,8 +758,32 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('j', Panel::Layers) if screen.picked_layer + 1 < ids.len() => screen.picked_layer += 1,
         ('k', Panel::Layers) => screen.picked_layer = screen.picked_layer.saturating_sub(1),
-        (' ' | 'J' | 'K' | 'A' | 'x', Panel::Layers) if !on_air && !in_preview => {
+        (' ' | 'J' | 'K' | 'A' | 'x' | 'f' | 'F', Panel::Layers) if !on_air && !in_preview => {
             return Act::Say("enter stages this scene first")
+        }
+        ('f', Panel::Layers) => {
+            if let (Some(id), Some(scene)) = (layer, scene) {
+                let now = scene
+                    .layers
+                    .iter()
+                    .find(|l| l.id == id)
+                    .and_then(|l| l.shader.clone())
+                    .or_else(|| {
+                        scene
+                            .elements
+                            .iter()
+                            .find(|e| e.id == id)
+                            .and_then(|e| e.shader.clone())
+                    });
+                let path = next_filter(&screen.filters, now.as_deref());
+                return send(Command::LayerShader { id, path });
+            }
+        }
+        ('F', Panel::Layers) => {
+            if let Some(scene) = scene {
+                let path = next_filter(&screen.filters, scene.shader.as_deref());
+                return send(Command::Shader { path });
+            }
         }
         ('A', Panel::Layers) => {
             screen.typing = Some(String::new());
@@ -1242,6 +1294,11 @@ pub fn rows_of(scene: &Scene) -> Vec<String> {
     use remuxd_domain::picture::layers::Kind;
     use remuxd_domain::picture::scenes::ElementContent;
     let hidden = |visible: bool| if visible { "" } else { " (hidden)" };
+    let filtered = |shader: Option<&str>| {
+        shader
+            .map(|path| format!(" · filter {}", path.rsplit('/').next().unwrap_or(path)))
+            .unwrap_or_default()
+    };
     scene
         .ordered_ids()
         .into_iter()
@@ -1254,8 +1311,9 @@ pub fn rows_of(scene: &Scene) -> Vec<String> {
                     Kind::Image => "image",
                 };
                 return Some(format!(
-                    "{id} · {kind} {}{}",
+                    "{id} · {kind} {}{}{}",
                     layer.source.name,
+                    filtered(layer.shader.as_deref()),
                     hidden(layer.visible)
                 ));
             }
@@ -1264,7 +1322,11 @@ pub fn rows_of(scene: &Scene) -> Vec<String> {
                 ElementContent::Text { text } => format!("text \"{text}\""),
                 ElementContent::Timer { seconds } => format!("timer {seconds} s"),
             };
-            Some(format!("{id} · {what}{}", hidden(element.visible)))
+            Some(format!(
+                "{id} · {what}{}{}",
+                filtered(element.shader.as_deref()),
+                hidden(element.visible)
+            ))
         })
         .collect()
 }
@@ -2623,6 +2685,94 @@ mod tests {
             press('g', &mut on_sound(0), 0, &status),
             Act::Stay,
             "the mic has no genre"
+        );
+    }
+
+    #[test]
+    fn a_layer_with_a_filter_names_it() {
+        let scene: Scene = serde_json::from_value(serde_json::json!({
+            "name": "s",
+            "layers": [{
+                "id": "frame", "visible": true, "shader": "/f/fire.wgsl",
+                "source": { "kind": "image", "handle": "h", "name": "frame.png", "width": 1920, "height": 1080 },
+                "transform": { "x": 0, "y": 0, "width": 1920, "height": 1080, "degrees": 0 }
+            }]
+        }))
+        .expect("a scene");
+        assert_eq!(
+            rows_of(&scene),
+            ["frame · image frame.png · filter fire.wgsl"]
+        );
+    }
+
+    #[test]
+    fn a_filter_steps_through_the_list_and_off_after_the_last() {
+        let list = vec!["/f/fire.wgsl".to_string(), "/f/water.wgsl".to_string()];
+        assert_eq!(next_filter(&list, None), Some("/f/fire.wgsl".to_string()));
+        assert_eq!(
+            next_filter(&list, Some("/f/fire.wgsl")),
+            Some("/f/water.wgsl".to_string())
+        );
+        assert_eq!(
+            next_filter(&list, Some("/f/water.wgsl")),
+            None,
+            "after the last, off"
+        );
+        assert_eq!(
+            next_filter(&list, Some("/elsewhere/x.wgsl")),
+            Some("/f/fire.wgsl".to_string())
+        );
+        assert_eq!(next_filter(&[], None), None);
+    }
+
+    #[test]
+    fn f_filters_the_picked_layer_and_shift_f_the_whole_scene_on_the_air_or_staged() {
+        let mut status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            filters: vec!["/f/fire.wgsl".into()],
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('f', &mut screen, 2, &status),
+            Act::Send(Command::LayerShader {
+                id: "desk".into(),
+                path: Some("/f/fire.wgsl".into())
+            })
+        );
+        assert_eq!(
+            press('F', &mut screen, 2, &status),
+            Act::Send(Command::Shader {
+                path: Some("/f/fire.wgsl".into())
+            })
+        );
+        status.staged = Some("BRB".into());
+        screen.picked = 1;
+        assert_eq!(
+            press('F', &mut screen, 2, &status),
+            Act::Send(Command::Staged {
+                command: Box::new(Command::Shader {
+                    path: Some("/f/fire.wgsl".into())
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn filters_are_the_wgsl_files_of_the_folder_in_order() {
+        let dir = std::env::temp_dir().join(format!("remux-filters-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a folder");
+        for name in ["water.wgsl", "fire.wgsl", "notes.txt"] {
+            std::fs::write(dir.join(name), "").expect("a file");
+        }
+        let found = filters_in(&dir);
+        assert_eq!(
+            found
+                .iter()
+                .map(|p| p.rsplit('/').next().unwrap())
+                .collect::<Vec<_>>(),
+            ["fire.wgsl", "water.wgsl"]
         );
     }
 
