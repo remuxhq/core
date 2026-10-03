@@ -24,7 +24,15 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut terminal = ratatui::init();
     let mut status = read();
     let mut read_at = Instant::now();
-    let mut screen = Screen::default();
+    let mut screen = Screen {
+        hidden: read_hidden(&std::fs::read_to_string(tui_toml()).unwrap_or_default()),
+        ..Screen::default()
+    };
+    if !screen.shows(screen.focus) {
+        screen.focus = screen.next_shown(screen.focus);
+    }
+    let mut last_said: Option<String> = None;
+    let mut said_at = Instant::now();
     // The genres once: they never open a device to be listed.
     if let Ok(Reply::Sources(devices)) = ask(&Command::Genres) {
         screen.genres = devices.genres;
@@ -65,6 +73,12 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             screen.playing = mixing.playing;
         }
         heard_at = Instant::now();
+        // An answer shows for a few seconds after it changes.
+        if screen.said != last_said {
+            last_said.clone_from(&screen.said);
+            said_at = Instant::now();
+        }
+        screen.said_fresh = screen.said.is_some() && said_at.elapsed() < Duration::from_secs(4);
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
         if let Err(why) = terminal.draw(|frame| {
             draw(
@@ -107,8 +121,13 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             }
             continue;
         };
+        let hidden = screen.hidden.clone();
         let act = press(typed, &mut screen, rows, now_status);
         chat.hold(&mut screen, Vec::new());
+        // The panels shown are the person's: kept for the next time.
+        if screen.hidden != hidden {
+            let _ = std::fs::write(tui_toml(), keep_hidden(&screen.hidden));
+        }
         match act {
             Act::Stay => {}
             Act::Quit => break Ok(()),
@@ -192,10 +211,14 @@ fn draw(
     chat: &Chat,
     now: i64,
 ) {
-    let [top, middle, bottom] = Layout::vertical([
+    let width = frame.area().width as usize;
+    let bar = key_bar(screen.focus);
+    let bar_lines = wrap_tokens(&bar, width);
+    let [top, middle, typed, bottom] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(3),
-        Constraint::Length(1),
+        Constraint::Length(if screen.typing.is_some() { 3 } else { 0 }),
+        Constraint::Length(bar_lines.len() as u16),
     ])
     .areas(frame.area());
     let Ok(status) = status else {
@@ -220,184 +243,293 @@ fn draw(
         .block(Block::bordered().title(" remux ")),
         top,
     );
-    let [left, right, talk] = Layout::horizontal([
-        Constraint::Percentage(28),
-        Constraint::Percentage(42),
-        Constraint::Percentage(30),
-    ])
-    .areas(middle);
-    draw_chat(frame, chat, screen, talk);
-    let [left, below, beside] = Layout::vertical([
-        Constraint::Percentage(30),
-        Constraint::Percentage(45),
-        Constraint::Percentage(25),
-    ])
-    .areas(left);
-    draw_companions(frame, screen, beside);
-    let scenes: Vec<ListItem> = status
-        .scenes
+    // What the last action came to, at the top right, for a few seconds.
+    if let (Some(said), true) = (&screen.said, screen.said_fresh) {
+        let inner = top.inner(ratatui::layout::Margin::new(1, 1));
+        let style = if said.starts_with("no") || said.contains("error") || said.contains("refus") {
+            Style::new().fg(Color::Red)
+        } else {
+            Style::new().fg(Color::Green)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(crate::words::plain(said), style))
+                .alignment(ratatui::layout::Alignment::Right),
+            inner,
+        );
+    }
+    // Three columns, each of the panels it holds that are shown; a column with none
+    // gives its room to the others.
+    let columns: [(&[(Panel, u16)], u16); 3] = [
+        (
+            &[
+                (Panel::Scenes, 30),
+                (Panel::Layers, 45),
+                (Panel::Companions, 25),
+            ],
+            28,
+        ),
+        (&[(Panel::Destinations, 40), (Panel::Sound, 60)], 42),
+        (&[(Panel::Chat, 65), (Panel::History, 35)], 30),
+    ];
+    let present: Vec<(Vec<(Panel, u16)>, u16)> = columns
         .iter()
-        .map(|scene| {
-            let mark = if scene.name == status.active_scene {
-                "▶ "
-            } else if status.staged.as_deref() == Some(scene.name.as_str()) {
-                "◇ "
-            } else {
-                "  "
-            };
-            ListItem::new(format!("{mark}{}", scene.name))
+        .map(|(panels, weight)| {
+            (
+                panels
+                    .iter()
+                    .copied()
+                    .filter(|(p, _)| screen.shows(*p))
+                    .collect::<Vec<_>>(),
+                *weight,
+            )
+        })
+        .filter(|(panels, _)| !panels.is_empty())
+        .collect();
+    let areas = Layout::horizontal(present.iter().map(|(_, w)| Constraint::Fill(*w))).split(middle);
+    for ((panels, _), column) in present.iter().zip(areas.iter()) {
+        let rows =
+            Layout::vertical(panels.iter().map(|(_, w)| Constraint::Fill(*w))).split(*column);
+        for ((panel, _), area) in panels.iter().zip(rows.iter()) {
+            draw_panel(frame, *panel, *area, status, levels, meters, screen, chat);
+        }
+    }
+    if let Some(line) = &screen.typing {
+        frame.render_widget(
+            Paragraph::new(format!("{line}▏")).block(
+                Block::bordered()
+                    .title(match screen.typing_for {
+                        Typing::Chat => " say in the chat · enter sends · esc lets it go ",
+                        Typing::Draft(_) => {
+                            " the new scene's name · enter drafts it in the preview "
+                        }
+                        Typing::Layer { .. } => {
+                            " camera|screen|window|image <id> <source> · enter adds it "
+                        }
+                    })
+                    .border_style(Style::new().fg(Color::Yellow)),
+            ),
+            typed,
+        );
+    }
+    // The keys: the focused panel's bright, the global ones dim.
+    let own = keys_of(screen.focus).len();
+    let mut seen = 0;
+    let lines: Vec<Line> = bar_lines
+        .iter()
+        .map(|tokens| {
+            let mut spans = Vec::new();
+            for token in tokens {
+                let style = if seen < own {
+                    Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(Color::DarkGray)
+                };
+                if !spans.is_empty() {
+                    spans.push(Span::raw("  "));
+                }
+                spans.push(Span::styled(*token, style));
+                seen += 1;
+            }
+            Line::from(spans)
         })
         .collect();
-    // The panel in focus has the bright border and the highlighted row.
-    let panel = |title: &'static str, focused: bool| {
+    frame.render_widget(Paragraph::new(lines), bottom);
+    if let Some(lever) = &screen.asking {
+        ask_about(frame, lever);
+    }
+    if screen.showing_keys {
+        draw_keys(frame);
+    }
+}
+
+/// One panel, drawn where it is put, its number in its title.
+#[allow(clippy::too_many_arguments)]
+fn draw_panel(
+    frame: &mut Frame,
+    panel: Panel,
+    area: ratatui::layout::Rect,
+    status: &Status,
+    levels: Option<&(Hearing, Mixing)>,
+    meters: &Meters,
+    screen: &Screen,
+    chat: &Chat,
+) {
+    let focused = screen.focus == panel;
+    let block = |title: String| {
         Block::bordered()
-            .title(title)
+            .title(format!(" {} {title} ", panel.number()))
             .border_style(Style::new().fg(if focused {
                 Color::Yellow
             } else {
                 Color::DarkGray
             }))
     };
-    let picked = |row: usize, rows: usize, focused: bool| {
+    let picked = |row: usize, rows: usize| {
         ListState::default().with_selected(focused.then(|| row.min(rows.saturating_sub(1))))
     };
-    let on_scenes = screen.focus == Panel::Scenes;
-    let on_layers = screen.focus == Panel::Layers;
-    let on_destinations = screen.focus == Panel::Destinations;
-    frame.render_stateful_widget(
-        List::new(scenes)
-            .block(panel("", on_scenes).title(match status.trash.len() {
-                0 => " scenes ".to_string(),
-                n => format!(" scenes · {n} in the trash, U brings the last back "),
-            }))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-        left,
-        &mut picked(screen.picked, status.scenes.len(), on_scenes),
-    );
-    // The layers of the picked scene, which need not be the one on the air: what a scene
-    // holds is read before switching to it.
-    let shown = status
-        .scenes
-        .get(screen.picked.min(status.scenes.len().saturating_sub(1)));
-    let layers: Vec<ListItem> = shown
-        .map(rows_of)
-        .unwrap_or_default()
-        .into_iter()
-        .map(ListItem::new)
-        .collect();
-    let rows = layers.len();
-    let title = format!(
-        " layers · {} ",
-        shown.map_or("", |scene| scene.name.as_str())
-    );
-    frame.render_stateful_widget(
-        List::new(layers)
-            .block(panel("", on_layers).title(title))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-        below,
-        &mut picked(screen.picked_layer, rows, on_layers),
-    );
-    let destinations: Vec<ListItem> = status
-        .destinations
-        .iter()
-        .map(|d| ListItem::new(destination_row(d)).style(Style::new().fg(destination_colour(d))))
-        .collect();
-    let [right, below] =
-        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(right);
-    frame.render_widget(
-        Paragraph::new(sound(
-            status,
-            levels,
-            meters,
-            (screen.focus == Panel::Sound).then_some(screen.picked_sound),
-            screen
-                .genre
-                .as_ref()
-                .and_then(|id| screen.genres.iter().find(|g| &g.id == id))
-                .map(|g| g.name.as_str()),
-            below.width.saturating_sub(16) as usize,
-        ))
-        .block(panel(" sound ", screen.focus == Panel::Sound)),
-        below,
-    );
-    frame.render_stateful_widget(
-        List::new(destinations)
-            .block(panel(" destinations ", on_destinations))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-        right,
-        &mut picked(
-            screen.picked_destination,
-            status.destinations.len(),
-            on_destinations,
-        ),
-    );
-    let keys = match screen.focus {
+    let reversed = Style::new().add_modifier(Modifier::REVERSED);
+    match panel {
         Panel::Scenes => {
-            "q quit · tab layers · j/k move · enter preview · t take · N new · D copy · X delete · U undelete · L live · S stop · R record · ! cut"
+            let scenes: Vec<ListItem> = status
+                .scenes
+                .iter()
+                .map(|scene| {
+                    let mark = if scene.name == status.active_scene {
+                        "▶ "
+                    } else if status.staged.as_deref() == Some(scene.name.as_str()) {
+                        "◇ "
+                    } else {
+                        "  "
+                    };
+                    ListItem::new(format!("{mark}{}", scene.name))
+                })
+                .collect();
+            let title = match status.trash.len() {
+                0 => "scenes".to_string(),
+                n => format!("scenes · {n} in the trash, U brings the last back"),
+            };
+            frame.render_stateful_widget(
+                List::new(scenes)
+                    .block(block(title))
+                    .highlight_style(reversed),
+                area,
+                &mut picked(screen.picked, status.scenes.len()),
+            );
         }
         Panel::Layers => {
-            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · A add · x remove · f filter · F scene filter · ! cut"
+            // The picked scene's, which need not be the one on the air: what a scene
+            // holds is read before it goes out.
+            let shown = status
+                .scenes
+                .get(screen.picked.min(status.scenes.len().saturating_sub(1)));
+            let layers: Vec<ListItem> = shown
+                .map(rows_of)
+                .unwrap_or_default()
+                .into_iter()
+                .map(ListItem::new)
+                .collect();
+            let rows = layers.len();
+            let title = format!("layers · {}", shown.map_or("", |scene| scene.name.as_str()));
+            frame.render_stateful_widget(
+                List::new(layers)
+                    .block(block(title))
+                    .highlight_style(reversed),
+                area,
+                &mut picked(screen.picked_layer, rows),
+            );
         }
         Panel::Destinations => {
-            "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
+            let destinations: Vec<ListItem> = status
+                .destinations
+                .iter()
+                .map(|d| {
+                    ListItem::new(destination_row(d)).style(Style::new().fg(destination_colour(d)))
+                })
+                .collect();
+            frame.render_stateful_widget(
+                List::new(destinations)
+                    .block(block("destinations".into()))
+                    .highlight_style(reversed),
+                area,
+                &mut picked(screen.picked_destination, status.destinations.len()),
+            );
         }
-        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck · s music to the live · g genre",
-        Panel::Chat => "q quit · tab companions · k older · j newer",
-        Panel::Companions => "q quit · tab scenes · j/k move · space start/stop",
-    };
-    let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat · H history");
-    let footer = screen
-        .said
-        .as_ref()
-        .map_or(keys.clone(), |said| format!("{said} · {keys}"));
-    frame.render_widget(
-        Paragraph::new(footer).style(Style::new().fg(Color::DarkGray)),
-        bottom,
-    );
-    if let Some(lever) = &screen.asking {
-        ask_about(frame, lever);
-    }
-    if screen.showing_history {
-        draw_history(frame, &screen.history);
+        Panel::Sound => {
+            frame.render_widget(
+                Paragraph::new(sound(
+                    status,
+                    levels,
+                    meters,
+                    focused.then_some(screen.picked_sound),
+                    screen
+                        .genre
+                        .as_ref()
+                        .and_then(|id| screen.genres.iter().find(|g| &g.id == id))
+                        .map(|g| g.name.as_str()),
+                    area.width.saturating_sub(16) as usize,
+                ))
+                .block(block("sound".into())),
+                area,
+            );
+        }
+        Panel::Chat => {
+            let title = match (chat.reachable, screen.chat_back) {
+                (false, _) => "chat · no wire".to_string(),
+                (true, 0) => "chat".to_string(),
+                (true, back) => format!("chat · {back} back · j to come forward"),
+            };
+            let fits = area.height.saturating_sub(2) as usize;
+            let width = area.width.saturating_sub(2) as usize;
+            let read = chat.lines.len().saturating_sub(screen.chat_back);
+            let mut rows = chat_rows(&chat.lines[..read], width);
+            let shown: Vec<ListItem> = rows
+                .drain(rows.len().saturating_sub(fits)..)
+                .map(ListItem::new)
+                .collect();
+            frame.render_widget(List::new(shown).block(block(title)), area);
+        }
+        Panel::Companions => draw_companions(frame, screen, area, block("companions".into())),
+        Panel::History => {
+            let fits = area.height.saturating_sub(2) as usize;
+            let lines: Vec<ListItem> = if screen.history.is_empty() {
+                vec![ListItem::new("nothing sent from this screen yet")
+                    .style(Style::new().fg(Color::DarkGray))]
+            } else {
+                screen.history[screen.history.len().saturating_sub(fits)..]
+                    .iter()
+                    .map(|line| {
+                        let style = if line.contains("  ! ") {
+                            Style::new().fg(Color::Red)
+                        } else {
+                            Style::new()
+                        };
+                        ListItem::new(line.as_str()).style(style)
+                    })
+                    .collect()
+            };
+            frame.render_widget(List::new(lines).block(block("history".into())), area);
+        }
     }
 }
 
-/// What this screen sent, oldest first, in a box over the rest.
-fn draw_history(frame: &mut Frame, history: &[String]) {
+/// Every key, panel by panel, over the rest.
+fn draw_keys(frame: &mut Frame) {
     let area = frame.area();
     let [_, middle, _] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Percentage(70),
+        Constraint::Percentage(80),
         Constraint::Fill(1),
     ])
     .areas(area);
     let [_, middle, _] = Layout::horizontal([
         Constraint::Fill(1),
-        Constraint::Percentage(70),
+        Constraint::Percentage(80),
         Constraint::Fill(1),
     ])
     .areas(middle);
-    let fits = middle.height.saturating_sub(2) as usize;
-    let lines: Vec<ListItem> = if history.is_empty() {
-        vec![ListItem::new("nothing sent from this screen yet")]
-    } else {
-        history[history.len().saturating_sub(fits)..]
-            .iter()
-            .map(|line| {
-                let style = if line.contains("  ! ") {
-                    Style::new().fg(Color::Red)
-                } else {
-                    Style::new()
-                };
-                ListItem::new(line.as_str()).style(style)
-            })
-            .collect()
+    let width = middle.width.saturating_sub(16) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut group = |name: String, keys: &[&str]| {
+        for (n, tokens) in wrap_tokens(keys, width).into_iter().enumerate() {
+            let head = if n == 0 { name.clone() } else { String::new() };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{head:<14}"), Style::new().fg(Color::Yellow)),
+                Span::raw(tokens.join("  ")),
+            ]));
+        }
     };
+    for panel in Panel::ALL {
+        group(
+            format!("{} {}", panel.number(), panel.word()),
+            keys_of(panel),
+        );
+    }
+    group("everywhere".into(), GLOBAL_KEYS);
     frame.render_widget(ratatui::widgets::Clear, middle);
     frame.render_widget(
-        List::new(lines).block(
+        Paragraph::new(lines).block(
             Block::bordered()
-                .title(" what this screen sent · any key closes ")
+                .title(" every key · any key closes ")
                 .border_style(Style::new().fg(Color::Yellow)),
         ),
         middle,
@@ -651,6 +783,143 @@ pub enum Panel {
     Chat,
     /// The operator's programs beside the engine.
     Companions,
+    /// What this screen sent.
+    History,
+}
+
+impl Panel {
+    /// Every panel, in the order of its number and of tab.
+    pub const ALL: [Panel; 7] = [
+        Panel::Scenes,
+        Panel::Layers,
+        Panel::Destinations,
+        Panel::Sound,
+        Panel::Chat,
+        Panel::Companions,
+        Panel::History,
+    ];
+
+    /// The digit that shows or hides it.
+    pub fn number(self) -> char {
+        char::from(b'1' + Panel::ALL.iter().position(|p| *p == self).unwrap_or(0) as u8)
+    }
+
+    /// Its name, as the panel's title and as `tui.toml` keeps it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Panel::Scenes => "scenes",
+            Panel::Layers => "layers",
+            Panel::Destinations => "destinations",
+            Panel::Sound => "sound",
+            Panel::Chat => "chat",
+            Panel::Companions => "companions",
+            Panel::History => "history",
+        }
+    }
+}
+
+/// The panels hidden, as `tui.toml` keeps them.
+pub fn keep_hidden(hidden: &[Panel]) -> String {
+    let words: Vec<String> = hidden.iter().map(|p| format!("\"{}\"", p.word())).collect();
+    format!("hidden = [{}]\n", words.join(", "))
+}
+
+/// The panels a `tui.toml` hides; a word that names no panel is let go.
+pub fn read_hidden(text: &str) -> Vec<Panel> {
+    let Some(list) = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("hidden"))
+        .and_then(|rest| rest.split_once('[').map(|(_, rest)| rest))
+        .and_then(|rest| rest.split_once(']').map(|(list, _)| list))
+    else {
+        return Vec::new();
+    };
+    list.split(',')
+        .map(|word| word.trim().trim_matches('"'))
+        .filter_map(|word| Panel::ALL.into_iter().find(|p| p.word() == word))
+        .collect()
+}
+
+/// Where the screen keeps which panels are hidden: the person's, not the engine's.
+fn tui_toml() -> std::path::PathBuf {
+    remuxd_domain::os::config_dir().join("tui.toml")
+}
+
+/// Each panel's keys, as the key bar and the keys pane say them.
+pub fn keys_of(panel: Panel) -> &'static [&'static str] {
+    match panel {
+        Panel::Scenes => &[
+            "[enter] preview",
+            "[t] take",
+            "[N] new",
+            "[D] copy",
+            "[X] delete",
+            "[U] undelete",
+            "[j/k] pick",
+        ],
+        Panel::Layers => &[
+            "[space] hide/show",
+            "[J/K] forward/back",
+            "[A] add",
+            "[x] remove",
+            "[f] filter",
+            "[F] scene filter",
+            "[j/k] pick",
+        ],
+        Panel::Destinations => &["[a] arm", "[s] sandbox", "[j/k] pick"],
+        Panel::Sound => &[
+            "[space] on/off",
+            "[+/-] volume",
+            "[d] duck",
+            "[s] music to the live",
+            "[g] genre",
+            "[j/k] pick",
+        ],
+        Panel::Chat => &["[c] say", "[k] older", "[j] newer"],
+        Panel::Companions => &["[space] start/stop", "[j/k] pick"],
+        Panel::History => &["[7] hide"],
+    }
+}
+
+/// The keys every panel has.
+pub const GLOBAL_KEYS: &[&str] = &[
+    "[tab] next panel",
+    "[1-7] show/hide",
+    "[L] live",
+    "[S] stop",
+    "[R] record",
+    "[!] cut",
+    "[m] mute",
+    "[n] next track",
+    "[p] pause",
+    "[c] chat",
+    "[?] all keys",
+    "[q] quit",
+];
+
+/// The bar: the focused panel's keys, then the global ones.
+pub fn key_bar(panel: Panel) -> Vec<&'static str> {
+    keys_of(panel).iter().chain(GLOBAL_KEYS).copied().collect()
+}
+
+/// Tokens two spaces apart, onto as many lines of `width` as they need.
+pub fn wrap_tokens<'a>(tokens: &[&'a str], width: usize) -> Vec<Vec<&'a str>> {
+    let mut lines: Vec<Vec<&str>> = Vec::new();
+    let mut used = 0;
+    for token in tokens {
+        let wide = token.chars().count();
+        match lines.last_mut() {
+            Some(line) if used + 2 + wide <= width => {
+                line.push(token);
+                used += 2 + wide;
+            }
+            _ => {
+                lines.push(vec![token]);
+                used = wide;
+            }
+        }
+    }
+    lines
 }
 
 /// What the screen holds between keys: the panel in focus, the picked row in each, and
@@ -683,14 +952,32 @@ pub struct Screen {
     pub genre: Option<String>,
     /// The filters on offer: the WGSL files of the shaders folder.
     pub filters: Vec<String>,
-    /// What this screen sent, as lines, and whether they are shown.
+    /// What this screen sent, as lines.
     pub history: Vec<String>,
-    pub showing_history: bool,
-    /// What the last thing sent came to, in the footer.
+    /// Whether every key is shown, over the rest.
+    pub showing_keys: bool,
+    /// The panels not drawn: their keys still work once shown again.
+    pub hidden: Vec<Panel>,
+    /// What the last thing sent came to, and whether it is new enough to show.
     pub said: Option<String>,
+    pub said_fresh: bool,
 }
 
 impl Screen {
+    /// Whether this panel is drawn.
+    pub fn shows(&self, panel: Panel) -> bool {
+        !self.hidden.contains(&panel)
+    }
+
+    /// The panel after this one that is drawn, round from the last.
+    fn next_shown(&self, from: Panel) -> Panel {
+        let at = Panel::ALL.iter().position(|p| *p == from).unwrap_or(0);
+        (1..=Panel::ALL.len())
+            .map(|step| Panel::ALL[(at + step) % Panel::ALL.len()])
+            .find(|p| self.shows(*p))
+            .unwrap_or(from)
+    }
+
     /// The plan the engine answered to `L`, put to the person.
     pub fn planned(&mut self, plan: Plan) {
         self.asking = Some(Lever::Live(plan));
@@ -741,9 +1028,9 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         return Act::Stay;
     }
-    // The history is read, not acted on: any key closes it.
-    if screen.showing_history {
-        screen.showing_history = false;
+    // The keys are read, not acted on: any key closes them.
+    if screen.showing_keys {
+        screen.showing_keys = false;
         return Act::Stay;
     }
     if let Some(lever) = screen.asking.take() {
@@ -776,7 +1063,22 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     };
     match (key, screen.focus) {
         ('q' | '\u{1b}', _) => return Act::Quit,
-        ('H', _) => screen.showing_history = true,
+        ('?', _) => screen.showing_keys = true,
+        ('1'..='7', _) => {
+            let panel = Panel::ALL[(key as u8 - b'1') as usize];
+            if screen.shows(panel) {
+                if Panel::ALL.iter().filter(|p| screen.shows(**p)).count() == 1 {
+                    return Act::Say("one panel stays shown");
+                }
+                screen.hidden.push(panel);
+                if screen.focus == panel {
+                    screen.focus = screen.next_shown(panel);
+                }
+            } else {
+                screen.hidden.retain(|p| *p != panel);
+            }
+        }
+        ('\t', focus) => screen.focus = screen.next_shown(focus),
         ('c', _) => screen.typing = Some(String::new()),
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
@@ -796,12 +1098,6 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                 level: quieter(status.faders.music),
             })
         }
-        ('\t', Panel::Scenes) => screen.focus = Panel::Layers,
-        ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
-        ('\t', Panel::Destinations) => screen.focus = Panel::Sound,
-        ('\t', Panel::Sound) => screen.focus = Panel::Chat,
-        ('\t', Panel::Chat) => screen.focus = Panel::Companions,
-        ('\t', Panel::Companions) => screen.focus = Panel::Scenes,
         ('j', Panel::Companions) if screen.picked_companion + 1 < screen.companions.len() => {
             screen.picked_companion += 1
         }
@@ -1110,56 +1406,6 @@ impl Chat {
     }
 }
 
-fn draw_chat(frame: &mut Frame, chat: &Chat, screen: &Screen, area: ratatui::layout::Rect) {
-    let typing = screen.typing.as_deref();
-    let [lines_area, typed] = Layout::vertical([
-        Constraint::Min(3),
-        Constraint::Length(if typing.is_some() { 3 } else { 0 }),
-    ])
-    .areas(area);
-    let title = match (chat.reachable, screen.chat_back) {
-        (false, _) => " chat · no wire ".to_string(),
-        (true, 0) => " chat ".to_string(),
-        (true, back) => format!(" chat · {back} back · j to come forward "),
-    };
-    let fits = lines_area.height.saturating_sub(2) as usize;
-    let width = lines_area.width.saturating_sub(2) as usize;
-    let read = chat.lines.len().saturating_sub(screen.chat_back);
-    let mut rows = chat_rows(&chat.lines[..read], width);
-    let shown: Vec<ListItem> = rows
-        .drain(rows.len().saturating_sub(fits)..)
-        .map(ListItem::new)
-        .collect();
-    frame.render_widget(
-        List::new(shown).block(Block::bordered().title(title).border_style(Style::new().fg(
-            if screen.focus == Panel::Chat {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            },
-        ))),
-        lines_area,
-    );
-    if let Some(line) = typing {
-        frame.render_widget(
-            Paragraph::new(format!("{line}▏")).block(
-                Block::bordered()
-                    .title(match screen.typing_for {
-                        Typing::Chat => " say · enter sends · esc lets it go ",
-                        Typing::Draft(_) => {
-                            " the new scene's name · enter drafts it in the preview "
-                        }
-                        Typing::Layer { .. } => {
-                            " camera|screen|window|image <id> <source> · enter adds it "
-                        }
-                    })
-                    .border_style(Style::new().fg(Color::Yellow)),
-            ),
-            typed,
-        );
-    }
-}
-
 /// A line of text in a column `width` cells wide: broken between words, the rest of it
 /// indented by `indent`, and a word longer than the column cut where the column ends.
 /// A character counts as one cell.
@@ -1324,7 +1570,7 @@ fn look_at_companions(screen: &mut Screen) {
     }
 }
 
-fn draw_companions(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect) {
+fn draw_companions(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Rect, block: Block) {
     let focused = screen.focus == Panel::Companions;
     let rows: Vec<ListItem> = match &screen.companion_trouble {
         Some(why) => vec![ListItem::new(why.clone()).style(Style::new().fg(Color::DarkGray))],
@@ -1344,15 +1590,7 @@ fn draw_companions(frame: &mut Frame, screen: &Screen, area: ratatui::layout::Re
     let count = rows.len();
     frame.render_stateful_widget(
         List::new(rows)
-            .block(
-                Block::bordered()
-                    .title(" companions ")
-                    .border_style(Style::new().fg(if focused {
-                        Color::Yellow
-                    } else {
-                        Color::DarkGray
-                    })),
-            )
+            .block(block)
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,
         &mut ListState::default().with_selected(
@@ -1829,6 +2067,8 @@ mod tests {
         assert_eq!(screen.focus, Panel::Chat);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Companions);
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::History);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
@@ -2677,16 +2917,95 @@ mod tests {
     }
 
     #[test]
-    fn h_opens_the_history_and_any_key_closes_it() {
+    fn question_mark_opens_every_key_and_any_key_closes_it() {
         let mut screen = Screen::default();
-        press('H', &mut screen, 0, &Status::default());
-        assert!(screen.showing_history);
+        press('?', &mut screen, 0, &Status::default());
+        assert!(screen.showing_keys);
         assert_eq!(
             press('q', &mut screen, 0, &Status::default()),
             Act::Stay,
             "q closes it, it does not quit"
         );
-        assert!(!screen.showing_history);
+        assert!(!screen.showing_keys);
+    }
+
+    #[test]
+    fn a_digit_hides_its_panel_and_shows_it_again() {
+        let mut screen = Screen::default();
+        press('5', &mut screen, 0, &Status::default());
+        assert!(!screen.shows(Panel::Chat));
+        press('5', &mut screen, 0, &Status::default());
+        assert!(screen.shows(Panel::Chat));
+    }
+
+    #[test]
+    fn hiding_the_panel_in_focus_moves_the_focus_on_and_tab_skips_what_is_hidden() {
+        let mut screen = Screen::default();
+        press('1', &mut screen, 0, &Status::default());
+        assert_eq!(
+            screen.focus,
+            Panel::Layers,
+            "scenes hidden: the next one has the keys"
+        );
+        press('3', &mut screen, 0, &Status::default());
+        press('\t', &mut screen, 0, &Status::default());
+        assert_eq!(
+            screen.focus,
+            Panel::Sound,
+            "destinations hidden: tab goes past it"
+        );
+    }
+
+    #[test]
+    fn the_last_panel_shown_stays() {
+        let mut screen = Screen::default();
+        for digit in ['1', '2', '3', '4', '5', '6'] {
+            press(digit, &mut screen, 0, &Status::default());
+        }
+        assert_eq!(
+            press('7', &mut screen, 0, &Status::default()),
+            Act::Say("one panel stays shown")
+        );
+        assert!(screen.shows(Panel::History));
+    }
+
+    #[test]
+    fn the_panels_hidden_are_kept_as_words_and_read_back() {
+        let hidden = vec![Panel::Chat, Panel::History];
+        let kept = keep_hidden(&hidden);
+        assert_eq!(kept, "hidden = [\"chat\", \"history\"]\n");
+        assert_eq!(read_hidden(&kept), hidden);
+        assert_eq!(
+            read_hidden("hidden = [\"nonsense\"]\n"),
+            Vec::<Panel>::new()
+        );
+        assert_eq!(read_hidden(""), Vec::<Panel>::new());
+    }
+
+    #[test]
+    fn the_key_bar_wraps_its_tokens_onto_as_many_lines_as_it_needs() {
+        let tokens = ["[a] one", "[b] two", "[c] three"];
+        assert_eq!(
+            wrap_tokens(&tokens, 40),
+            vec![vec!["[a] one", "[b] two", "[c] three"]]
+        );
+        assert_eq!(
+            wrap_tokens(&tokens, 16),
+            vec![vec!["[a] one", "[b] two"], vec!["[c] three"]]
+        );
+    }
+
+    #[test]
+    fn every_panel_has_its_keys_and_the_bar_names_the_focused_one_s_first() {
+        for panel in Panel::ALL {
+            assert!(!keys_of(panel).is_empty(), "{panel:?} has keys");
+        }
+        let bar = key_bar(Panel::Scenes);
+        assert!(bar[0].starts_with("[enter]"), "{bar:?}");
+        assert!(
+            bar.iter().any(|t| t.contains("[?]")),
+            "the global keys follow"
+        );
     }
 
     #[test]
