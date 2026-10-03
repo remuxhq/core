@@ -314,6 +314,12 @@ impl Picture for Wrote {
         });
         Ok(())
     }
+    fn edit_staged(&mut self, on: bool) {
+        self.scene_events
+            .lock()
+            .unwrap()
+            .push(if on { "edit staged" } else { "edit air" }.into());
+    }
     fn previewing(&mut self, on: bool) {
         *self.previewed.lock().expect("previewed") = Some(on);
     }

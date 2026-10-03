@@ -155,6 +155,14 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             name: words[2..].join(" "),
         });
     }
+    // `--staged` on a scene verb: the same verb, on the scene in the preview.
+    if words.first().map(String::as_str) == Some("scene") && words.iter().any(|w| w == "--staged") {
+        let rest: Vec<String> = words.iter().filter(|w| *w != "--staged").cloned().collect();
+        let command = parse(&rest)?;
+        return Ok(Command::Staged {
+            command: Box::new(command),
+        });
+    }
     let words = normalize(words)?;
     parse_wire_words(&words)
 }
@@ -185,6 +193,17 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
             _ => Err("scene stage needs exactly one name (quote names with spaces)".into()),
         },
         "scene-take" if rest.is_empty() => Ok(Command::SceneTake),
+        "scene-draft" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneDraft {
+                name: name.clone(),
+                from: None,
+            }),
+            [name, flag, from] if !name.is_empty() && flag == "--from" => Ok(Command::SceneDraft {
+                name: name.clone(),
+                from: Some(from.clone()),
+            }),
+            _ => Err("scene draft <name> [--from <scene>] (quote names with spaces)".into()),
+        },
         "scene-take" => Err("scene take takes no arguments: it takes what is staged".into()),
         "audio-layer" => parse_audio_layer(rest),
         "levels" => Ok(Command::Levels),
@@ -1381,6 +1400,39 @@ mod tests {
             super::parse(&words(&["scene", "take"])),
             Ok(remuxd_domain::protocol::Command::SceneTake)
         );
+        assert_eq!(
+            super::parse(&words(&["scene", "draft", "Keys"])),
+            Ok(remuxd_domain::protocol::Command::SceneDraft {
+                name: "Keys".into(),
+                from: None
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "draft", "Keys", "--from", "Screen"])),
+            Ok(remuxd_domain::protocol::Command::SceneDraft {
+                name: "Keys".into(),
+                from: Some("Screen".into())
+            })
+        );
+        assert_eq!(
+            super::read(&words(&["scene", "layer", "hide", "keys", "--staged"]))
+                .map(|ask| ask.command),
+            Ok(Some(remuxd_domain::protocol::Command::Staged {
+                command: Box::new(remuxd_domain::protocol::Command::LayerVisible {
+                    id: "keys".into(),
+                    on: false
+                })
+            }))
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "layer", "hide", "keys", "--staged"])),
+            Ok(remuxd_domain::protocol::Command::Staged {
+                command: Box::new(remuxd_domain::protocol::Command::LayerVisible {
+                    id: "keys".into(),
+                    on: false
+                })
+            })
+        );
         assert!(super::parse(&words(&["scene", "take", "Close Up"])).is_err());
         assert_eq!(
             super::parse(&words(&["scene", "list"])),
@@ -2462,6 +2514,19 @@ pub struct Ask {
 }
 
 pub fn read(words: &[String]) -> Result<Ask, String> {
+    // `--staged` on a scene verb: the same verb, on the scene in the preview.
+    if words.first().map(String::as_str) == Some("scene") && words.iter().any(|w| w == "--staged") {
+        let rest: Vec<String> = words.iter().filter(|w| *w != "--staged").cloned().collect();
+        let mut ask = read(&rest)?;
+        let command = ask
+            .command
+            .take()
+            .ok_or("--staged goes with a scene verb the engine answers")?;
+        ask.command = Some(Command::Staged {
+            command: Box::new(command),
+        });
+        return Ok(ask);
+    }
     let json = words.iter().any(|w| matches!(w.as_str(), "--json" | "-j"));
     let words: Vec<String> = words
         .iter()

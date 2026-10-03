@@ -17,6 +17,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["scene-duplicate"], args: "<name>", summary: "Copy the active scene under a new name and switch to the copy.", note: "Its layers, elements, order and filter are copied, and the captures stay open: nothing on the air changes. Quote names with spaces." },
     Topic { names: &["scene-switch"], args: "<name>", summary: "Switch to a saved scene without stopping the live.", note: "New sources are prepared first; shared physical captures stay open even when their layer IDs differ. Use `remux scene list` to see names." },
     Topic { names: &["scene-stage"], args: "<name>", summary: "Draw a scene off the air, in the preview, before it goes out.", note: "Nothing on the air changes. A preview window reads it from the staged ring; `remux scene take` puts it on the air. Staging the scene on the air stages nothing." },
+    Topic { names: &["scene-draft"], args: "<name> [--from <scene>]", summary: "Make a new scene in the preview, off the air.", note: "Empty, or a copy of another scene. Edit it there with `--staged` on any scene layer verb (remux scene layer add camera keys C270 --staged), then `remux scene take` puts it on the air." },
     Topic { names: &["scene-take"], args: "", summary: "Put the staged scene on the air.", note: "The switch is the ordinary one, and the scene that was out is staged in its place: a second take goes back." },
     Topic { names: &["scene-delete"], args: "<name>", summary: "Delete an inactive scene.", note: "The active scene cannot be deleted; switch first." },
     Topic { names: &["levels"], args: "", summary: "Read microphone, mix and music levels in dB.", note: "" },
@@ -334,7 +335,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 66, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 67, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {

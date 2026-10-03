@@ -83,6 +83,9 @@ pub trait Picture: Send {
             None => Ok(()),
         }
     }
+    /// While on, the layer calls that follow act on the staged scene's
+    /// picture instead of the air's.
+    fn edit_staged(&mut self, _on: bool) {}
     /// Route system audio from exactly one display layer, or disconnect it.
     fn screen_audio(&mut self, _id: Option<&str>) -> Result<(), String> {
         Ok(())

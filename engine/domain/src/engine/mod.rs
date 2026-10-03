@@ -1094,6 +1094,105 @@ impl Engine {
         }
     }
 
+    /// A new scene, empty or a copy of `from`, staged: nothing on the air
+    /// moves, and one the pipeline will not stage is not kept.
+    fn scene_draft(&mut self, name: String, from: Option<String>) -> Reply {
+        if let Err(message) = self.a_new_scene_name(&name) {
+            return Reply::Error { message };
+        }
+        let scene = match from {
+            None => crate::picture::scenes::Scene {
+                name: name.clone(),
+                layers: vec![],
+                elements: vec![],
+                order: vec![],
+                shader: None,
+            },
+            Some(from) => {
+                let Some(mut copy) = self.current_scenes().into_iter().find(|s| s.name == from)
+                else {
+                    return Reply::Error {
+                        message: format!("no scene {from:?}"),
+                    };
+                };
+                copy.name = name.clone();
+                copy
+            }
+        };
+        self.status.scenes.push(scene);
+        let staged = self.scene_stage(name.clone());
+        if matches!(staged, Reply::Error { .. }) {
+            self.status.scenes.retain(|scene| scene.name != name);
+        }
+        staged
+    }
+
+    /// A layer verb run on the staged scene: the air's state is put aside,
+    /// the staged scene stands in its place on the domain's side and on the
+    /// pipeline's, the verb runs as it always does, and the air comes back.
+    /// Nothing is saved in between: the daemon writes the setup after a
+    /// command, never during one.
+    fn staged_verb(&mut self, command: Command) -> Reply {
+        let Some(name) = self.status.staged.clone() else {
+            return Reply::Error {
+                message: "nothing staged: scene stage <name> first".into(),
+            };
+        };
+        let a_layer_verb = matches!(
+            command,
+            Command::LayerCamera { .. }
+                | Command::LayerScreen { .. }
+                | Command::LayerWindow { .. }
+                | Command::LayerImage { .. }
+                | Command::LayerReplaceScreen { .. }
+                | Command::LayerReplaceWindow { .. }
+                | Command::LayerReplaceCamera { .. }
+                | Command::LayerReplaceImage { .. }
+                | Command::LayerVisible { .. }
+                | Command::LayerRemove { .. }
+                | Command::LayerMove { .. }
+                | Command::LayerTransform { .. }
+                | Command::LayerCrop { .. }
+                | Command::LayerShape { .. }
+                | Command::LayerMirror { .. }
+                | Command::LayerPosition { .. }
+                | Command::LayerShader { .. }
+                | Command::Shader { .. }
+                | Command::SceneElementAdd { .. }
+                | Command::SceneElementSet { .. }
+                | Command::SceneElementRemove { .. }
+        );
+        if !a_layer_verb {
+            return Reply::Error {
+                message: "the preview takes layer verbs alone".into(),
+            };
+        }
+        self.status.scenes = self.current_scenes();
+        let Some(staged) = self.status.scenes.iter().find(|s| s.name == name).cloned() else {
+            self.unstage();
+            return Reply::Error {
+                message: format!("the staged scene {name:?} is gone"),
+            };
+        };
+        let air_layers = std::mem::replace(&mut self.status.layers, staged.layers);
+        let air_name = std::mem::replace(&mut self.status.active_scene, name.clone());
+        let air_shader = std::mem::replace(&mut self.status.shader, staged.shader);
+        let air_clock = std::mem::take(&mut self.counting);
+        self.pipeline.edit_staged(true);
+        let reply = self.handle(command);
+        self.status.scenes = self.current_scenes();
+        self.pipeline.edit_staged(false);
+        self.status.layers = air_layers;
+        self.status.active_scene = air_name;
+        self.status.shader = air_shader;
+        self.counting = air_clock;
+        self.status.staged = Some(name);
+        match reply {
+            Reply::Error { message } => Reply::Error { message },
+            _ => Reply::Status(Box::new(self.reported())),
+        }
+    }
+
     fn unstage(&mut self) {
         let _ = self.pipeline.stage(None);
         self.status.staged = None;
@@ -1417,10 +1516,22 @@ impl Engine {
             Command::Status => Reply::Status(Box::new(self.reported())),
             Command::SceneCreate { name } => self.scene_create(name),
             Command::SceneDuplicate { name } => self.scene_duplicate(name),
-            Command::SceneSwitch { name } => self.scene_switch(name),
+            Command::SceneSwitch { name } => {
+                let switched = self.scene_switch(name.clone());
+                // The scene in the preview went on the air by the switch: it
+                // is staged no more.
+                if !matches!(switched, Reply::Error { .. })
+                    && self.status.staged.as_deref() == Some(name.as_str())
+                {
+                    self.unstage();
+                }
+                switched
+            }
             Command::SceneDelete { name } => self.scene_delete(name),
             Command::SceneStage { name } => self.scene_stage(name),
             Command::SceneTake => self.scene_take(),
+            Command::SceneDraft { name, from } => self.scene_draft(name, from),
+            Command::Staged { command } => self.staged_verb(*command),
             Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
             Command::AudioLayerVolume { id, volume } => self.audio_layer_volume(id, volume),
@@ -2250,6 +2361,158 @@ mod tests {
         };
         assert!(message.contains("scene stage"), "{message}");
         assert_eq!(engine.status.active_scene, "default");
+    }
+
+    #[test]
+    fn a_layer_verb_on_the_preview_edits_the_staged_scene_and_leaves_the_air_alone() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        let reply = engine.handle(Command::Staged {
+            command: Box::new(Command::LayerVisible {
+                id: "keys".into(),
+                on: false,
+            }),
+        });
+        assert!(matches!(reply, Reply::Status(_)), "{reply:?}");
+        assert_eq!(
+            engine.status.active_scene, "default",
+            "the air did not move"
+        );
+        assert_eq!(engine.status.staged.as_deref(), Some("next"));
+        assert!(
+            engine.status.layers[0].visible,
+            "the air's desk is as it was"
+        );
+        let next = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "next")
+            .unwrap();
+        assert!(!next.layers[0].visible, "the staged keys are hidden");
+        let told = events.lock().unwrap().clone();
+        assert_eq!(told.first().map(String::as_str), Some("stage next"));
+        assert!(
+            told.contains(&"edit staged".to_string()) && told.contains(&"edit air".to_string()),
+            "{told:?}"
+        );
+    }
+
+    #[test]
+    fn a_layer_added_on_the_preview_is_the_staged_scene_s_alone() {
+        let mut engine = with_next(Wrote::default());
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        let logo =
+            std::env::temp_dir().join(format!("remux-staged-logo-{}.png", std::process::id()));
+        std::fs::write(&logo, b"\x89PNG").expect("a picture file");
+        let reply = engine.handle(Command::Staged {
+            command: Box::new(Command::LayerImage {
+                id: "logo".into(),
+                path: logo.to_string_lossy().into_owned(),
+            }),
+        });
+        assert!(matches!(reply, Reply::Status(_)), "{reply:?}");
+        assert_eq!(engine.status.layers.len(), 1, "the air has its desk alone");
+        let next = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "next")
+            .unwrap();
+        assert_eq!(
+            next.layers
+                .iter()
+                .map(|l| l.id.as_str())
+                .collect::<Vec<_>>(),
+            ["keys", "logo"]
+        );
+    }
+
+    #[test]
+    fn the_preview_takes_layer_verbs_alone_and_needs_a_scene_staged() {
+        let mut engine = with_next(Wrote::default());
+        let Reply::Error { message } = engine.handle(Command::Staged {
+            command: Box::new(Command::LayerVisible {
+                id: "keys".into(),
+                on: false,
+            }),
+        }) else {
+            panic!("nothing staged is an error")
+        };
+        assert!(message.contains("nothing staged"), "{message}");
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        let Reply::Error { message } = engine.handle(Command::Staged {
+            command: Box::new(Command::Stop),
+        }) else {
+            panic!("stop is not a layer verb")
+        };
+        assert!(message.contains("layer"), "{message}");
+    }
+
+    #[test]
+    fn a_draft_is_a_new_scene_in_the_preview_and_the_air_does_not_move() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        let reply = engine.handle(Command::SceneDraft {
+            name: "empty".into(),
+            from: None,
+        });
+        assert!(matches!(reply, Reply::Status(_)), "{reply:?}");
+        assert_eq!(engine.status.active_scene, "default");
+        assert_eq!(engine.status.staged.as_deref(), Some("empty"));
+        assert!(engine
+            .status
+            .scenes
+            .iter()
+            .any(|s| s.name == "empty" && s.layers.is_empty()));
+        assert_eq!(*events.lock().unwrap(), ["stage empty"]);
+    }
+
+    #[test]
+    fn a_draft_from_a_scene_copies_it_into_the_preview() {
+        let mut engine = with_next(Wrote::default());
+        engine.handle(Command::SceneDraft {
+            name: "copy".into(),
+            from: Some("next".into()),
+        });
+        let copy = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "copy")
+            .expect("the copy");
+        assert_eq!(copy.layers[0].id, "keys");
+        assert_eq!(engine.status.staged.as_deref(), Some("copy"));
+        assert_eq!(engine.status.active_scene, "default");
+        assert!(
+            matches!(
+                engine.handle(Command::SceneDraft {
+                    name: "copy".into(),
+                    from: None
+                }),
+                Reply::Error { .. }
+            ),
+            "a name already taken"
+        );
+        assert!(
+            matches!(
+                engine.handle(Command::SceneDraft {
+                    name: "other".into(),
+                    from: Some("nope".into())
+                }),
+                Reply::Error { .. }
+            ),
+            "a scene that is not there"
+        );
     }
 
     #[test]

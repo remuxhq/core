@@ -49,6 +49,16 @@ pub enum Command {
     /// The staged scene on the air, and the scene that was out staged in its
     /// place: a second take goes back.
     SceneTake,
+    /// A new scene in the preview, off the air: empty, or a copy of `from`.
+    SceneDraft {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+    },
+    /// A layer verb on the staged scene instead of the scene on the air.
+    Staged {
+        command: Box<Command>,
+    },
     AudioLayerAdd {
         id: String,
         source: crate::sound::audio_layers::Source,

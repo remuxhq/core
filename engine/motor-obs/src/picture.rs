@@ -343,9 +343,9 @@ pub unsafe extern "C" fn tick(param: *mut c_void, _seconds: f32) {
 }
 
 impl ObsPipeline {
-    /// A capture of this source: the staged scene's, when it holds one (a
-    /// camera opens once), or a new one.
-    fn capture(&self, source: &Source) -> Result<*mut sys::obs_source_t, String> {
+    /// A capture of this source: the other picture's, when it holds one (a
+    /// camera opens once), or a new one; and whether it was the other's.
+    fn capture(&self, source: &Source) -> Result<(*mut sys::obs_source_t, bool), String> {
         let held = self
             .staged
             .lock()
@@ -357,8 +357,24 @@ impl ObsPipeline {
         match held {
             // SAFETY: a new reference to a live source, released with the
             // drawing that takes it.
-            Some(held) => Ok(unsafe { sys::obs_source_get_ref(held) }),
-            None => self.open(source),
+            Some(held) => Ok((unsafe { sys::obs_source_get_ref(held) }, true)),
+            None => self.open(source).map(|opened| (opened, false)),
+        }
+    }
+
+    /// The staged scene's picture in the air's place, or back: every layer
+    /// call in between acts on the staged scene. The rings are left alone
+    /// while it does, and pointed again after.
+    pub(crate) fn swap_staged(&mut self, on: bool) {
+        if on == self.editing_staged || (on && self.staged_scene.is_null()) {
+            return;
+        }
+        std::mem::swap(&mut self.picture, &mut self.staged);
+        std::mem::swap(&mut self.scene, &mut self.staged_scene);
+        std::mem::swap(&mut self.scene_filter, &mut self.staged_filter);
+        self.editing_staged = on;
+        if !on {
+            self.point_rings();
         }
     }
 
@@ -394,7 +410,9 @@ impl ObsPipeline {
             let got = match aired {
                 // SAFETY: a new reference to the air's live capture.
                 Some(source) => Ok((unsafe { sys::obs_source_get_ref(source) }, false)),
-                None => self.capture(&layer.source).map(|source| (source, true)),
+                None => self
+                    .capture(&layer.source)
+                    .map(|(source, _)| (source, true)),
             };
             match got {
                 Ok(it) => held.push(it),
@@ -700,6 +718,9 @@ impl ObsPipeline {
     /// The rings follow the layers of now: the first camera, and the first
     /// display or window.
     fn point_rings(&mut self) {
+        if self.editing_staged {
+            return;
+        }
         let (camera, screen) = {
             let drawn = self.drawn();
             (
@@ -957,7 +978,9 @@ impl Picture for ObsPipeline {
     }
 
     fn layer_add(&mut self, layer: &Layer) -> Result<(u32, u32), String> {
-        let source = self.capture(&layer.source)?;
+        let (source, borrowed) = self.capture(&layer.source)?;
+        // A staged layer on the air's capture leaves the air's dress on it.
+        let own = !(self.editing_staged && borrowed);
         let size = Self::first_size(source);
         if size.0 == 0 || size.1 == 0 {
             // SAFETY: ours, never put anywhere.
@@ -981,10 +1004,12 @@ impl Picture for ObsPipeline {
             filter: None,
             mask: std::ptr::null_mut(),
             masked: None,
-            own: true,
+            own,
         };
-        if let Err(why) = drawing.refilter(layer.shader.as_deref()) {
-            remuxd_domain::log::note(&format!("layer {}: {why}", layer.id));
+        if own {
+            if let Err(why) = drawing.refilter(layer.shader.as_deref()) {
+                remuxd_domain::log::note(&format!("layer {}: {why}", layer.id));
+            }
         }
         drawing.place();
         {
@@ -1069,7 +1094,7 @@ impl Picture for ObsPipeline {
                 continue;
             }
             match self.capture(&layer.source) {
-                Ok(source) => opened.push(source),
+                Ok((source, _)) => opened.push(source),
                 Err(why) => {
                     // SAFETY: opened here and never put anywhere.
                     unsafe { opened.into_iter().for_each(|s| sys::obs_source_release(s)) };
@@ -1121,6 +1146,10 @@ impl Picture for ObsPipeline {
         scene: Option<&remuxd_domain::picture::scenes::Scene>,
     ) -> Result<(), String> {
         self.stage_scene(scene)
+    }
+
+    fn edit_staged(&mut self, on: bool) {
+        self.swap_staged(on);
     }
 
     fn layers_changed(&mut self, layers: &[Layer]) {

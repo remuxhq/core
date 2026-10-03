@@ -323,6 +323,13 @@ const SCENE: &[Action] = &[
         summary: "Draw a scene off the air, in the preview, before it goes out.",
     },
     Action {
+        name: "draft",
+        target: "scene-draft",
+        prefix: &[],
+        args: "<name> [--from <scene>]",
+        summary: "A new scene in the preview, empty or a copy, off the air.",
+    },
+    Action {
         name: "take",
         target: "scene-take",
         prefix: &[],
