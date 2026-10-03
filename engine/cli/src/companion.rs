@@ -207,6 +207,10 @@ pub fn start(name: &str) -> Result<String, String> {
     command
         .args(&companion.run[1..])
         .envs(environment)
+        // Its own name, so that it can stop itself as a face would: a window's
+        // close button that runs `remux companion stop $REMUX_COMPANION` is down,
+        // where one that just ended would read as fallen.
+        .env("REMUX_COMPANION", name)
         .stdin(input)
         .stdout(log.try_clone().map_err(|why| why.to_string())?)
         .stderr(log)
@@ -343,6 +347,21 @@ mod tests {
         );
         assert!(Verb::parse(&w(&["start"])).is_err());
         assert!(Verb::parse(&w(&["launch", "a"])).is_err());
+    }
+
+    #[test]
+    fn a_companion_knows_its_own_name_so_it_can_stop_itself() {
+        place("[[companion]]\nname = \"named\"\nrun = [\"sh\", \"-c\", \"echo I am $REMUX_COMPANION; sleep 5\"]\n");
+        start("named").expect("it starts");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read_to_string(log_file("named"))
+            .unwrap_or_default()
+            .contains("I am named")
+        {
+            assert!(std::time::Instant::now() < until, "it never said its name");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        stop("named").expect("it stops");
     }
 
     #[test]
