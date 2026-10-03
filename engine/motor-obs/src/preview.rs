@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use remuxd_domain::picture::preview::{
     fills, Preview, CAMERA_SEQUENCE_AT, MAGIC, SCREEN_SEQUENCE_AT, SEQUENCE_AT, SLOTS,
+    STAGED_SEQUENCE_AT,
 };
 
 use libobs as sys;
@@ -201,6 +202,8 @@ pub struct Ring {
     /// on libobs's render thread, staged, and copied into its ring.
     camera: Mutex<Alone>,
     screen: Mutex<Alone>,
+    /// The staged scene, off the air, the scene a take puts on it.
+    staged: Mutex<Alone>,
     render_on: bool,
     /// One source asked for once, alone, at its own shape.
     snap: Mutex<Option<Snap>>,
@@ -275,6 +278,7 @@ impl Ring {
             base.add(SEQUENCE_AT).cast::<u64>().write(0);
             base.add(CAMERA_SEQUENCE_AT).cast::<u64>().write(0);
             base.add(SCREEN_SEQUENCE_AT).cast::<u64>().write(0);
+            base.add(STAGED_SEQUENCE_AT).cast::<u64>().write(0);
             base
         };
         Ok(Box::new(Self {
@@ -287,6 +291,7 @@ impl Ring {
             watch_on: false,
             camera: Mutex::new(Alone::default()),
             screen: Mutex::new(Alone::default()),
+            staged: Mutex::new(Alone::default()),
             render_on: false,
             snap: Mutex::new(None),
         }))
@@ -336,7 +341,19 @@ impl Ring {
         }
     }
 
-    /// Render the two sources alone every frame, or stop.
+    /// Which source the staged ring shows: the staged scene's own, or null
+    /// for none.
+    pub fn stage(&self, source: *mut sys::obs_source_t) {
+        if let Ok(mut it) = self.staged.lock() {
+            if it.source != source {
+                it.readback.turns.forget();
+                it.last.clear();
+            }
+            it.source = source;
+        }
+    }
+
+    /// Render the sources alone every frame, or stop.
     pub fn render(&mut self, on: bool) {
         if on == self.render_on {
             return;
@@ -353,7 +370,7 @@ impl Ring {
         self.render_on = on;
         // As `watch`: asleep, the camera's and the screen's pictures go too.
         if !on {
-            for alone in [&self.camera, &self.screen] {
+            for alone in [&self.camera, &self.screen, &self.staged] {
                 if let Ok(mut it) = alone.lock() {
                     it.last.clear();
                     it.readback.turns.forget();
@@ -494,6 +511,11 @@ impl Ring {
                 &ring.screen,
                 Preview::screen_offset as fn(&Preview, u32) -> usize,
                 SCREEN_SEQUENCE_AT,
+            ),
+            (
+                &ring.staged,
+                Preview::staged_offset as fn(&Preview, u32) -> usize,
+                STAGED_SEQUENCE_AT,
             ),
         ] {
             let Ok(mut it) = alone.try_lock() else {
@@ -636,7 +658,7 @@ impl Drop for Ring {
         // SAFETY: the graphics objects go inside the graphics context.
         unsafe {
             sys::obs_enter_graphics();
-            for alone in [&self.camera, &self.screen] {
+            for alone in [&self.camera, &self.screen, &self.staged] {
                 if let Ok(mut it) = alone.lock() {
                     it.readback.destroy();
                 }

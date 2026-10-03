@@ -26,6 +26,12 @@ pub struct ObsPipeline {
     pub(crate) scene: *mut sys::obs_scene_t,
     /// The picture's layers and elements, shared with the tick.
     pub(crate) picture: Box<Mutex<crate::picture::Drawn>>,
+    /// The staged scene, drawn off the air into the staged ring, and its
+    /// layers, shared with their own tick.
+    pub(crate) staged_scene: *mut sys::obs_scene_t,
+    pub(crate) staged: Box<Mutex<crate::picture::Drawn>>,
+    /// Whether a scene is staged: the staged ring draws it while one is.
+    pub(crate) staging: bool,
     /// The scene's own filter, over everything composed.
     pub(crate) scene_filter: Option<(String, *mut sys::obs_source_t)>,
     /// Filters asked for an element before its picture exists.
@@ -352,6 +358,9 @@ impl ObsPipeline {
         Self {
             known,
             scene: std::ptr::null_mut(),
+            staged_scene: std::ptr::null_mut(),
+            staged: Box::default(),
+            staging: false,
             picture: Box::default(),
             scene_filter: None,
             element_filters: Default::default(),
@@ -824,6 +833,24 @@ impl ObsPipeline {
         self.scene
     }
 
+    /// The staged scene, made on first use, on no output channel: only the
+    /// staged ring draws it. Its layers tick as the air's do.
+    pub(crate) fn staged_scene(&mut self) -> *mut sys::obs_scene_t {
+        if self.staged_scene.is_null() {
+            // SAFETY: ours until drop; the tick's pointer is the boxed staged
+            // picture, which outlives the registration (removed in drop).
+            unsafe {
+                self.staged_scene = sys::obs_scene_create_private(c("remux staged").as_ptr());
+                sys::obs_add_tick_callback(Some(crate::picture::tick), self.staged_param());
+            }
+        }
+        self.staged_scene
+    }
+
+    fn staged_param(&self) -> *mut c_void {
+        &*self.staged as *const Mutex<crate::picture::Drawn> as *mut c_void
+    }
+
     fn tick_param(&self) -> *mut c_void {
         &*self.picture as *const Mutex<crate::picture::Drawn> as *mut c_void
     }
@@ -939,6 +966,15 @@ impl Drop for ObsPipeline {
         }
         self.recording = None;
         self.publishing.clear();
+        if !self.staged_scene.is_null() {
+            let _ = self.stage_scene(None);
+            // SAFETY: registered in `staged_scene` with this pointer; the
+            // scene is ours and on no channel.
+            unsafe {
+                sys::obs_remove_tick_callback(Some(crate::picture::tick), self.staged_param());
+                sys::obs_scene_release(self.staged_scene);
+            }
+        }
         self.clear_picture();
         let _ = self.app_audio(None);
         for (id, _, _, _) in self.audio_layers.clone() {
