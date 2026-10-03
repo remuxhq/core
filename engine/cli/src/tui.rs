@@ -106,6 +106,10 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 screen.said = Some(match ask(&command) {
                     Ok(Reply::Error { message }) => message,
                     Ok(_) if later => "done: from the next live on".into(),
+                    // The engine keeps no copy of a said line: the platform hands it back.
+                    Ok(_) if matches!(command, Command::Say { .. }) => {
+                        "sent up the wire: it shows when the chat hands it back".into()
+                    }
                     Ok(_) => "done".into(),
                     Err(why) => why,
                 });
