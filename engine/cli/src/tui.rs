@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use remuxd_domain::air::plan::Plan;
 use remuxd_domain::picture::scenes::Scene;
-use remuxd_domain::protocol::{ChatLine, Command, Hearing, Mixing, Reply, Status};
+use remuxd_domain::protocol::{ChatLine, Command, Destination, Hearing, Mixing, Reply, Status};
 
 /// The screen, until `q`: the status read once a second through `ask`, drawn after every
 /// read and every key. Only a question a person answered with `y` sends anything else.
@@ -133,7 +133,7 @@ fn draw(
     now: i64,
 ) {
     let [top, middle, bottom] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -153,9 +153,11 @@ fn draw(
     };
     let line = format!("{} · scene: {}", air(status, now), status.active_scene);
     frame.render_widget(
-        Paragraph::new(line)
-            .style(Style::new().fg(colour).add_modifier(Modifier::BOLD))
-            .block(Block::bordered().title(" remux ")),
+        Paragraph::new(vec![
+            Line::styled(line, Style::new().fg(colour).add_modifier(Modifier::BOLD)),
+            Line::styled(out_line(status), Style::new().fg(Color::Gray)),
+        ])
+        .block(Block::bordered().title(" remux ")),
         top,
     );
     let [left, right, talk] = Layout::horizontal([
@@ -228,21 +230,7 @@ fn draw(
     let destinations: Vec<ListItem> = status
         .destinations
         .iter()
-        .map(|d| {
-            let lamp = if d.status == "live" {
-                "●"
-            } else if d.armed {
-                "○"
-            } else {
-                "·"
-            };
-            let armed = if d.armed { "armed" } else { "off" };
-            let sandbox = if d.sandbox { " sandbox" } else { "" };
-            ListItem::new(format!(
-                "{lamp} {} ({}) {armed}{sandbox} {}",
-                d.name, d.platform, d.status
-            ))
-        })
+        .map(|d| ListItem::new(destination_row(d)))
         .collect();
     let [right, below] =
         Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(right);
@@ -812,6 +800,55 @@ pub fn wrapped(text: &str, width: usize) -> Vec<String> {
         close(&mut out, &mut line);
     }
     out
+}
+
+/// What leaves: the picture, its rates, and the audience across the platforms. The
+/// audience needs an account (`remux login`); without one it is a dash.
+pub fn out_line(status: &Status) -> String {
+    let out = &status.outgoing;
+    format!(
+        "out {}x{} · {} fps · video {} kbps · audio {} kbps · viewers {} · peak {}",
+        out.width,
+        out.height,
+        out.fps,
+        out.video_kbps,
+        out.audio_kbps,
+        count(status.viewers),
+        count(status.viewers_peak)
+    )
+}
+
+fn count(n: Option<u32>) -> String {
+    n.map_or("—".into(), |n| n.to_string())
+}
+
+/// A destination: its lamp and state, its audience, what its platform last refused or
+/// that all is well, and, with an account, whose it is and its category.
+pub fn destination_row(d: &Destination) -> String {
+    let lamp = if d.status == "live" {
+        "●"
+    } else if d.armed {
+        "○"
+    } else {
+        "·"
+    };
+    let armed = if d.armed { "armed" } else { "off" };
+    let sandbox = if d.sandbox { " sandbox" } else { "" };
+    let trouble = d.trouble.as_deref().map(crate::words::plain);
+    [
+        Some(format!(
+            "{lamp} {} ({}) {armed}{sandbox} {}",
+            d.name, d.platform, d.status
+        )),
+        Some(format!("viewers {}", count(d.viewers))),
+        Some(trouble.unwrap_or_else(|| "ok".into())),
+        d.account.as_deref().map(crate::words::plain),
+        d.category.as_deref().map(crate::words::plain),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 /// A line of chat as the terminal shows it: whoever said it and what, with every
@@ -1708,6 +1745,56 @@ mod tests {
         assert_eq!(
             wrapped("KKKKKKKKKKKK", 5),
             vec!["KKKKK", "  KKK", "  KKK", "  K"]
+        );
+    }
+
+    #[test]
+    fn the_outgoing_line_says_the_picture_the_rates_and_the_audience() {
+        let mut status = Status {
+            outgoing: serde_json::from_value(serde_json::json!({
+                "width": 1920, "height": 1080, "fps": 30, "video_kbps": 6182, "audio_kbps": 160
+            }))
+            .expect("outgoing"),
+            ..Status::default()
+        };
+        assert_eq!(
+            out_line(&status),
+            "out 1920x1080 · 30 fps · video 6182 kbps · audio 160 kbps · viewers — · peak —"
+        );
+        status.viewers = Some(42);
+        status.viewers_peak = Some(80);
+        assert!(out_line(&status).ends_with("viewers 42 · peak 80"));
+    }
+
+    fn destination(extra: serde_json::Value) -> remuxd_domain::protocol::Destination {
+        let mut row = serde_json::json!({
+            "id": 1, "name": "twitch", "platform": "twitch", "status": "live",
+            "armed": true, "sandbox": false
+        });
+        row.as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
+        serde_json::from_value(row).expect("a destination")
+    }
+
+    #[test]
+    fn a_destination_without_an_account_says_its_state_and_that_all_is_well() {
+        assert_eq!(
+            destination_row(&destination(serde_json::json!({}))),
+            "● twitch (twitch) armed live · viewers — · ok"
+        );
+    }
+
+    #[test]
+    fn a_destination_with_an_account_adds_its_audience_trouble_and_category() {
+        let row = destination(serde_json::json!({
+            "viewers": 12, "account": "someone", "category": "Software and Game Development",
+            "trouble": "youtube said 403 quotaExceeded"
+        }));
+        assert_eq!(
+            destination_row(&row),
+            "● twitch (twitch) armed live · viewers 12 · youtube said 403 quotaExceeded · \
+             someone · Software and Game Development"
         );
     }
 
