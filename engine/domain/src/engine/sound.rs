@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub struct SoundLevels {
     pub mic: f64,
+    /// The music's gain, off its fader's curve (`music::music_fader`).
     pub music: f64,
     pub duck_db: f64,
     pub muted: bool,
@@ -372,7 +373,7 @@ impl Engine {
     pub(super) fn sound(&mut self) -> Reply {
         match self.pipeline.levels(SoundLevels {
             mic: self.status.faders.mic,
-            music: self.status.faders.music,
+            music: crate::sound::music::music_fader(self.status.faders.music),
             duck_db: self.status.faders.duck_db,
             muted: self.status.muted,
             music_to_stream: self.status.music_to_stream,
@@ -453,6 +454,10 @@ impl Engine {
         };
         match self.pipeline.play(Some(&track)) {
             Ok(()) => {
+                // A new track is a new source, at full volume until told.
+                if let Reply::Error { message } = self.sound() {
+                    crate::log::note(&format!("music: {message}"));
+                }
                 self.status.music = Some(match &track.artist {
                     Some(artist) => format!("{artist} — {}", track.title),
                     None => track.title.clone(),
@@ -680,6 +685,46 @@ mod tests {
     // the bed reaches the audience is its own switch, on unless somebody says
     // otherwise. The speakers stay a switch of their own because on speakers
     // the microphone picks the music up and it goes out twice.
+    // #47: the music reaches the motor as the curve's gain, linear in dB, and
+    // not as the fader's position, which made 2% loud on a live.
+    #[test]
+    fn the_music_reaches_the_motor_as_the_faders_curve_and_not_its_position() {
+        let levels: Faders = Default::default();
+        let pipeline = Wrote {
+            levels: levels.clone(),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_sources(Box::new(ThisMachine))
+            .with_pipeline(Box::new(pipeline))
+            .with_library(Box::new(ThreeGenres));
+        engine.handle(Command::MusicVolume { level: 0.5 });
+        let music = levels.lock().expect("levels").map(|l| l.1).expect("pushed");
+        assert!(
+            (music - crate::sound::music::music_fader(0.5)).abs() < 1e-9,
+            "half the travel is -39 dB, not -6: {music}"
+        );
+    }
+
+    // #46: every track is a new source that starts at full volume, so the
+    // fader goes down with every track, not only when it moves.
+    #[test]
+    fn a_new_track_is_given_the_music_fader() {
+        let levels: Faders = Default::default();
+        let pipeline = Wrote {
+            levels: levels.clone(),
+            ..Default::default()
+        };
+        let mut engine = Engine::with_sources(Box::new(ThisMachine))
+            .with_pipeline(Box::new(pipeline))
+            .with_library(Box::new(ThreeGenres));
+        engine.handle(Command::MusicVolume { level: 0.1 });
+        engine.handle(Command::Genre { name: "edm".into() });
+        *levels.lock().expect("levels") = None;
+        engine.handle(Command::NextTrack);
+        let music = levels.lock().expect("levels").map(|l| l.1);
+        assert_eq!(music, Some(crate::sound::music::music_fader(0.1)));
+    }
+
     #[test]
     fn hearing_the_music_is_not_optional_and_sending_it_out_is() {
         let levels: Faders = Default::default();
