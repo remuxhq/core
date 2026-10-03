@@ -165,6 +165,23 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Act::Stay => {}
             Act::Quit => break Ok(()),
             Act::Say(why) => screen.said = Some(why.into()),
+            Act::Ask(asking) => {
+                let (command, staged) = match asking {
+                    Asking::Mics => (Command::Mics, None),
+                    Asking::Sources { staged } => (Command::Sources, Some(staged)),
+                };
+                match ask(&command) {
+                    Ok(Reply::Sources(devices)) => {
+                        screen.picker = Some(match staged {
+                            None => mic_picker(&devices),
+                            Some(staged) => source_picker(&devices, staged),
+                        });
+                    }
+                    Ok(Reply::Error { message }) => screen.said = Some(message),
+                    Ok(other) => screen.said = Some(format!("the engine answered {other:?}")),
+                    Err(why) => screen.said = Some(why),
+                }
+            }
             Act::Said(why) => {
                 to_log(&mut screen, format!("{} ! {why}", local_time()));
                 screen.said = Some(why);
@@ -330,9 +347,8 @@ fn draw(
                         Typing::Draft(_) => {
                             " the new scene's name · enter drafts it in the preview "
                         }
-                        Typing::Layer { .. } => {
-                            " camera|screen|window|image <id> <source> · enter adds it "
-                        }
+                        Typing::Layer { .. } => " image <id> <path> · enter adds it ",
+                        Typing::LayerId { .. } => " the new layer's id · enter adds it ",
                     })
                     .border_style(Style::new().fg(Color::Yellow)),
             ),
@@ -372,6 +388,9 @@ fn draw(
     }
     if screen.showing_keys {
         draw_keys(frame);
+    }
+    if let Some(picker) = &screen.picker {
+        draw_picker(frame, picker);
     }
 }
 
@@ -523,6 +542,44 @@ fn draw_panel(
             frame.render_widget(List::new(lines).block(block(title)), area);
         }
     }
+}
+
+/// A list to pick from, over the rest.
+fn draw_picker(frame: &mut Frame, picker: &Picker) {
+    let area = frame.area();
+    let tall = (picker.rows.len() as u16 + 2).min(area.height.saturating_sub(4));
+    let [_, middle, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(tall),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, middle, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Percentage(60),
+        Constraint::Fill(1),
+    ])
+    .areas(middle);
+    let rows: Vec<ListItem> = picker
+        .rows
+        .iter()
+        .map(|(label, _)| ListItem::new(crate::words::plain(label)))
+        .collect();
+    frame.render_widget(ratatui::widgets::Clear, middle);
+    frame.render_stateful_widget(
+        List::new(rows)
+            .block(
+                Block::bordered()
+                    .title(format!(
+                        " {} · j/k · enter picks · esc closes ",
+                        picker.title
+                    ))
+                    .border_style(Style::new().fg(Color::Yellow)),
+            )
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        middle,
+        &mut ListState::default().with_selected(Some(picker.at)),
+    );
 }
 
 /// Every key, panel by panel, over the rest.
@@ -853,6 +910,108 @@ pub fn filters_in(dir: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// What a list over the screen offers to pick: a microphone, or a source for a
+/// new layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    Mic(Option<String>),
+    Camera(String),
+    Screen(u32, String),
+    Window(String),
+    /// A picture file: its path is typed.
+    Image,
+}
+
+/// A list over the screen, its rows and the one picked; `staged` when what it adds
+/// goes to the scene in the preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picker {
+    pub title: String,
+    pub rows: Vec<(String, Pick)>,
+    pub at: usize,
+    pub staged: bool,
+}
+
+/// What the screen asks the engine for, to offer it in a list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asking {
+    /// The microphones, listed with no camera opened.
+    Mics,
+    /// Every source: listing cameras opens one, so it is asked when a layer is added.
+    Sources { staged: bool },
+}
+
+/// The microphones, and none.
+pub fn mic_picker(devices: &remuxd_domain::protocol::Devices) -> Picker {
+    Picker {
+        title: "microphone".into(),
+        rows: std::iter::once(("no microphone".to_string(), Pick::Mic(None)))
+            .chain(
+                devices
+                    .mics
+                    .iter()
+                    .map(|m| (m.name.clone(), Pick::Mic(Some(m.name.clone())))),
+            )
+            .collect(),
+        at: 0,
+        staged: false,
+    }
+}
+
+/// The cameras, displays and windows there are, and a picture by its path.
+pub fn source_picker(devices: &remuxd_domain::protocol::Devices, staged: bool) -> Picker {
+    let cameras = devices
+        .cameras
+        .iter()
+        .map(|c| (format!("camera  {}", c.name), Pick::Camera(c.name.clone())));
+    let screens = devices.screens.iter().filter_map(|d| {
+        let display = d.id.parse().ok()?;
+        Some((
+            format!("screen  {}", d.name),
+            Pick::Screen(display, d.name.clone()),
+        ))
+    });
+    let windows = devices
+        .windows
+        .iter()
+        .map(|w| (format!("window  {}", w.name), Pick::Window(w.name.clone())));
+    Picker {
+        title: if staged {
+            "a layer for the preview".into()
+        } else {
+            "a layer for the air".into()
+        },
+        rows: cameras
+            .chain(screens)
+            .chain(windows)
+            .chain(std::iter::once((
+                "image   a file, by its path".to_string(),
+                Pick::Image,
+            )))
+            .collect(),
+        at: 0,
+        staged,
+    }
+}
+
+/// A layer id from a source's name: its first word, letters and digits.
+fn slug(name: &str) -> String {
+    let id: String = name
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(16)
+        .collect::<String>()
+        .to_lowercase();
+    if id.is_empty() {
+        "layer".into()
+    } else {
+        id
+    }
+}
+
 /// What a line typed is for.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum Typing {
@@ -863,6 +1022,8 @@ pub enum Typing {
     Draft(Option<String>),
     /// A layer as the CLI says it after `scene layer add`, on the air or staged.
     Layer { staged: bool },
+    /// The id of a layer whose source was picked.
+    LayerId { pick: Pick, staged: bool },
 }
 
 /// The line typed, done: said, drafted or added.
@@ -876,6 +1037,22 @@ fn typed_line(line: String, typing_for: Typing) -> Act {
             name: line.trim().to_string(),
             from,
         }),
+        Typing::LayerId { pick, staged } => {
+            let id = line.trim().to_string();
+            let command = match pick {
+                Pick::Camera(device) => Command::LayerCamera { id, device },
+                Pick::Screen(display, _) => Command::LayerScreen { id, display },
+                Pick::Window(query) => Command::LayerWindow { id, query },
+                Pick::Image | Pick::Mic(_) => return Act::Stay,
+            };
+            Act::Send(if staged {
+                Command::Staged {
+                    command: Box::new(command),
+                }
+            } else {
+                command
+            })
+        }
         Typing::Layer { staged } => {
             let words: Vec<String> = ["scene", "layer", "add"]
                 .into_iter()
@@ -986,7 +1163,7 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
         Panel::Layers => &[
             "[space] hide/show",
             "[J/K] forward/back",
-            "[A] add",
+            "[A] add (pick a source)",
             "[x] remove",
             "[f] filter",
             "[F] scene filter",
@@ -995,6 +1172,7 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
         ],
         Panel::Destinations => &["[a] arm", "[s] sandbox", "[j/k] pick", "[h] hide"],
         Panel::Sound => &[
+            "[enter] choose the mic",
             "[space] on/off",
             "[+/-] volume",
             "[d] duck",
@@ -1087,6 +1265,8 @@ pub struct Screen {
     pub log_back: usize,
     /// Whether every key is shown, over the rest.
     pub showing_keys: bool,
+    /// A list to pick from, over the rest.
+    pub picker: Option<Picker>,
     /// The panels not drawn: their keys still work once shown again.
     pub hidden: Vec<Panel>,
     /// What the last thing sent came to, and whether it is new enough to show.
@@ -1138,6 +1318,8 @@ pub enum Act {
     Say(&'static str),
     /// Send nothing, and say this.
     Said(String),
+    /// Ask the engine for a list, to offer it.
+    Ask(Asking),
     /// Start or stop a companion, by the shell's own `remux companion`.
     Companion {
         name: String,
@@ -1167,6 +1349,39 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                 screen.typing_for = typing_for;
             }
         }
+        return Act::Stay;
+    }
+    if let Some(mut picker) = screen.picker.take() {
+        match key {
+            'j' => picker.at = (picker.at + 1).min(picker.rows.len().saturating_sub(1)),
+            'k' => picker.at = picker.at.saturating_sub(1),
+            '\u{1b}' | 'q' => return Act::Stay,
+            '\n' => {
+                let Some((_, pick)) = picker.rows.get(picker.at).cloned() else {
+                    return Act::Stay;
+                };
+                return match pick {
+                    Pick::Mic(device) => Act::Send(Command::Mic { device }),
+                    Pick::Image => {
+                        screen.typing = Some("image ".into());
+                        screen.typing_for = Typing::Layer {
+                            staged: picker.staged,
+                        };
+                        Act::Stay
+                    }
+                    Pick::Camera(ref name) | Pick::Screen(_, ref name) | Pick::Window(ref name) => {
+                        screen.typing = Some(slug(name));
+                        screen.typing_for = Typing::LayerId {
+                            pick: pick.clone(),
+                            staged: picker.staged,
+                        };
+                        Act::Stay
+                    }
+                };
+            }
+            _ => {}
+        }
+        screen.picker = Some(picker);
         return Act::Stay;
     }
     // The keys are read, not acted on: any key closes them.
@@ -1321,10 +1536,8 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                 }
             }
         }
-        ('A', Panel::Layers) => {
-            screen.typing = Some(String::new());
-            screen.typing_for = Typing::Layer { staged: !on_air };
-        }
+        ('A', Panel::Layers) => return Act::Ask(Asking::Sources { staged: !on_air }),
+        ('\n', Panel::Sound) if screen.picked_sound == 0 => return Act::Ask(Asking::Mics),
         ('x', Panel::Layers) => {
             if let Some(id) = layer {
                 screen.asking = Some(Lever::Remove {
@@ -3261,6 +3474,123 @@ mod tests {
         assert_eq!(screen.log_back, 1);
     }
 
+    fn devices() -> remuxd_domain::protocol::Devices {
+        let named = |id: &str, name: &str| remuxd_domain::protocol::Named {
+            id: id.into(),
+            name: name.into(),
+        };
+        remuxd_domain::protocol::Devices {
+            cameras: vec![named("0x12", "C270 HD WEBCAM")],
+            screens: vec![named("1", "VG2791R")],
+            windows: vec![named("95", "Notes — today")],
+            mics: vec![named("bt", "Razer BlackShark V2 Pro (BT)")],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn enter_on_the_mic_asks_for_the_microphones_and_a_pick_chooses_one() {
+        let mut screen = on_sound(0);
+        assert_eq!(
+            press('\n', &mut screen, 0, &sounding()),
+            Act::Ask(Asking::Mics)
+        );
+        screen.picker = Some(mic_picker(&devices()));
+        let rows: Vec<&str> = screen
+            .picker
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect();
+        assert_eq!(rows, ["no microphone", "Razer BlackShark V2 Pro (BT)"]);
+        press('j', &mut screen, 0, &sounding());
+        assert_eq!(
+            press('\n', &mut screen, 0, &sounding()),
+            Act::Send(Command::Mic {
+                device: Some("Razer BlackShark V2 Pro (BT)".into())
+            })
+        );
+        assert!(screen.picker.is_none());
+    }
+
+    #[test]
+    fn a_on_the_layers_asks_for_the_sources_and_a_camera_picked_asks_only_its_id() {
+        let status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('A', &mut screen, 2, &status),
+            Act::Ask(Asking::Sources { staged: false })
+        );
+        screen.picker = Some(source_picker(&devices(), false));
+        let rows: Vec<&str> = screen
+            .picker
+            .as_ref()
+            .unwrap()
+            .rows
+            .iter()
+            .map(|(l, _)| l.as_str())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "camera  C270 HD WEBCAM",
+                "screen  VG2791R",
+                "window  Notes — today",
+                "image   a file, by its path"
+            ]
+        );
+        assert_eq!(press('\n', &mut screen, 2, &status), Act::Stay);
+        assert_eq!(
+            screen.typing.as_deref(),
+            Some("c270"),
+            "the id suggested from the name"
+        );
+        assert_eq!(
+            press('\n', &mut screen, 2, &status),
+            Act::Send(Command::LayerCamera {
+                id: "c270".into(),
+                device: "C270 HD WEBCAM".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_source_picked_for_the_preview_is_added_there() {
+        let mut screen = Screen {
+            picker: Some(source_picker(&devices(), true)),
+            ..Screen::default()
+        };
+        press('j', &mut screen, 0, &Status::default());
+        press('\n', &mut screen, 0, &Status::default());
+        assert_eq!(
+            press('\n', &mut screen, 0, &Status::default()),
+            Act::Send(Command::Staged {
+                command: Box::new(Command::LayerScreen {
+                    id: "vg2791r".into(),
+                    display: 1
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn escape_closes_a_picker_and_sends_nothing() {
+        let mut screen = Screen {
+            picker: Some(mic_picker(&devices())),
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('\u{1b}', &mut screen, 0, &Status::default()),
+            Act::Stay
+        );
+        assert!(screen.picker.is_none());
+    }
+
     #[test]
     fn u_brings_back_the_scene_deleted_last() {
         let mut status = with_scenes(&["Screen"], "Screen");
@@ -3294,13 +3624,14 @@ mod tests {
     }
 
     #[test]
-    fn a_adds_a_layer_typed_as_the_cli_says_it_to_the_scene_on_the_air_or_the_preview() {
+    fn a_layer_typed_as_the_cli_says_it_goes_to_the_scene_on_the_air_or_the_preview() {
         let mut status = on_screen();
         let mut screen = Screen {
             focus: Panel::Layers,
+            typing: Some(String::new()),
+            typing_for: Typing::Layer { staged: false },
             ..Screen::default()
         };
-        press('A', &mut screen, 2, &status);
         assert_eq!(
             typed(&mut screen, &status, "camera keys C270"),
             Act::Send(Command::LayerCamera {
@@ -3312,9 +3643,10 @@ mod tests {
         let mut screen = Screen {
             focus: Panel::Layers,
             picked: 1,
+            typing: Some(String::new()),
+            typing_for: Typing::Layer { staged: true },
             ..Screen::default()
         };
-        press('A', &mut screen, 2, &status);
         assert_eq!(
             typed(&mut screen, &status, "camera keys C270"),
             Act::Send(Command::Staged {
@@ -3331,9 +3663,10 @@ mod tests {
         let status = on_screen();
         let mut screen = Screen {
             focus: Panel::Layers,
+            typing: Some(String::new()),
+            typing_for: Typing::Layer { staged: false },
             ..Screen::default()
         };
-        press('A', &mut screen, 2, &status);
         assert!(matches!(
             typed(&mut screen, &status, "nonsense"),
             Act::Said(_)
