@@ -78,7 +78,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["config"], args: "", summary: "What is in effect and where each value came from.", note: "The environment, then ~/.config/remux/config.toml, then the defaults." },
     Topic { names: &["companion"], args: "[list] | start|stop|log <name> | send <name> <words>", summary: "Your own programs beside the engine: started, stopped and watched here.", note: "The list is a file of yours (REMUX_COMPANIONS, or `[companions] file` in config.toml): each [[companion]] a name, run (an argv, never a shell), cwd, an optional env_file kept 0600, and input = true for one that reads words: send writes a line to it. The engine never runs them." },
     Topic { names: &["daemon"], args: "start|stop|restart|status|log|path", summary: "The engine as a service of your session.", note: "" },
-    Topic { names: &["bug"], args: "[--open]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form for a person to submit." },
+    Topic { names: &["bug"], args: "[--open <title>]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form, titled with the words after it, for a person to submit." },
     Topic { names: &["schema"], args: "", summary: "The wire's JSON Schema.", note: "" },
 ];
 

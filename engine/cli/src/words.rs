@@ -2491,10 +2491,11 @@ pub enum View {
     ChatKeep(String),
     /// `config`: what is in effect and where each value came from.
     Config,
-    /// `bug [--open]`: a report for an issue, gathered here; `--open` lands
-    /// on GitHub's form with it filled in, for a person to submit.
+    /// `bug [--open <title>]`: a report for an issue, gathered here; `--open`
+    /// lands on GitHub's form with it and the title filled in, for a person to
+    /// submit.
     Bug {
-        open: bool,
+        open: Option<String>,
     },
     /// `daemon start|stop|restart|status|log|path`: the engine as a service of the session.
     Daemon(remuxd_domain::daemon::Verb),
@@ -2686,11 +2687,22 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         });
     }
     if words.first().map(String::as_str) == Some("bug") {
+        let title = words[1..]
+            .iter()
+            .filter(|w| !w.starts_with("--"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let open = match (words.iter().any(|w| w == "--open"), title.is_empty()) {
+            (false, _) => None,
+            (true, true) => {
+                return Err("bug --open needs a title: remux bug --open <what went wrong>".into())
+            }
+            (true, false) => Some(title),
+        };
         return Ok(Ask {
             command: None,
-            view: View::Bug {
-                open: words.iter().any(|w| w == "--open"),
-            },
+            view: View::Bug { open },
             format,
             follow: false,
         });
@@ -3213,9 +3225,16 @@ mod reading {
         assert!(read(&w("chat url")).is_err());
         assert_eq!(read(&w("config")).unwrap().view, View::Config);
         assert_eq!(
-            read(&w("bug --open")).unwrap().view,
-            View::Bug { open: true }
+            read(&w("bug --open window capture freezes on air"))
+                .unwrap()
+                .view,
+            View::Bug {
+                open: Some("window capture freezes on air".into())
+            }
         );
+        assert_eq!(read(&w("bug")).unwrap().view, View::Bug { open: None });
+        let refused = read(&w("bug --open")).unwrap_err();
+        assert!(refused.contains("title"), "{refused}");
         assert_eq!(
             read(&w("daemon stop --force")).unwrap().view,
             View::Daemon(remuxd_domain::daemon::Verb::Stop { force: true })
