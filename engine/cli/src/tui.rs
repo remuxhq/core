@@ -111,6 +111,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             KeyCode::Backspace => '\u{8}',
             KeyCode::Enter => '\n',
             KeyCode::Tab => '\t',
+            KeyCode::BackTab => '\u{19}',
             KeyCode::Down => 'j',
             KeyCode::Up => 'k',
             _ => continue,
@@ -211,14 +212,13 @@ fn draw(
     chat: &Chat,
     now: i64,
 ) {
-    let width = frame.area().width as usize;
-    let bar = key_bar(screen.focus);
-    let bar_lines = wrap_tokens(&bar, width);
     let [top, middle, typed, bottom] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Min(3),
         Constraint::Length(if screen.typing.is_some() { 3 } else { 0 }),
-        Constraint::Length(bar_lines.len() as u16),
+        // Two lines, always: the panel's keys and the screen's. A bar whose height
+        // followed the panel made the whole screen jump on every tab.
+        Constraint::Length(2),
     ])
     .areas(frame.area());
     let Ok(status) = status else {
@@ -269,7 +269,7 @@ fn draw(
             28,
         ),
         (&[(Panel::Destinations, 40), (Panel::Sound, 60)], 42),
-        (&[(Panel::Chat, 65), (Panel::History, 35)], 30),
+        (&[(Panel::Chat, 65), (Panel::Log, 35)], 30),
     ];
     let present: Vec<(Vec<(Panel, u16)>, u16)> = columns
         .iter()
@@ -311,28 +311,33 @@ fn draw(
             typed,
         );
     }
-    // The keys: the focused panel's bright, the global ones dim.
-    let own = keys_of(screen.focus).len();
-    let mut seen = 0;
-    let lines: Vec<Line> = bar_lines
-        .iter()
-        .map(|tokens| {
-            let mut spans = Vec::new();
-            for token in tokens {
-                let style = if seen < own {
-                    Style::new().fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(Color::DarkGray)
-                };
-                if !spans.is_empty() {
-                    spans.push(Span::raw("  "));
-                }
-                spans.push(Span::styled(*token, style));
-                seen += 1;
-            }
-            Line::from(spans)
-        })
-        .collect();
+    // The keys: the focused panel's bright on the first line, the screen's dim on
+    // the second; a line too long for the width is cut, never wrapped.
+    let [own, global] = key_lines(screen.focus);
+    let line = |tokens: &[&'static str], style: Style| {
+        let mut spans = vec![Span::styled(
+            format!(" {} ", screen.focus.word()),
+            style.add_modifier(Modifier::REVERSED),
+        )];
+        for token in tokens {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(*token, style));
+        }
+        Line::from(spans)
+    };
+    let bright = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+    let mut lines = vec![line(own, bright)];
+    let mut screen_line = vec![Span::styled(
+        " screen ",
+        Style::new()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::REVERSED),
+    )];
+    for token in global {
+        screen_line.push(Span::raw("  "));
+        screen_line.push(Span::styled(*token, Style::new().fg(Color::DarkGray)));
+    }
+    lines.push(Line::from(screen_line));
     frame.render_widget(Paragraph::new(lines), bottom);
     if let Some(lever) = &screen.asking {
         ask_about(frame, lever);
@@ -469,7 +474,7 @@ fn draw_panel(
             frame.render_widget(List::new(shown).block(block(title)), area);
         }
         Panel::Companions => draw_companions(frame, screen, area, block("companions".into())),
-        Panel::History => {
+        Panel::Log => {
             let fits = area.height.saturating_sub(2) as usize;
             let lines: Vec<ListItem> = if screen.history.is_empty() {
                 vec![ListItem::new("nothing sent from this screen yet")
@@ -783,8 +788,9 @@ pub enum Panel {
     Chat,
     /// The operator's programs beside the engine.
     Companions,
-    /// What this screen sent.
-    History,
+    /// What the engine did and what went wrong, from any face, and this
+    /// screen's own.
+    Log,
 }
 
 impl Panel {
@@ -796,7 +802,7 @@ impl Panel {
         Panel::Sound,
         Panel::Chat,
         Panel::Companions,
-        Panel::History,
+        Panel::Log,
     ];
 
     /// The digit that shows or hides it.
@@ -813,7 +819,7 @@ impl Panel {
             Panel::Sound => "sound",
             Panel::Chat => "chat",
             Panel::Companions => "companions",
-            Panel::History => "history",
+            Panel::Log => "log",
         }
     }
 }
@@ -856,6 +862,7 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
             "[X] delete",
             "[U] undelete",
             "[j/k] pick",
+            "[h] hide",
         ],
         Panel::Layers => &[
             "[space] hide/show",
@@ -865,8 +872,9 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
             "[f] filter",
             "[F] scene filter",
             "[j/k] pick",
+            "[h] hide",
         ],
-        Panel::Destinations => &["[a] arm", "[s] sandbox", "[j/k] pick"],
+        Panel::Destinations => &["[a] arm", "[s] sandbox", "[j/k] pick", "[h] hide"],
         Panel::Sound => &[
             "[space] on/off",
             "[+/-] volume",
@@ -874,17 +882,19 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
             "[s] music to the live",
             "[g] genre",
             "[j/k] pick",
+            "[h] hide",
         ],
-        Panel::Chat => &["[c] say", "[k] older", "[j] newer"],
-        Panel::Companions => &["[space] start/stop", "[j/k] pick"],
-        Panel::History => &["[7] hide"],
+        Panel::Chat => &["[c] say", "[k] older", "[j] newer", "[h] hide"],
+        Panel::Companions => &["[space] start/stop", "[j/k] pick", "[h] hide"],
+        Panel::Log => &["[k] older", "[j] newer", "[h] hide"],
     }
 }
 
 /// The keys every panel has.
 pub const GLOBAL_KEYS: &[&str] = &[
-    "[tab] next panel",
-    "[1-7] show/hide",
+    "[tab/shift+tab] panels",
+    "[1-7] go to",
+    "[0] show all",
     "[L] live",
     "[S] stop",
     "[R] record",
@@ -897,9 +907,9 @@ pub const GLOBAL_KEYS: &[&str] = &[
     "[q] quit",
 ];
 
-/// The bar: the focused panel's keys, then the global ones.
-pub fn key_bar(panel: Panel) -> Vec<&'static str> {
-    keys_of(panel).iter().chain(GLOBAL_KEYS).copied().collect()
+/// The bar's two lines, whatever the panel: its own keys, then the screen's.
+pub fn key_lines(panel: Panel) -> [&'static [&'static str]; 2] {
+    [keys_of(panel), GLOBAL_KEYS]
 }
 
 /// Tokens two spaces apart, onto as many lines of `width` as they need.
@@ -967,6 +977,16 @@ impl Screen {
     /// Whether this panel is drawn.
     pub fn shows(&self, panel: Panel) -> bool {
         !self.hidden.contains(&panel)
+    }
+
+    /// The panel before this one that is drawn, round from the first.
+    fn previous_shown(&self, from: Panel) -> Panel {
+        let at = Panel::ALL.iter().position(|p| *p == from).unwrap_or(0);
+        let all = Panel::ALL.len();
+        (1..=all)
+            .map(|step| Panel::ALL[(at + all - step) % all])
+            .find(|p| self.shows(*p))
+            .unwrap_or(from)
     }
 
     /// The panel after this one that is drawn, round from the last.
@@ -1066,19 +1086,19 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('?', _) => screen.showing_keys = true,
         ('1'..='7', _) => {
             let panel = Panel::ALL[(key as u8 - b'1') as usize];
-            if screen.shows(panel) {
-                if Panel::ALL.iter().filter(|p| screen.shows(**p)).count() == 1 {
-                    return Act::Say("one panel stays shown");
-                }
-                screen.hidden.push(panel);
-                if screen.focus == panel {
-                    screen.focus = screen.next_shown(panel);
-                }
-            } else {
-                screen.hidden.retain(|p| *p != panel);
+            screen.hidden.retain(|p| *p != panel);
+            screen.focus = panel;
+        }
+        ('0', _) => screen.hidden.clear(),
+        ('h', focus) => {
+            if Panel::ALL.iter().filter(|p| screen.shows(**p)).count() == 1 {
+                return Act::Say("one panel stays shown");
             }
+            screen.hidden.push(focus);
+            screen.focus = screen.next_shown(focus);
         }
         ('\t', focus) => screen.focus = screen.next_shown(focus),
+        ('\u{19}', focus) => screen.focus = screen.previous_shown(focus),
         ('c', _) => screen.typing = Some(String::new()),
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
@@ -2068,7 +2088,7 @@ mod tests {
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Companions);
         press('\t', &mut screen, 3, &status);
-        assert_eq!(screen.focus, Panel::History);
+        assert_eq!(screen.focus, Panel::Log);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
@@ -2930,50 +2950,93 @@ mod tests {
     }
 
     #[test]
-    fn a_digit_hides_its_panel_and_shows_it_again() {
+    fn a_digit_goes_to_its_panel_and_brings_it_back_when_hidden() {
         let mut screen = Screen::default();
         press('5', &mut screen, 0, &Status::default());
-        assert!(!screen.shows(Panel::Chat));
-        press('5', &mut screen, 0, &Status::default());
-        assert!(screen.shows(Panel::Chat));
+        assert_eq!(screen.focus, Panel::Chat);
+        screen.hidden.push(Panel::Sound);
+        press('4', &mut screen, 0, &Status::default());
+        assert_eq!(screen.focus, Panel::Sound);
+        assert!(
+            screen.shows(Panel::Sound),
+            "going to a hidden panel shows it"
+        );
     }
 
     #[test]
-    fn hiding_the_panel_in_focus_moves_the_focus_on_and_tab_skips_what_is_hidden() {
+    fn h_hides_the_panel_in_focus_and_the_focus_moves_on() {
         let mut screen = Screen::default();
-        press('1', &mut screen, 0, &Status::default());
-        assert_eq!(
-            screen.focus,
-            Panel::Layers,
-            "scenes hidden: the next one has the keys"
-        );
-        press('3', &mut screen, 0, &Status::default());
+        press('h', &mut screen, 0, &Status::default());
+        assert!(!screen.shows(Panel::Scenes));
+        assert_eq!(screen.focus, Panel::Layers);
+    }
+
+    #[test]
+    fn zero_shows_every_panel_and_hides_none() {
+        let mut screen = Screen {
+            hidden: vec![Panel::Chat, Panel::Log],
+            ..Screen::default()
+        };
+        press('0', &mut screen, 0, &Status::default());
+        assert!(screen.hidden.is_empty());
+        press('0', &mut screen, 0, &Status::default());
+        assert!(screen.hidden.is_empty(), "zero only shows");
+    }
+
+    #[test]
+    fn shift_tab_goes_back_and_both_tabs_skip_what_is_hidden() {
+        let mut screen = Screen {
+            hidden: vec![Panel::Layers],
+            ..Screen::default()
+        };
+        press('\u{19}', &mut screen, 0, &Status::default());
+        assert_eq!(screen.focus, Panel::Log, "back from the first is the last");
+        press('\u{19}', &mut screen, 0, &Status::default());
+        assert_eq!(screen.focus, Panel::Companions);
+        screen.focus = Panel::Scenes;
         press('\t', &mut screen, 0, &Status::default());
         assert_eq!(
             screen.focus,
-            Panel::Sound,
-            "destinations hidden: tab goes past it"
+            Panel::Destinations,
+            "layers hidden: tab goes past it"
         );
     }
 
     #[test]
     fn the_last_panel_shown_stays() {
-        let mut screen = Screen::default();
-        for digit in ['1', '2', '3', '4', '5', '6'] {
-            press(digit, &mut screen, 0, &Status::default());
-        }
+        let mut screen = Screen {
+            focus: Panel::Log,
+            hidden: Panel::ALL[..6].to_vec(),
+            ..Screen::default()
+        };
         assert_eq!(
-            press('7', &mut screen, 0, &Status::default()),
+            press('h', &mut screen, 0, &Status::default()),
             Act::Say("one panel stays shown")
         );
-        assert!(screen.shows(Panel::History));
+        assert!(screen.shows(Panel::Log));
+    }
+
+    #[test]
+    fn the_key_bar_is_two_lines_the_panel_s_and_the_screen_s_whatever_the_panel() {
+        for panel in Panel::ALL {
+            let [own, global] = key_lines(panel);
+            assert_eq!(own, keys_of(panel));
+            assert_eq!(global, GLOBAL_KEYS);
+        }
+        assert!(
+            GLOBAL_KEYS.iter().any(|k| k.contains("[0]"))
+                && GLOBAL_KEYS.iter().any(|k| k.contains("[1-7]"))
+        );
+        assert!(Panel::ALL
+            .iter()
+            .all(|p| keys_of(*p).iter().any(|k| k.contains("[h] hide"))));
     }
 
     #[test]
     fn the_panels_hidden_are_kept_as_words_and_read_back() {
-        let hidden = vec![Panel::Chat, Panel::History];
+        let hidden = vec![Panel::Chat, Panel::Log];
         let kept = keep_hidden(&hidden);
-        assert_eq!(kept, "hidden = [\"chat\", \"history\"]\n");
+        assert_eq!(kept, "hidden = [\"chat\", \"log\"]\n");
         assert_eq!(read_hidden(&kept), hidden);
         assert_eq!(
             read_hidden("hidden = [\"nonsense\"]\n"),
@@ -2992,19 +3055,6 @@ mod tests {
         assert_eq!(
             wrap_tokens(&tokens, 16),
             vec![vec!["[a] one", "[b] two"], vec!["[c] three"]]
-        );
-    }
-
-    #[test]
-    fn every_panel_has_its_keys_and_the_bar_names_the_focused_one_s_first() {
-        for panel in Panel::ALL {
-            assert!(!keys_of(panel).is_empty(), "{panel:?} has keys");
-        }
-        let bar = key_bar(Panel::Scenes);
-        assert!(bar[0].starts_with("[enter]"), "{bar:?}");
-        assert!(
-            bar.iter().any(|t| t.contains("[?]")),
-            "the global keys follow"
         );
     }
 
