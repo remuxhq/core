@@ -365,8 +365,9 @@ impl ObsPipeline {
     /// The staged scene drawn off the air: each layer on the air's capture
     /// when the air has it, borrowed and left as the air dresses it, else on
     /// one of its own. Every capture is in hand before the old staging goes,
-    /// so a refusal leaves the preview as it was. Text, timers and the
-    /// scene's own filter are not staged.
+    /// so a refusal leaves the preview as it was. Its text and timers are its
+    /// own, a timer shown at its full time (it runs on the air alone), and its
+    /// own filter is on the staged scene.
     pub(crate) fn stage_scene(
         &mut self,
         scene: Option<&remuxd_domain::picture::scenes::Scene>,
@@ -435,10 +436,66 @@ impl ObsPipeline {
             drawing.place();
             drawings.push(drawing);
         }
-        self.staged
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .layers = drawings;
+        let mut written = Vec::new();
+        for element in &scene.elements {
+            let (words, _) = timer_words(element, None);
+            let source = match effect::element(element.width, element.height, &words) {
+                Ok(source) => source,
+                Err(why) => {
+                    remuxd_domain::log::note(&format!("staged element {}: {why}", element.id));
+                    continue;
+                }
+            };
+            let mut item = std::ptr::null_mut();
+            let at = crate::vec2(element.x as f32, element.y as f32);
+            // SAFETY: the staged scene takes its own reference to the source.
+            atomically(staged, || unsafe {
+                item = sys::obs_scene_add(staged, source);
+                sys::obs_sceneitem_set_alignment(item, sys::OBS_ALIGN_LEFT | sys::OBS_ALIGN_TOP);
+                sys::obs_sceneitem_set_pos(item, &at);
+                sys::obs_sceneitem_set_visible(item, element.visible);
+            });
+            let mut it = Written {
+                element: element.clone(),
+                source,
+                item,
+                filter: None,
+                deadline: None,
+                words,
+            };
+            if let Some(path) = &element.shader {
+                match effect::filter(path) {
+                    Ok(made) => set_filter(it.source, &mut it.filter, Some(path), Some(made)),
+                    Err(why) => remuxd_domain::log::note(&format!(
+                        "staged element {}: its filter did not build: {why}",
+                        element.id
+                    )),
+                }
+            }
+            written.push(it);
+        }
+        {
+            let mut drawn = self
+                .staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drawn.layers = drawings;
+            drawn.elements = written;
+            drawn.order = scene.ordered_ids();
+            drawn.reorder();
+        }
+        // The scene's own filter, on the staged scene's source.
+        // SAFETY: the staged scene is ours until drop.
+        let whole = unsafe { sys::obs_scene_get_source(staged) };
+        let made = match scene.shader.as_deref().map(effect::filter).transpose() {
+            Ok(made) => made,
+            Err(why) => {
+                remuxd_domain::log::note(&format!("staged scene's filter: {why}"));
+                None
+            }
+        };
+        let path = made.and(scene.shader.as_deref());
+        set_filter(whole, &mut self.staged_filter, path, made);
         self.staging = true;
         self.point_rings();
         Ok(())
@@ -447,14 +504,24 @@ impl ObsPipeline {
     /// Every staged layer off the staged scene; a capture the air shares
     /// keeps its dress.
     pub(crate) fn release_staged(&mut self) {
-        let gone = std::mem::take(
-            &mut self
+        let (layers, elements) = {
+            let mut drawn = self
                 .staged
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .layers,
-        );
-        gone.into_iter().for_each(Drawing::release);
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drawn.order.clear();
+            (
+                std::mem::take(&mut drawn.layers),
+                std::mem::take(&mut drawn.elements),
+            )
+        };
+        layers.into_iter().for_each(Drawing::release);
+        elements.into_iter().for_each(Written::release);
+        if !self.staged_scene.is_null() {
+            // SAFETY: the staged scene's own source; the filter is ours on it.
+            let whole = unsafe { sys::obs_scene_get_source(self.staged_scene) };
+            set_filter(whole, &mut self.staged_filter, None, None);
+        }
     }
 
     /// A capture of this source, opened: a display, a window, a camera or a

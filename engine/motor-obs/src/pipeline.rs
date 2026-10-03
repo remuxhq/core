@@ -32,6 +32,8 @@ pub struct ObsPipeline {
     pub(crate) staged: Box<Mutex<crate::picture::Drawn>>,
     /// Whether a scene is staged: the staged ring draws it while one is.
     pub(crate) staging: bool,
+    /// The staged scene's own filter, over everything it composes.
+    pub(crate) staged_filter: Option<(String, *mut sys::obs_source_t)>,
     /// The scene's own filter, over everything composed.
     pub(crate) scene_filter: Option<(String, *mut sys::obs_source_t)>,
     /// Filters asked for an element before its picture exists.
@@ -361,6 +363,7 @@ impl ObsPipeline {
             staged_scene: std::ptr::null_mut(),
             staged: Box::default(),
             staging: false,
+            staged_filter: None,
             picture: Box::default(),
             scene_filter: None,
             element_filters: Default::default(),
