@@ -728,14 +728,10 @@ fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui
     };
     let fits = lines_area.height.saturating_sub(2) as usize;
     let width = lines_area.width.saturating_sub(2) as usize;
-    let rows: Vec<String> = chat
-        .lines
-        .iter()
-        .flat_map(|line| wrapped(&chat_row(line), width))
-        .collect();
-    let shown: Vec<ListItem> = rows[rows.len().saturating_sub(fits)..]
-        .iter()
-        .map(|row| ListItem::new(row.as_str()))
+    let mut rows = chat_rows(&chat.lines, width);
+    let shown: Vec<ListItem> = rows
+        .drain(rows.len().saturating_sub(fits)..)
+        .map(ListItem::new)
         .collect();
     frame.render_widget(
         List::new(shown).block(
@@ -758,16 +754,15 @@ fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui
 }
 
 /// A line of text in a column `width` cells wide: broken between words, the rest of it
-/// indented two cells, and a word longer than the column cut where the column ends.
+/// indented by `indent`, and a word longer than the column cut where the column ends.
 /// A character counts as one cell.
-pub fn wrapped(text: &str, width: usize) -> Vec<String> {
-    const INDENT: &str = "  ";
-    let width = width.max(INDENT.len() + 1);
+pub fn wrapped(text: &str, width: usize, indent: &str) -> Vec<String> {
+    let width = width.max(indent.len() + 1);
     let mut out: Vec<String> = Vec::new();
     let mut line = String::new();
     let close = |out: &mut Vec<String>, line: &mut String| {
-        let indent = if out.is_empty() { "" } else { INDENT };
-        out.push(format!("{indent}{}", std::mem::take(line)));
+        let before = if out.is_empty() { "" } else { indent };
+        out.push(format!("{before}{}", std::mem::take(line)));
     };
     for word in text.split(' ').filter(|word| !word.is_empty()) {
         let mut word: Vec<char> = word.chars().collect();
@@ -775,7 +770,7 @@ pub fn wrapped(text: &str, width: usize) -> Vec<String> {
             let room = if out.is_empty() {
                 width
             } else {
-                width - INDENT.len()
+                width - indent.len()
             };
             let used = line.chars().count();
             let needed = if used == 0 {
@@ -851,14 +846,44 @@ pub fn destination_row(d: &Destination) -> String {
     .join(" · ")
 }
 
-/// A line of chat as the terminal shows it: whoever said it and what, with every
-/// escape and control character a stranger could send taken out.
-pub fn chat_row(line: &ChatLine) -> String {
-    format!(
-        "{}: {}",
-        crate::words::plain(&line.from),
-        crate::words::plain(&line.body)
-    )
+/// The chat as the CLI dresses it: the platform in its own colour (Twitch's purple,
+/// YouTube's red, anything else cyan) and who said it, the words below, and a faint
+/// rule between one line and the next. Every escape and control character a stranger
+/// could send is taken out first.
+pub fn chat_rows(lines: &[ChatLine], width: usize) -> Vec<Line<'static>> {
+    let rule = Line::from(Span::styled(
+        "─".repeat(width),
+        Style::new().fg(Color::Indexed(238)),
+    ));
+    let mut rows = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            rows.push(rule.clone());
+        }
+        let colour = match line.platform.as_str() {
+            "twitch" => Color::Indexed(141),
+            "youtube" => Color::Indexed(203),
+            _ => Color::Cyan,
+        };
+        rows.push(Line::from(vec![
+            Span::styled(
+                crate::words::plain(&line.platform),
+                Style::new().fg(colour).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                crate::words::plain(&line.from),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        let body = crate::words::plain(&line.body);
+        rows.extend(
+            wrapped(&body, width.saturating_sub(2), "")
+                .into_iter()
+                .map(|words| Line::raw(format!("  {words}"))),
+        );
+    }
+    rows
 }
 
 /// Whether a scene's layer or element is shown.
@@ -1559,16 +1584,6 @@ mod tests {
     }
 
     #[test]
-    fn a_line_of_chat_reaches_the_terminal_without_its_escapes() {
-        let line: remuxd_domain::protocol::ChatLine = serde_json::from_value(serde_json::json!({
-            "seq": 1, "from": "ev\u{1b}[31mil", "body": "olá\u{1b}[2J tudo\u{7}",
-            "platform": "twitch", "id": "x"
-        }))
-        .expect("a chat line");
-        assert_eq!(chat_row(&line), "evil: olá tudo");
-    }
-
-    #[test]
     fn c_opens_a_line_where_every_key_is_a_letter_and_enter_says_it() {
         let mut screen = Screen::default();
         let status = Status::default();
@@ -1734,16 +1749,16 @@ mod tests {
     #[test]
     fn a_long_line_of_chat_breaks_between_words_and_its_rest_is_indented() {
         assert_eq!(
-            wrapped("ana: com certeza deve ter chess de terminal", 20),
+            wrapped("ana: com certeza deve ter chess de terminal", 20, "  "),
             vec!["ana: com certeza", "  deve ter chess de", "  terminal"]
         );
-        assert_eq!(wrapped("curta", 20), vec!["curta"]);
+        assert_eq!(wrapped("curta", 20, "  "), vec!["curta"]);
     }
 
     #[test]
     fn a_word_longer_than_the_column_is_cut_where_the_column_ends() {
         assert_eq!(
-            wrapped("KKKKKKKKKKKK", 5),
+            wrapped("KKKKKKKKKKKK", 5, "  "),
             vec!["KKKKK", "  KKK", "  KKK", "  K"]
         );
     }
@@ -1795,6 +1810,47 @@ mod tests {
             destination_row(&row),
             "● twitch (twitch) armed live · viewers 12 · youtube said 403 quotaExceeded · \
              someone · Software and Game Development"
+        );
+    }
+
+    #[test]
+    fn the_chat_reads_as_the_cli_s_platform_in_its_colour_the_words_below_a_faint_rule_between() {
+        let lines: Vec<ChatLine> = serde_json::from_value(serde_json::json!([
+            { "seq": 1, "from": "ana", "body": "ah", "platform": "twitch", "id": "a" },
+            { "seq": 2, "from": "ev\u{1b}[31mil", "body": "olá\u{1b}[2J tudo bem por aí",
+              "platform": "youtube", "id": "b" }
+        ]))
+        .expect("chat lines");
+        let rows = chat_rows(&lines, 14);
+        let text: Vec<String> = rows
+            .iter()
+            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text,
+            vec![
+                "twitch  ana",
+                "  ah",
+                &"─".repeat(14),
+                "youtube  evil",
+                "  olá tudo bem",
+                "  por aí"
+            ]
+        );
+        assert_eq!(
+            rows[0].spans[0].style.fg,
+            Some(Color::Indexed(141)),
+            "Twitch's purple"
+        );
+        assert_eq!(
+            rows[3].spans[0].style.fg,
+            Some(Color::Indexed(203)),
+            "YouTube's red"
+        );
+        assert_eq!(
+            rows[2].spans[0].style.fg,
+            Some(Color::Indexed(238)),
+            "the rule is faint"
         );
     }
 
