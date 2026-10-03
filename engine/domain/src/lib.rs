@@ -8,6 +8,7 @@
 pub mod air;
 pub mod app;
 pub mod bug;
+pub mod companions;
 pub mod config;
 pub mod daemon;
 pub mod engine;

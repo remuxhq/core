@@ -30,6 +30,16 @@ pub struct Config {
     pub web: Web,
     pub daemon: Daemon,
     pub byo: Byo,
+    pub companions: Companions,
+}
+
+/// Where the companions file is: the operator's own programs a face runs
+/// beside the engine (`crate::companions`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Companions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -192,6 +202,7 @@ pub fn describe() -> String {
          music_dir  {}{}\n\
          clips_dir  {}{}\n\
          obs_app    {}{}\n\
+         companions {}{}\n\
          byo.twitch  {}  (config, read by byo/bridge.py)\n\
          byo.youtube {}  (config, read by byo/bridge.py)",
         file.display(),
@@ -214,6 +225,8 @@ pub fn describe() -> String {
         from("REMUX_CLIPS_DIR", kept.daemon.clips_dir.is_some()),
         obs_app(),
         from("OBS_APP", kept.daemon.obs_app.is_some()),
+        crate::companions::path().map_or_else(|| "none".into(), |p| p.display().to_string()),
+        from("REMUX_COMPANIONS", kept.companions.file.is_some()),
         kept.byo.twitch.unwrap_or_else(|| "none".into()),
         kept.byo.youtube.unwrap_or_else(|| "none".into()),
     )
