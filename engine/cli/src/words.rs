@@ -2393,6 +2393,9 @@ pub enum View {
     History,
     /// `tui`: the engine on one screen, in the terminal, drawn here.
     Tui,
+    /// `companion`: the operator's programs beside the engine, run by the
+    /// shell, never the engine.
+    Companion(crate::companion::Verb),
     /// `health`: could this engine go live now, and what stands in the way.
     /// The shell asks the grants too and joins the two.
     Health,
@@ -2577,6 +2580,14 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         return Ok(Ask {
             command: None,
             view: View::Guide,
+            format,
+            follow: false,
+        });
+    }
+    if words.first().map(String::as_str) == Some("companion") {
+        return Ok(Ask {
+            command: None,
+            view: View::Companion(crate::companion::Verb::parse(&words[1..])?),
             format,
             follow: false,
         });

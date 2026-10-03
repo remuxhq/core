@@ -1531,6 +1531,7 @@ name = "remux"
 version = "0.3.0-rc.1"
 dependencies = [
  "base64",
+ "libc",
  "ratatui",
  "remux-wire",
  "remuxd-domain",

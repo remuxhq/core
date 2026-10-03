@@ -411,9 +411,29 @@ pub(super) const GROUPS: &[Group] = &[
 /// The commands outside every group: the live's levers, what the engine is
 /// and what this shell keeps by itself.
 pub(super) const TOP: &[&str] = &[
-    "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
-    "health", "wait", "events", "history", "log", "login", "logout", "config", "daemon", "bug",
-    "schema", "tui",
+    "status",
+    "sources",
+    "grants",
+    "levels",
+    "plan",
+    "live",
+    "stop",
+    "record",
+    "cut",
+    "quit",
+    "health",
+    "wait",
+    "events",
+    "history",
+    "log",
+    "login",
+    "logout",
+    "config",
+    "daemon",
+    "bug",
+    "schema",
+    "tui",
+    "companion",
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static Group> {

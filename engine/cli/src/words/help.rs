@@ -74,6 +74,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["login"], args: "[--url <web>]", summary: "Sign in to the web with a code typed there.", note: "The token is kept in ~/.config/remux/session.json; restart the engine to use it." },
     Topic { names: &["logout"], args: "", summary: "Forget the web session.", note: "" },
     Topic { names: &["config"], args: "", summary: "What is in effect and where each value came from.", note: "The environment, then ~/.config/remux/config.toml, then the defaults." },
+    Topic { names: &["companion"], args: "[list] | start|stop|log <name>", summary: "Your own programs beside the engine: started, stopped and watched here.", note: "The list is a file of yours (REMUX_COMPANIONS, or `[companions] file` in config.toml): each [[companion]] a name, run (an argv, never a shell), cwd and an optional env_file kept 0600. The engine never runs them." },
     Topic { names: &["daemon"], args: "start|stop|restart|status|log|path", summary: "The engine as a service of your session.", note: "" },
     Topic { names: &["bug"], args: "[--open]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form for a person to submit." },
     Topic { names: &["schema"], args: "", summary: "The wire's JSON Schema.", note: "" },
@@ -333,7 +334,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 65, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 66, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
