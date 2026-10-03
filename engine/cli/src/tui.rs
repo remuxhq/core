@@ -9,6 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use remuxd_domain::air::plan::Plan;
+use remuxd_domain::picture::scenes::Scene;
 use remuxd_domain::protocol::{Command, Reply, Status};
 
 /// The screen, until `q`: the status read once a second through `ask`, drawn after every
@@ -121,6 +122,8 @@ fn draw(
     );
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(middle);
+    let [left, below] =
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(left);
     let scenes: Vec<ListItem> = status
         .scenes
         .iter()
@@ -153,6 +156,29 @@ fn draw(
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         left,
         &mut picked(screen.picked, status.scenes.len(), on_scenes),
+    );
+    // The layers of the picked scene, which need not be the one on the air: what a scene
+    // holds is read before switching to it.
+    let shown = status
+        .scenes
+        .get(screen.picked.min(status.scenes.len().saturating_sub(1)));
+    let layers: Vec<ListItem> = shown
+        .map(rows_of)
+        .unwrap_or_default()
+        .into_iter()
+        .map(ListItem::new)
+        .collect();
+    let title = format!(
+        " layers · {} ",
+        shown.map_or("", |scene| scene.name.as_str())
+    );
+    frame.render_widget(
+        List::new(layers).block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::new().fg(Color::DarkGray)),
+        ),
+        below,
     );
     let destinations: Vec<ListItem> = status
         .destinations
@@ -416,6 +442,39 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     Act::Stay
 }
 
+/// A scene's layers and elements, back to front, one line each: what it is, what it
+/// shows, and whether it is hidden.
+pub fn rows_of(scene: &Scene) -> Vec<String> {
+    use remuxd_domain::picture::layers::Kind;
+    use remuxd_domain::picture::scenes::ElementContent;
+    let hidden = |visible: bool| if visible { "" } else { " (hidden)" };
+    scene
+        .ordered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            if let Some(layer) = scene.layers.iter().find(|l| l.id == id) {
+                let kind = match layer.source.kind {
+                    Kind::Camera => "camera",
+                    Kind::Window => "window",
+                    Kind::Screen => "screen",
+                    Kind::Image => "image",
+                };
+                return Some(format!(
+                    "{id} · {kind} {}{}",
+                    layer.source.name,
+                    hidden(layer.visible)
+                ));
+            }
+            let element = scene.elements.iter().find(|e| e.id == id)?;
+            let what = match &element.content {
+                ElementContent::Text { text } => format!("text \"{text}\""),
+                ElementContent::Timer { seconds } => format!("timer {seconds} s"),
+            };
+            Some(format!("{id} · {what}{}", hidden(element.visible)))
+        })
+        .collect()
+}
+
 /// Seconds since `since`, as HH:MM:SS; zero when the engine has not said.
 fn clock(since: Option<i64>, now: i64) -> String {
     let seconds = since.map_or(0, |since| (now - since).max(0));
@@ -556,6 +615,36 @@ mod tests {
         let status = with_destinations(&[(1, false, false)]);
         let mut screen = Screen::default();
         assert_eq!(press('a', &mut screen, 0, &status), Act::Stay);
+    }
+
+    #[test]
+    fn a_scene_reads_back_to_front_with_what_each_layer_is_and_what_is_hidden() {
+        let layer = |id: &str, kind: &str, name: &str, visible: bool| {
+            serde_json::json!({
+                "id": id, "visible": visible,
+                "source": { "kind": kind, "handle": "h", "name": name, "width": 1920, "height": 1080 },
+                "transform": { "x": 0, "y": 0, "width": 1920, "height": 1080, "degrees": 0 }
+            })
+        };
+        let scene: remuxd_domain::picture::scenes::Scene = serde_json::from_value(serde_json::json!({
+            "name": "Starting soon",
+            "layers": [layer("bg", "image", "background.png", true), layer("face", "camera", "HP", false)],
+            "elements": [
+                { "id": "title", "x": 0, "y": 0, "width": 10, "height": 10, "kind": "text", "text": "Hi" },
+                { "id": "clock", "x": 0, "y": 0, "width": 10, "height": 10, "kind": "timer", "seconds": 180 }
+            ],
+            "order": ["bg", "title", "face", "clock"]
+        }))
+        .expect("a scene");
+        assert_eq!(
+            rows_of(&scene),
+            vec![
+                "bg · image background.png",
+                "title · text \"Hi\"",
+                "face · camera HP (hidden)",
+                "clock · timer 180 s",
+            ]
+        );
     }
 
     #[test]
