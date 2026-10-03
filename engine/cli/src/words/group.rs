@@ -316,6 +316,20 @@ const SCENE: &[Action] = &[
         summary: "Switch scene without stopping the live.",
     },
     Action {
+        name: "stage",
+        target: "scene-stage",
+        prefix: &[],
+        args: "<name>",
+        summary: "Draw a scene off the air, in the preview, before it goes out.",
+    },
+    Action {
+        name: "take",
+        target: "scene-take",
+        prefix: &[],
+        args: "",
+        summary: "Put the staged scene on the air; the one that was out is staged.",
+    },
+    Action {
         name: "list",
         target: "scenes",
         prefix: &[],

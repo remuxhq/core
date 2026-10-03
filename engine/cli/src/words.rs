@@ -180,6 +180,12 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
             }),
             _ => Err("scene command needs exactly one name (quote names with spaces)".into()),
         },
+        "scene-stage" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneStage { name: name.clone() }),
+            _ => Err("scene stage needs exactly one name (quote names with spaces)".into()),
+        },
+        "scene-take" if rest.is_empty() => Ok(Command::SceneTake),
+        "scene-take" => Err("scene take takes no arguments: it takes what is staged".into()),
         "audio-layer" => parse_audio_layer(rest),
         "levels" => Ok(Command::Levels),
         // The composed scene preview.
@@ -1365,6 +1371,17 @@ mod tests {
                 name: "Close Up".into()
             })
         );
+        assert_eq!(
+            super::parse(&words(&["scene", "stage", "Close Up"])),
+            Ok(remuxd_domain::protocol::Command::SceneStage {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "take"])),
+            Ok(remuxd_domain::protocol::Command::SceneTake)
+        );
+        assert!(super::parse(&words(&["scene", "take", "Close Up"])).is_err());
         assert_eq!(
             super::parse(&words(&["scene", "list"])),
             Ok(remuxd_domain::protocol::Command::Status)
