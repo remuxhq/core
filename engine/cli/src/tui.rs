@@ -71,6 +71,8 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Err(why) => break Err(why),
         };
         let typed = match key {
+            // `=` is `+` without the shift.
+            KeyCode::Char('=') => '+',
             KeyCode::Char(c) => c,
             KeyCode::Esc => 'q',
             KeyCode::Enter => '\n',
@@ -267,7 +269,8 @@ fn draw(
             "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
     };
-    let footer = said.map_or(keys.to_string(), |said| format!("{said} · {keys}"));
+    let keys = format!("{keys} · m mute · n next · +/- music");
+    let footer = said.map_or(keys.clone(), |said| format!("{said} · {keys}"));
     frame.render_widget(
         Paragraph::new(footer).style(Style::new().fg(Color::DarkGray)),
         bottom,
@@ -456,6 +459,19 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     let on_air = scene.is_some_and(|scene| scene.name == status.active_scene);
     match (key, screen.focus) {
         ('q', _) => return Act::Quit,
+        // The sound's everyday gestures, from any panel, at once.
+        ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
+        ('n', _) => return Act::Send(Command::NextTrack),
+        ('+', _) => {
+            return Act::Send(Command::MusicVolume {
+                level: louder(status.faders.music),
+            })
+        }
+        ('-', _) => {
+            return Act::Send(Command::MusicVolume {
+                level: quieter(status.faders.music),
+            })
+        }
         ('\t', Panel::Scenes) => screen.focus = Panel::Layers,
         ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
         ('\t', Panel::Destinations) => screen.focus = Panel::Scenes,
@@ -539,6 +555,25 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         _ => {}
     }
     Act::Stay
+}
+
+/// One step of the music fader: 3 dB, a gain of 10^(3/20). The fader is a linear gain,
+/// and the music sits near half a percent, where a step of a percent would be 6 dB.
+const STEP: f64 = 1.412_537_544_622_754;
+/// Below this the fader is silence; a step louder from silence lands here.
+const QUIETEST: f64 = 0.001;
+
+fn louder(level: f64) -> f64 {
+    (level * STEP).clamp(QUIETEST, 1.0)
+}
+
+fn quieter(level: f64) -> f64 {
+    let level = level / STEP;
+    if level < QUIETEST {
+        0.0
+    } else {
+        level
+    }
 }
 
 /// Whether a scene's layer or element is shown.
@@ -667,8 +702,9 @@ fn sound(
         ),
         Line::from(""),
         Line::from(format!(
-            "music  {}",
-            status.music.as_deref().unwrap_or("nothing playing")
+            "music  {} · volume {:.1}%",
+            status.music.as_deref().unwrap_or("nothing playing"),
+            status.faders.music * 100.0
         )),
         row(
             "level",
@@ -1103,6 +1139,69 @@ mod tests {
         assert_eq!(
             press('J', &mut screen, 2, &on_screen()),
             Act::Say("switch to this scene first")
+        );
+    }
+
+    fn music_at(level: f64) -> Status {
+        let mut status = Status::default();
+        status.faders.music = level;
+        status
+    }
+
+    #[test]
+    fn m_mutes_the_mic_and_unmutes_it_from_any_panel_at_once() {
+        let mut screen = Screen {
+            focus: Panel::Destinations,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('m', &mut screen, 0, &Status::default()),
+            Act::Send(Command::Mute { on: true })
+        );
+        let muted = Status {
+            muted: true,
+            ..Status::default()
+        };
+        assert_eq!(
+            press('m', &mut screen, 0, &muted),
+            Act::Send(Command::Mute { on: false })
+        );
+    }
+
+    #[test]
+    fn n_is_the_next_track() {
+        assert_eq!(
+            press('n', &mut Screen::default(), 0, &Status::default()),
+            Act::Send(Command::NextTrack)
+        );
+    }
+
+    #[test]
+    fn plus_and_minus_move_the_music_three_db_at_a_time() {
+        let level = |key| match press(key, &mut Screen::default(), 0, &music_at(0.01)) {
+            Act::Send(Command::MusicVolume { level }) => level,
+            other => panic!("{other:?}"),
+        };
+        assert!((level('+') - 0.01 * 10f64.powf(0.15)).abs() < 1e-9);
+        assert!((level('-') - 0.01 / 10f64.powf(0.15)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_music_fader_stops_at_full_and_climbs_out_of_silence() {
+        let level = |key, at| match press(key, &mut Screen::default(), 0, &music_at(at)) {
+            Act::Send(Command::MusicVolume { level }) => level,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(level('+', 0.9), 1.0);
+        assert_eq!(
+            level('+', 0.0),
+            0.001,
+            "silence has no three db louder: a step out of it"
+        );
+        assert_eq!(
+            level('-', 0.001),
+            0.0,
+            "below a tenth of a percent is silence"
         );
     }
 
