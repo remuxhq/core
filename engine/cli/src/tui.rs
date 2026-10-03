@@ -46,6 +46,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 now_status.muted,
                 heard_at.elapsed().as_secs_f64(),
             );
+            screen.playing = mixing.playing;
         }
         heard_at = Instant::now();
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
@@ -250,13 +251,10 @@ fn draw(
             status,
             levels,
             meters,
+            (screen.focus == Panel::Sound).then_some(screen.picked_sound),
             below.width.saturating_sub(16) as usize,
         ))
-        .block(
-            Block::bordered()
-                .title(" sound ")
-                .border_style(Style::new().fg(Color::DarkGray)),
-        ),
+        .block(panel(" sound ", screen.focus == Panel::Sound)),
         below,
     );
     frame.render_stateful_widget(
@@ -278,10 +276,11 @@ fn draw(
             "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · ! cut"
         }
         Panel::Destinations => {
-            "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
+            "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
+        Panel::Sound => "q quit · tab scenes · j/k move · space on/off · +/- volume · d duck",
     };
-    let keys = format!("{keys} · m mute · n next · +/- music · c chat");
+    let keys = format!("{keys} · m mute · n next · p pause · +/- music · c chat");
     let footer = screen
         .said
         .as_ref()
@@ -416,6 +415,8 @@ pub enum Panel {
     /// The picked scene's layers and elements.
     Layers,
     Destinations,
+    /// The mic, the music and each audio layer.
+    Sound,
 }
 
 /// What the screen holds between keys: the panel in focus, the picked row in each, and
@@ -426,6 +427,10 @@ pub struct Screen {
     pub picked: usize,
     pub picked_layer: usize,
     pub picked_destination: usize,
+    /// The mic is row 0, the music row 1, the audio layers after them.
+    pub picked_sound: usize,
+    /// Whether the music plays, as the meters last said.
+    pub playing: bool,
     pub asking: Option<Lever>,
     /// A line of chat being typed: every key is a letter until Enter or Esc.
     pub typing: Option<String>,
@@ -503,19 +508,34 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
         ('n', _) => return Act::Send(Command::NextTrack),
-        ('+', _) => {
-            return Act::Send(Command::MusicVolume {
-                level: louder(status.faders.music),
+        ('p', _) => {
+            return Act::Send(Command::Music {
+                on: !screen.playing,
             })
         }
-        ('-', _) => {
+        ('+', focus) if focus != Panel::Sound => {
+            return Act::Send(Command::MusicVolume {
+                level: louder(status.faders.music, 1.0),
+            })
+        }
+        ('-', focus) if focus != Panel::Sound => {
             return Act::Send(Command::MusicVolume {
                 level: quieter(status.faders.music),
             })
         }
         ('\t', Panel::Scenes) => screen.focus = Panel::Layers,
         ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
-        ('\t', Panel::Destinations) => screen.focus = Panel::Scenes,
+        ('\t', Panel::Destinations) => screen.focus = Panel::Sound,
+        ('\t', Panel::Sound) => screen.focus = Panel::Scenes,
+        ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
+            screen.picked_sound += 1
+        }
+        ('k', Panel::Sound) => screen.picked_sound = screen.picked_sound.saturating_sub(1),
+        (' ' | '+' | '-' | 'd', Panel::Sound) => {
+            if let Some(command) = sound_verb(key, screen.picked_sound, status) {
+                return Act::Send(command);
+            }
+        }
         ('j', Panel::Scenes) if screen.picked + 1 < rows => {
             screen.picked += 1;
             screen.picked_layer = 0;
@@ -604,8 +624,70 @@ const STEP: f64 = 1.412_537_544_622_754;
 /// Below this the fader is silence; a step louder from silence lands here.
 const QUIETEST: f64 = 0.001;
 
-fn louder(level: f64) -> f64 {
-    (level * STEP).clamp(QUIETEST, 1.0)
+/// A fader's step louder, never past its ceiling: 100% for the music, 200% for the
+/// mic and the audio layers, which a quiet source needs.
+fn louder(level: f64, ceiling: f64) -> f64 {
+    (level * STEP).clamp(QUIETEST, ceiling)
+}
+
+/// What a key does to a row of the sound panel: space turns it off or on, `+` and `-`
+/// move its fader, `d` steps its duck.
+fn sound_verb(key: char, row: usize, status: &Status) -> Option<Command> {
+    use remuxd_domain::sound::audio_layers::Duck;
+    Some(match (key, row) {
+        (' ', 0) => Command::Mute { on: !status.muted },
+        ('+', 0) => Command::Volume {
+            level: louder(status.faders.mic, 2.0),
+        },
+        ('-', 0) => Command::Volume {
+            level: quieter(status.faders.mic),
+        },
+        (' ', 1) => Command::StreamMusic {
+            on: !status.music_to_stream,
+        },
+        ('+', 1) => Command::MusicVolume {
+            level: louder(status.faders.music, 1.0),
+        },
+        ('-', 1) => Command::MusicVolume {
+            level: quieter(status.faders.music),
+        },
+        // Off, then 6 dB deeper a press, to 18, then off again.
+        ('d', 1) => Command::Duck {
+            db: match status.faders.duck_db {
+                db if db > -3.0 => -6.0,
+                db if db > -9.0 => -12.0,
+                db if db > -15.0 => -18.0,
+                _ => 0.0,
+            },
+        },
+        (_, row) => {
+            let layer = status.audio_layers.get(row.checked_sub(2)?)?;
+            let id = layer.id.clone();
+            match key {
+                ' ' => Command::AudioLayerMute {
+                    id,
+                    on: !layer.muted,
+                },
+                '+' => Command::AudioLayerVolume {
+                    id,
+                    volume: louder(layer.volume, 2.0),
+                },
+                '-' => Command::AudioLayerVolume {
+                    id,
+                    volume: quieter(layer.volume),
+                },
+                'd' => Command::AudioLayerDuck {
+                    id,
+                    duck: match layer.duck {
+                        Duck::ByKind => Duck::Off,
+                        Duck::Off => Duck::On,
+                        Duck::On => Duck::ByKind,
+                    },
+                },
+                _ => return None,
+            }
+        }
+    })
 }
 
 fn quieter(level: f64) -> f64 {
@@ -747,9 +829,19 @@ fn sound(
     status: &Status,
     levels: Option<&(Hearing, Mixing)>,
     meters: &Meters,
+    picked: Option<usize>,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let Some((hearing, _)) = levels else {
+    // A row's name, reversed when it is the one the keys act on.
+    let name = |name: &str, row: usize| {
+        let style = if picked == Some(row) {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        };
+        Span::styled(format!("{name:<5}"), style)
+    };
+    let Some((hearing, mixing)) = levels else {
         return vec![Line::from("no levels from the engine")];
     };
     // The bar in its colour over a dim track of the same height; a threshold is a mark
@@ -791,9 +883,11 @@ fn sound(
     let heard = meters.level;
     vec![
         Line::from(vec![
+            name("mic", 0),
             Span::raw(format!(
-                "mic    {} · ",
-                status.mic.as_deref().unwrap_or("none")
+                "  {} · {:.0}% · ",
+                status.mic.as_deref().unwrap_or("none"),
+                status.faders.mic * 100.0
             )),
             Span::styled(
                 format!("gate {word}"),
@@ -816,11 +910,21 @@ fn sound(
             String::new(),
         ),
         Line::from(""),
-        Line::from(format!(
-            "music  {} · volume {:.1}%",
-            status.music.as_deref().unwrap_or("nothing playing"),
-            status.faders.music * 100.0
-        )),
+        Line::from(vec![
+            name("music", 1),
+            Span::raw(format!(
+                "  {} · {:.1}% · duck {} · {} · {}",
+                status.music.as_deref().unwrap_or("nothing playing"),
+                status.faders.music * 100.0,
+                if status.faders.duck_db > -0.5 {
+                    "off".to_string()
+                } else {
+                    format!("{:.0} dB", status.faders.duck_db)
+                },
+                if status.music_to_stream { "on" } else { "off" },
+                if mixing.playing { "playing" } else { "paused" },
+            )),
+        ]),
         row(
             "level",
             bar(meters.music, None, Color::Magenta),
@@ -832,6 +936,50 @@ fn sound(
             format!("{:.0} dB", meters.mix),
         ),
     ]
+    .into_iter()
+    .chain((!status.audio_layers.is_empty()).then(|| Line::from("")))
+    .chain(audio_rows(status).into_iter().enumerate().map(|(i, line)| {
+        let muted = status.audio_layers[i].muted;
+        let style = if muted {
+            Style::new().fg(Color::DarkGray)
+        } else {
+            Style::new()
+        };
+        Line::from(vec![
+            name("audio", 2 + i),
+            Span::styled(format!("  {line}"), style),
+        ])
+    }))
+    .collect()
+}
+
+/// The audio layers, one line each. The engine meters none of them, so a line says what
+/// the layer hears and how it is set, never a level.
+pub fn audio_rows(status: &Status) -> Vec<String> {
+    use remuxd_domain::sound::audio_layers::{Duck, Kind};
+    status
+        .audio_layers
+        .iter()
+        .map(|layer| {
+            let source = &layer.source;
+            let heard = match source.kind {
+                Kind::Mic => format!("mic {}", source.device.as_deref().unwrap_or("")),
+                Kind::App => format!("app {}", source.name.as_deref().unwrap_or("")),
+                Kind::Screen => format!("screen {}", source.display.unwrap_or_default()),
+            };
+            let on = if layer.muted { "muted" } else { "on" };
+            let duck = match layer.duck {
+                Duck::ByKind => "auto",
+                Duck::On => "on",
+                Duck::Off => "off",
+            };
+            format!(
+                "{} · {heard} · {:.0}% · {on} · duck {duck}",
+                layer.id,
+                layer.volume * 100.0
+            )
+        })
+        .collect()
 }
 
 /// What each bar shows: the engine's reading, risen to at once and fallen from slowly,
@@ -1015,6 +1163,8 @@ mod tests {
             screen.picked_destination, 1,
             "two destinations, so the second is the last"
         );
+        press('\t', &mut screen, 3, &status);
+        assert_eq!(screen.focus, Panel::Sound);
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
@@ -1371,6 +1521,125 @@ mod tests {
         assert_eq!(
             press('\u{1b}', &mut Screen::default(), 0, &Status::default()),
             Act::Quit
+        );
+    }
+
+    /// The mic at 100%, the music at 1% with no duck, and a guest on a call app at 50%.
+    fn sounding() -> Status {
+        let mut status = music_at(0.01);
+        status.faders.mic = 1.0;
+        status.audio_layers = serde_json::from_value(serde_json::json!([
+            { "id": "guest", "source": { "kind": "app", "name": "Discord" },
+              "volume": 0.5, "muted": false, "duck": "by-kind" }
+        ]))
+        .expect("audio layers");
+        status
+    }
+
+    fn on_sound(row: usize) -> Screen {
+        Screen {
+            focus: Panel::Sound,
+            picked_sound: row,
+            ..Screen::default()
+        }
+    }
+
+    #[test]
+    fn the_sound_rows_are_the_mic_the_music_and_each_audio_layer() {
+        let mut screen = on_sound(0);
+        press('j', &mut screen, 0, &sounding());
+        press('j', &mut screen, 0, &sounding());
+        assert_eq!(screen.picked_sound, 2);
+        press('j', &mut screen, 0, &sounding());
+        assert_eq!(screen.picked_sound, 2, "the guest is the last row");
+    }
+
+    #[test]
+    fn space_turns_the_picked_sound_off_and_on() {
+        let mut status = sounding();
+        status.music_to_stream = false;
+        assert_eq!(
+            press(' ', &mut on_sound(0), 0, &status),
+            Act::Send(Command::Mute { on: true })
+        );
+        assert_eq!(
+            press(' ', &mut on_sound(1), 0, &status),
+            Act::Send(Command::StreamMusic { on: true }),
+            "the music's switch is whether the audience hears it"
+        );
+        assert_eq!(
+            press(' ', &mut on_sound(2), 0, &status),
+            Act::Send(Command::AudioLayerMute {
+                id: "guest".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn plus_on_the_sound_panel_moves_the_picked_fader_up_to_its_own_ceiling() {
+        let mut status = sounding();
+        status.faders.mic = 1.9;
+        assert_eq!(
+            press('+', &mut on_sound(0), 0, &status),
+            Act::Send(Command::Volume { level: 2.0 })
+        );
+        let Act::Send(Command::AudioLayerVolume { id, volume }) =
+            press('-', &mut on_sound(2), 0, &status)
+        else {
+            panic!("a layer's fader")
+        };
+        assert_eq!(id, "guest");
+        assert!((volume - 0.5 / 10f64.powf(0.15)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn d_steps_the_music_s_duck_six_db_at_a_time_and_back_to_off() {
+        let mut status = sounding();
+        let duck = |status: &Status| match press('d', &mut on_sound(1), 0, status) {
+            Act::Send(Command::Duck { db }) => db,
+            other => panic!("{other:?}"),
+        };
+        for (now, next) in [(-0.0, -6.0), (-6.0, -12.0), (-12.0, -18.0), (-18.0, 0.0)] {
+            status.faders.duck_db = now;
+            assert_eq!(duck(&status), next);
+        }
+    }
+
+    #[test]
+    fn d_on_an_audio_layer_goes_auto_off_on_and_round() {
+        use remuxd_domain::sound::audio_layers::Duck;
+        let mut status = sounding();
+        for (now, next) in [
+            (Duck::ByKind, Duck::Off),
+            (Duck::Off, Duck::On),
+            (Duck::On, Duck::ByKind),
+        ] {
+            status.audio_layers[0].duck = now;
+            assert_eq!(
+                press('d', &mut on_sound(2), 0, &status),
+                Act::Send(Command::AudioLayerDuck {
+                    id: "guest".into(),
+                    duck: next
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn p_pauses_the_music_playing_and_plays_it_paused_from_any_panel() {
+        let mut screen = Screen {
+            playing: true,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('p', &mut screen, 0, &Status::default()),
+            Act::Send(Command::Music { on: false })
+        );
+        screen.playing = false;
+        assert_eq!(
+            press('p', &mut screen, 0, &Status::default()),
+            Act::Send(Command::Music { on: true })
         );
     }
 
