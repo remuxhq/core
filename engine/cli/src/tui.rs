@@ -25,6 +25,8 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut read_at = Instant::now();
     let mut screen = Screen::default();
     let mut said: Option<String> = None;
+    let mut meters = Meters::default();
+    let mut heard_at = Instant::now();
     let outcome = loop {
         if read_at.elapsed() >= Duration::from_secs(1) {
             status = read();
@@ -35,12 +37,22 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Ok(Reply::Levels { hearing, mixing }) => Some((hearing, mixing)),
             _ => None,
         };
+        if let (Some((hearing, mixing)), Ok(now_status)) = (&levels, &status) {
+            meters.follow(
+                hearing,
+                mixing,
+                now_status.muted,
+                heard_at.elapsed().as_secs_f64(),
+            );
+        }
+        heard_at = Instant::now();
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
         if let Err(why) = terminal.draw(|frame| {
             draw(
                 frame,
                 &status,
                 levels.as_ref(),
+                &meters,
                 &screen,
                 said.as_deref(),
                 now(),
@@ -48,7 +60,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         }) {
             break Err(why);
         }
-        match event::poll(Duration::from_millis(250)) {
+        match event::poll(Duration::from_millis(50)) {
             Ok(false) => continue,
             Ok(true) => {}
             Err(why) => break Err(why),
@@ -104,6 +116,7 @@ fn draw(
     frame: &mut Frame,
     status: &Result<Status, String>,
     levels: Option<&(Hearing, Mixing)>,
+    meters: &Meters,
     screen: &Screen,
     said: Option<&str>,
     now: i64,
@@ -213,20 +226,21 @@ fn draw(
             ))
         })
         .collect();
-    let [right, meters] =
+    let [right, below] =
         Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(right);
     frame.render_widget(
         Paragraph::new(sound(
             status,
             levels,
-            meters.width.saturating_sub(16) as usize,
+            meters,
+            below.width.saturating_sub(16) as usize,
         ))
         .block(
             Block::bordered()
                 .title(" sound ")
                 .border_style(Style::new().fg(Color::DarkGray)),
         ),
-        meters,
+        below,
     );
     frame.render_stateful_widget(
         List::new(destinations)
@@ -506,21 +520,30 @@ pub fn rows_of(scene: &Scene) -> Vec<String> {
 
 /// The sound panel: the microphone and its gate, the gate's two levels against their
 /// thresholds, the music and the mix, each a bar `width` cells wide.
-fn sound(status: &Status, levels: Option<&(Hearing, Mixing)>, width: usize) -> Vec<Line<'static>> {
-    let Some((hearing, mixing)) = levels else {
+fn sound(
+    status: &Status,
+    levels: Option<&(Hearing, Mixing)>,
+    meters: &Meters,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some((hearing, _)) = levels else {
         return vec![Line::from("no levels from the engine")];
     };
+    // The bar on a dim track; a threshold is a mark across it.
     let bar = |level_db: f64, mark: Option<f64>, colour: Color| {
-        let on = lit(level_db, width);
         let mark = mark.map(|m| lit(m, width).min(width.saturating_sub(1)));
-        let cells: String = (0..width)
-            .map(|i| match (i < on, Some(i) == mark) {
-                (_, true) => '│',
-                (true, _) => '█',
-                _ => '·',
+        let drawn: String = cells(level_db, width)
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if Some(i) == mark && c == ' ' {
+                    '│'
+                } else {
+                    c
+                }
             })
             .collect();
-        Span::styled(cells, Style::new().fg(colour))
+        Span::styled(drawn, Style::new().fg(colour).bg(Color::Indexed(236)))
     };
     let row = |name: &str, bar: Span<'static>, reading: String| {
         Line::from(vec![
@@ -538,11 +561,7 @@ fn sound(status: &Status, levels: Option<&(Hearing, Mixing)>, width: usize) -> V
     } else {
         Color::DarkGray
     };
-    let heard = if status.muted {
-        FLOOR_DB
-    } else {
-        hearing.level_db
-    };
+    let heard = meters.level;
     vec![
         Line::from(vec![
             Span::raw(format!(
@@ -561,20 +580,12 @@ fn sound(status: &Status, levels: Option<&(Hearing, Mixing)>, width: usize) -> V
         ),
         row(
             "voice",
-            bar(
-                db(hearing.gate_levels.full),
-                Some(db(status.gate.full)),
-                Color::Cyan,
-            ),
+            bar(meters.voice, Some(db(status.gate.full)), Color::Cyan),
             String::new(),
         ),
         row(
             "highs",
-            bar(
-                db(hearing.gate_levels.hf),
-                Some(db(status.gate.hf)),
-                Color::Cyan,
-            ),
+            bar(meters.highs, Some(db(status.gate.hf)), Color::Cyan),
             String::new(),
         ),
         Line::from(""),
@@ -584,15 +595,73 @@ fn sound(status: &Status, levels: Option<&(Hearing, Mixing)>, width: usize) -> V
         )),
         row(
             "level",
-            bar(mixing.music_db, None, Color::Magenta),
-            format!("{:.0} dB", mixing.music_db),
+            bar(meters.music, None, Color::Magenta),
+            format!("{:.0} dB", meters.music),
         ),
         row(
             "mix",
-            bar(mixing.level_db, None, Color::Yellow),
-            format!("{:.0} dB", mixing.level_db),
+            bar(meters.mix, None, Color::Yellow),
+            format!("{:.0} dB", meters.mix),
         ),
     ]
+}
+
+/// What each bar shows: the engine's reading, risen to at once and fallen from slowly,
+/// as a meter's needle does.
+#[derive(Debug)]
+pub struct Meters {
+    pub level: f64,
+    pub voice: f64,
+    pub highs: f64,
+    pub music: f64,
+    pub mix: f64,
+}
+
+impl Default for Meters {
+    fn default() -> Self {
+        Meters {
+            level: FLOOR_DB,
+            voice: FLOOR_DB,
+            highs: FLOOR_DB,
+            music: FLOOR_DB,
+            mix: FLOOR_DB,
+        }
+    }
+}
+
+impl Meters {
+    /// The bars `seconds` after the last reading, given this one.
+    pub fn follow(&mut self, hearing: &Hearing, mixing: &Mixing, muted: bool, seconds: f64) {
+        let heard = if muted { FLOOR_DB } else { hearing.level_db };
+        self.level = fall(self.level, heard, seconds);
+        self.voice = fall(self.voice, db(hearing.gate_levels.full), seconds);
+        self.highs = fall(self.highs, db(hearing.gate_levels.hf), seconds);
+        self.music = fall(self.music, mixing.music_db, seconds);
+        self.mix = fall(self.mix, mixing.level_db, seconds);
+    }
+}
+
+/// How fast a bar falls. 20 dB a second is the release of a peak meter (IEC 60268-10
+/// asks for 20 dB in 1.7 s; a terminal reads better a little quicker).
+const FALL_DB_PER_SECOND: f64 = 20.0;
+
+/// A bar's next value: up to what is heard at once, down towards it at the meter's pace.
+pub fn fall(shown: f64, heard: f64, seconds: f64) -> f64 {
+    heard.max(shown - FALL_DB_PER_SECOND * seconds)
+}
+
+/// A bar `width` cells wide, ending in an eighth of a cell: eight steps where a whole
+/// cell is one.
+pub fn cells(level_db: f64, width: usize) -> String {
+    const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+    let eighths = lit(level_db, width * 8);
+    let (whole, part) = (eighths / 8, eighths % 8);
+    let mut bar = "█".repeat(whole);
+    if whole < width {
+        bar.push(EIGHTHS[part]);
+        bar.push_str(&" ".repeat(width - whole - 1));
+    }
+    bar
 }
 
 /// The meters' floor: below it a bar is dark.
@@ -823,6 +892,30 @@ mod tests {
         );
         assert_eq!(gate_word(true, false, true), "open");
         assert_eq!(gate_word(false, false, true), "closed");
+    }
+
+    #[test]
+    fn a_bar_ends_in_eighths_of_a_cell() {
+        assert_eq!(cells(-60.0, 4), "    ");
+        assert_eq!(cells(0.0, 4), "████");
+        assert_eq!(cells(-30.0, 4), "██  ");
+        // -26.25 dB is 2.25 cells of 4: two whole and a quarter.
+        assert_eq!(cells(-26.25, 4), "██▎ ");
+    }
+
+    #[test]
+    fn a_meter_rises_at_once_and_falls_at_twenty_db_a_second() {
+        assert_eq!(
+            fall(-40.0, -10.0, 0.05),
+            -10.0,
+            "a louder reading is shown at once"
+        );
+        assert_eq!(
+            fall(-10.0, -50.0, 0.05),
+            -11.0,
+            "a quieter one is reached by falling"
+        );
+        assert_eq!(fall(-10.0, -10.5, 0.05), -10.5, "never below what is heard");
     }
 
     #[test]
