@@ -114,6 +114,10 @@ pub enum Command {
     /// Everything capturable right now: screens, windows, cameras, mics,
     /// apps, and the music's genres.
     Sources,
+    /// The music's genres alone, answered as `sources` is: listing cameras
+    /// opens one, and the camera on the air stutters, so a panel asks this
+    /// for the genres instead.
+    Genres,
 
     // ---- the two levers ---------------------------------------------------
     GoLive,

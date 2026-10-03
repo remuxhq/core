@@ -1541,6 +1541,10 @@ impl Engine {
             Command::Present => self.present(),
             Command::Levels => self.levels(),
             Command::Sources => self.sources(),
+            Command::Genres => Reply::Sources(Devices {
+                genres: self.genres(),
+                ..Devices::default()
+            }),
             Command::Quit => self.quit(),
             // the daemon acts on it beside the engine; here it is a fact
             Command::Rewire => Reply::Ok,
@@ -1791,19 +1795,23 @@ impl Engine {
         self.sound()
     }
 
+    /// The music folder's genres, by id and readable name.
+    fn genres(&self) -> Vec<Named> {
+        self.library
+            .playlists()
+            .into_iter()
+            .map(|playlist| Named {
+                id: playlist.name,
+                name: playlist.title,
+            })
+            .collect()
+    }
+
     pub(super) fn sources(&mut self) -> Reply {
         match self.sources.available() {
             Ok(available) => {
                 let mut devices: Devices = available.into();
-                devices.genres = self
-                    .library
-                    .playlists()
-                    .into_iter()
-                    .map(|playlist| Named {
-                        id: playlist.name,
-                        name: playlist.title,
-                    })
-                    .collect();
+                devices.genres = self.genres();
                 Reply::Sources(devices)
             }
             // The overwhelmingly likely reason is the screen recording
@@ -2933,6 +2941,27 @@ mod tests {
             Reply::Ok
         );
         assert!(engine.status().on_air);
+    }
+
+    #[test]
+    fn the_genres_come_alone_without_a_device_being_asked() {
+        // Refused would fail any listing of devices: genres never ask for one.
+        let mut engine =
+            Engine::with_sources(Box::new(Refused)).with_library(Box::new(ThreeGenres));
+        let Reply::Sources(devices) = engine.handle(Command::Genres) else {
+            panic!("genres answers as sources do, with the genres alone")
+        };
+        assert_eq!(
+            devices
+                .genres
+                .iter()
+                .map(|g| g.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lofi", "edm", "synthwave"]
+        );
+        assert!(
+            devices.cameras.is_empty() && devices.mics.is_empty() && devices.screens.is_empty()
+        );
     }
 
     #[test]
