@@ -102,7 +102,8 @@ Read before changes: remux status --json; remux sources --json; remux grants --j
 Use remux help <group> <command> for syntax. Groups: scene, audio, music,
 destination, chat. No video group or capture shortcuts. Top-level: status,
 sources, grants, levels, plan, live, stop, record, cut, quit, health, wait,
-events, history, log, login, logout, config, daemon, bug, schema.
+events, history, log, login, logout, config, daemon, bug, schema, tui,
+companion.
 
 Status lists active_scene, scenes, layers, layer_flowing and scene_flowing.
 Fresh setups contain only the default scene: no Starting Soon, BRB or Nothing
@@ -196,8 +197,30 @@ Named scenes: remux scene list; remux scene create 'Camera only' starts an
 empty scene and switches to it (on the air, nothing shows until its layers are
 added); remux scene duplicate 'Camera only' copies the active scene and switches
 to the copy, with nothing on the air changing. remux scene switch 'Camera only';
-remux scene delete 'Camera only'.
+remux scene delete 'Camera only' puts it in the trash (the last ten, kept across a
+restart, under trash in status); remux scene restore 'Camera only' brings it back.
 Build the scenes before going live: off the air a switch shows nobody anything.
+
+The preview: a scene can be drawn off the air before it goes out, as a studio
+does. remux scene stage 'Camera only' draws it in the preview's own ring
+(staged in status), and nothing on the air moves; remux scene take puts it on
+the air and stages the scene that was out, so a second take goes back.
+remux scene draft Keys makes a new scene in the preview, empty, or a copy with
+--from 'Camera only'. Any scene layer verb with --staged acts on the scene in
+the preview instead of the air: remux scene layer add camera keys c920 --staged;
+remux scene layer hide desktop --staged; remux scene filter fire.wgsl --staged.
+On the air, make the scene in the preview and take it; never create or duplicate there,
+which switches the air to the new scene. The preview is drawn while a window
+reads it (the watching lease), in the ring after the screen's.
+
+remux tui is the engine on one screen for a person: the air, scenes and their
+layers (on the air or in the preview), destinations, sound, chat and the
+companions; the footer says each panel's keys. remux companion list|start|stop|log
+<name> runs the operator's own programs beside the engine (a chat bridge, a
+window, a bot) from a file of theirs (REMUX_COMPANIONS, or [companions] file in
+config.toml), each an argv, never a shell. The music's genres without listing any
+device: {\"cmd\":\"genres\"} (sources lists cameras by opening one, and the camera
+on the air stutters: never poll sources).
 remux live sends the active scene, so switch to the opening one first; remux plan
 names it. A switch closes the captures the next scene does not use and opens its
 own, so a camera coming back takes a moment for its first frame.
@@ -424,6 +447,18 @@ mod tests {
         assert!(copy.contains("elements, order and filter are copied"));
         assert!(!GUIDE.contains("Built-in"));
         assert!(GUIDE.contains("remux scene timer"));
+        for taught in [
+            "remux scene stage",
+            "remux scene take",
+            "remux scene draft",
+            "--staged",
+            "remux scene restore",
+            "remux companion",
+            "remux tui",
+            "genres",
+        ] {
+            assert!(GUIDE.contains(taught), "the guide teaches {taught}");
+        }
         assert!(!GUIDE.contains("shader, card"));
     }
 
