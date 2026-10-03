@@ -3730,10 +3730,10 @@ mod tests {
             name: name.into(),
         };
         remuxd_domain::protocol::Devices {
-            cameras: vec![named("0x12", "C270 HD WEBCAM")],
-            screens: vec![named("1", "VG2791R")],
+            cameras: vec![named("0x12", "Desk Cam")],
+            screens: vec![named("1", "Big Monitor")],
             windows: vec![named("95", "Notes — today")],
-            mics: vec![named("bt", "Razer BlackShark V2 Pro (BT)")],
+            mics: vec![named("bt", "USB Headset")],
             ..Default::default()
         }
     }
@@ -3751,12 +3751,12 @@ mod tests {
             .iter()
             .map(|(l, _)| l.as_str())
             .collect();
-        assert_eq!(rows, ["no microphone", "Razer BlackShark V2 Pro (BT)"]);
+        assert_eq!(rows, ["no microphone", "USB Headset"]);
         press('j', &mut screen, 0, &sounding());
         assert_eq!(
             press('\n', &mut screen, 0, &sounding()),
             Act::Send(Command::Mic {
-                device: Some("Razer BlackShark V2 Pro (BT)".into())
+                device: Some("USB Headset".into())
             })
         );
         assert!(screen.picker.is_none());
