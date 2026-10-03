@@ -25,6 +25,10 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut status = read();
     let mut read_at = Instant::now();
     let mut screen = Screen::default();
+    // The genres once: they never open a device to be listed.
+    if let Ok(Reply::Sources(devices)) = ask(&Command::Genres) {
+        screen.genres = devices.genres;
+    }
     let mut chat = Chat::default();
     let fresh = chat.read(&ask);
     chat.hold(&mut screen, fresh);
@@ -290,6 +294,11 @@ fn draw(
             levels,
             meters,
             (screen.focus == Panel::Sound).then_some(screen.picked_sound),
+            screen
+                .genre
+                .as_ref()
+                .and_then(|id| screen.genres.iter().find(|g| &g.id == id))
+                .map(|g| g.name.as_str()),
             below.width.saturating_sub(16) as usize,
         ))
         .block(panel(" sound ", screen.focus == Panel::Sound)),
@@ -316,7 +325,7 @@ fn draw(
         Panel::Destinations => {
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
-        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck · s music to the live",
+        Panel::Sound => "q quit · tab chat · j/k move · space on/off · +/- volume · d duck · s music to the live · g genre",
         Panel::Chat => "q quit · tab companions · k older · j newer",
         Panel::Companions => "q quit · tab scenes · j/k move · space start/stop",
     };
@@ -562,6 +571,10 @@ pub struct Screen {
     pub typing: Option<String>,
     /// What the line typed is for.
     pub typing_for: Typing,
+    /// The music's genres, read once, and the one last chosen here (the
+    /// engine does not say which plays).
+    pub genres: Vec<remuxd_domain::protocol::Named>,
+    pub genre: Option<String>,
     /// What the last thing sent came to, in the footer.
     pub said: Option<String>,
 }
@@ -692,6 +705,16 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             screen.picked_sound += 1
         }
         ('k', Panel::Sound) => screen.picked_sound = screen.picked_sound.saturating_sub(1),
+        ('g', Panel::Sound) if screen.picked_sound == 1 && !screen.genres.is_empty() => {
+            let at = screen
+                .genre
+                .as_ref()
+                .and_then(|now| screen.genres.iter().position(|g| &g.id == now))
+                .map_or(0, |at| (at + 1) % screen.genres.len());
+            let id = screen.genres[at].id.clone();
+            screen.genre = Some(id.clone());
+            return Act::Send(Command::Genre { name: id });
+        }
         (' ' | '+' | '-' | 'd' | 's', Panel::Sound) => {
             if let Some(command) = sound_verb(key, screen.picked_sound, screen.playing, status) {
                 return Act::Send(command);
@@ -1253,6 +1276,7 @@ fn sound(
     levels: Option<&(Hearing, Mixing)>,
     meters: &Meters,
     picked: Option<usize>,
+    genre: Option<&str>,
     width: usize,
 ) -> Vec<Line<'static>> {
     // A row's name, reversed when it is the one the keys act on.
@@ -1338,8 +1362,9 @@ fn sound(
         Line::from(vec![
             name("music", 1),
             Span::raw(format!(
-                "  {} · {:.1}% · duck {} · {} · {}",
+                "  {}{} · {:.1}% · duck {} · {} · {}",
                 status.music.as_deref().unwrap_or("nothing playing"),
+                genre.map(|g| format!(" · {g}")).unwrap_or_default(),
                 status.faders.music * 100.0,
                 if status.faders.duck_db > -0.5 {
                     "off".to_string()
@@ -2564,6 +2589,41 @@ mod tests {
         );
         assert_eq!(signal_word("no mic", false), "no mic");
         assert_eq!(signal_word("open", true), "open");
+    }
+
+    #[test]
+    fn g_on_the_music_goes_to_the_next_genre_and_round() {
+        let named = |id: &str, name: &str| remuxd_domain::protocol::Named {
+            id: id.into(),
+            name: name.into(),
+        };
+        let mut screen = Screen {
+            genres: vec![named("lofi", "Lofi"), named("edm", "Edm")],
+            ..on_sound(1)
+        };
+        let status = sounding();
+        assert_eq!(
+            press('g', &mut screen, 0, &status),
+            Act::Send(Command::Genre {
+                name: "lofi".into()
+            })
+        );
+        assert_eq!(
+            press('g', &mut screen, 0, &status),
+            Act::Send(Command::Genre { name: "edm".into() })
+        );
+        assert_eq!(
+            press('g', &mut screen, 0, &status),
+            Act::Send(Command::Genre {
+                name: "lofi".into()
+            })
+        );
+        assert_eq!(screen.genre.as_deref(), Some("lofi"));
+        assert_eq!(
+            press('g', &mut on_sound(0), 0, &status),
+            Act::Stay,
+            "the mic has no genre"
+        );
     }
 
     #[test]
