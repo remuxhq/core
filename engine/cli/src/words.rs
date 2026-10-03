@@ -1296,7 +1296,7 @@ fn happening(happened: &remuxd_domain::app::wire::Happening) -> String {
     format!("{} {what}{said}", plain(&happened.platform))
 }
 
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {

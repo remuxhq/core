@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use remuxd_domain::air::plan::Plan;
 use remuxd_domain::picture::scenes::Scene;
-use remuxd_domain::protocol::{Command, Hearing, Mixing, Reply, Status};
+use remuxd_domain::protocol::{ChatLine, Command, Hearing, Mixing, Reply, Status};
 
 /// The screen, until `q`: the status read once a second through `ask`, drawn after every
 /// read and every key. Only a question a person answered with `y` sends anything else.
@@ -24,12 +24,14 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut status = read();
     let mut read_at = Instant::now();
     let mut screen = Screen::default();
-    let mut said: Option<String> = None;
+    let mut chat = Chat::default();
+    chat.read(&ask);
     let mut meters = Meters::default();
     let mut heard_at = Instant::now();
     let outcome = loop {
         if read_at.elapsed() >= Duration::from_secs(1) {
             status = read();
+            chat.read(&ask);
             read_at = Instant::now();
         }
         // The meters, every turn of the loop: one line on the socket, no device opened.
@@ -54,7 +56,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 levels.as_ref(),
                 &meters,
                 &screen,
-                said.as_deref(),
+                &chat,
                 now(),
             )
         }) {
@@ -74,7 +76,8 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             // `=` is `+` without the shift.
             KeyCode::Char('=') => '+',
             KeyCode::Char(c) => c,
-            KeyCode::Esc => 'q',
+            KeyCode::Esc => '\u{1b}',
+            KeyCode::Backspace => '\u{8}',
             KeyCode::Enter => '\n',
             KeyCode::Tab => '\t',
             KeyCode::Down => 'j',
@@ -82,7 +85,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             _ => continue,
         };
         let Ok(now_status) = &status else {
-            if typed == 'q' {
+            if matches!(typed, 'q' | '\u{1b}') {
                 break Ok(());
             }
             continue;
@@ -90,17 +93,17 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         match press(typed, &mut screen, rows, now_status) {
             Act::Stay => {}
             Act::Quit => break Ok(()),
-            Act::Say(why) => said = Some(why.into()),
+            Act::Say(why) => screen.said = Some(why.into()),
             Act::Plan => match ask(&Command::Plan) {
                 Ok(Reply::Plan(plan)) => screen.planned(plan),
-                Ok(other) => said = Some(format!("the engine answered {other:?}")),
-                Err(why) => said = Some(why),
+                Ok(other) => screen.said = Some(format!("the engine answered {other:?}")),
+                Err(why) => screen.said = Some(why),
             },
             Act::Send(command) => {
                 // Arming during a live changes the next one: the engine picks its
                 // destinations when a live starts.
                 let later = now_status.on_air && matches!(command, Command::Arm { .. });
-                said = Some(match ask(&command) {
+                screen.said = Some(match ask(&command) {
                     Ok(Reply::Error { message }) => message,
                     Ok(_) if later => "done: from the next live on".into(),
                     Ok(_) => "done".into(),
@@ -121,7 +124,7 @@ fn draw(
     levels: Option<&(Hearing, Mixing)>,
     meters: &Meters,
     screen: &Screen,
-    said: Option<&str>,
+    chat: &Chat,
     now: i64,
 ) {
     let [top, middle, bottom] = Layout::vertical([
@@ -150,8 +153,13 @@ fn draw(
             .block(Block::bordered().title(" remux ")),
         top,
     );
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(middle);
+    let [left, right, talk] = Layout::horizontal([
+        Constraint::Percentage(28),
+        Constraint::Percentage(42),
+        Constraint::Percentage(30),
+    ])
+    .areas(middle);
+    draw_chat(frame, chat, screen.typing.as_deref(), talk);
     let [left, below] =
         Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(left);
     let scenes: Vec<ListItem> = status
@@ -269,8 +277,11 @@ fn draw(
             "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
         }
     };
-    let keys = format!("{keys} · m mute · n next · +/- music");
-    let footer = said.map_or(keys.clone(), |said| format!("{said} · {keys}"));
+    let keys = format!("{keys} · m mute · n next · +/- music · c chat");
+    let footer = screen
+        .said
+        .as_ref()
+        .map_or(keys.clone(), |said| format!("{said} · {keys}"));
     frame.render_widget(
         Paragraph::new(footer).style(Style::new().fg(Color::DarkGray)),
         bottom,
@@ -412,6 +423,10 @@ pub struct Screen {
     pub picked_layer: usize,
     pub picked_destination: usize,
     pub asking: Option<Lever>,
+    /// A line of chat being typed: every key is a letter until Enter or Esc.
+    pub typing: Option<String>,
+    /// What the last thing sent came to, in the footer.
+    pub said: Option<String>,
 }
 
 impl Screen {
@@ -439,6 +454,27 @@ pub enum Act {
 /// only open a question; `y` answers it and sends, and any other key lets it go, `q`
 /// included: under a question, `q` never closes the screen.
 pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Act {
+    if let Some(mut line) = screen.typing.take() {
+        match key {
+            '\u{1b}' => {}
+            '\n' if line.trim().is_empty() => {}
+            '\n' => {
+                return Act::Send(Command::Say {
+                    body: line,
+                    channel: None,
+                })
+            }
+            '\u{8}' => {
+                line.pop();
+                screen.typing = Some(line);
+            }
+            letter => {
+                line.push(letter);
+                screen.typing = Some(line);
+            }
+        }
+        return Act::Stay;
+    }
     if let Some(lever) = screen.asking.take() {
         return match (key, lever.command()) {
             ('y', Some(command)) => Act::Send(command),
@@ -458,7 +494,8 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     // id would be the air's.
     let on_air = scene.is_some_and(|scene| scene.name == status.active_scene);
     match (key, screen.focus) {
-        ('q', _) => return Act::Quit,
+        ('q' | '\u{1b}', _) => return Act::Quit,
+        ('c', _) => screen.typing = Some(String::new()),
         // The sound's everyday gestures, from any panel, at once.
         ('m', _) => return Act::Send(Command::Mute { on: !status.muted }),
         ('n', _) => return Act::Send(Command::NextTrack),
@@ -574,6 +611,80 @@ fn quieter(level: f64) -> f64 {
     } else {
         level
     }
+}
+
+/// The chat as far as this screen has read it.
+#[derive(Debug, Default)]
+pub struct Chat {
+    pub reachable: bool,
+    pub lines: Vec<ChatLine>,
+}
+
+impl Chat {
+    /// How many lines the screen keeps; the panel shows the last that fit.
+    const KEPT: usize = 200;
+
+    /// The lines after the last one held: the engine answers only what is new.
+    fn read(&mut self, ask: &impl Fn(&Command) -> Result<Reply, String>) {
+        let since = self.lines.last().map_or(0, |line| line.seq);
+        let Ok(Reply::Chat { reachable, lines }) = ask(&Command::Chat {
+            since,
+            follow: false,
+        }) else {
+            self.reachable = false;
+            return;
+        };
+        self.reachable = reachable;
+        self.lines.extend(lines);
+        let over = self.lines.len().saturating_sub(Self::KEPT);
+        self.lines.drain(..over);
+    }
+}
+
+fn draw_chat(frame: &mut Frame, chat: &Chat, typing: Option<&str>, area: ratatui::layout::Rect) {
+    let [lines_area, typed] = Layout::vertical([
+        Constraint::Min(3),
+        Constraint::Length(if typing.is_some() { 3 } else { 0 }),
+    ])
+    .areas(area);
+    let title = if chat.reachable {
+        " chat "
+    } else {
+        " chat · no wire "
+    };
+    let fits = lines_area.height.saturating_sub(2) as usize;
+    let shown: Vec<ListItem> = chat.lines[chat.lines.len().saturating_sub(fits)..]
+        .iter()
+        .map(|line| ListItem::new(chat_row(line)))
+        .collect();
+    frame.render_widget(
+        List::new(shown).block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::new().fg(Color::DarkGray)),
+        ),
+        lines_area,
+    );
+    if let Some(line) = typing {
+        frame.render_widget(
+            Paragraph::new(format!("{line}▏")).block(
+                Block::bordered()
+                    .title(" say · enter sends · esc lets it go ")
+                    .border_style(Style::new().fg(Color::Yellow)),
+            ),
+            typed,
+        );
+    }
+}
+
+/// A line of chat as the terminal shows it: whoever said it and what, with every
+/// escape and control character a stranger could send taken out.
+pub fn chat_row(line: &ChatLine) -> String {
+    format!(
+        "{}: {}",
+        crate::words::plain(&line.from),
+        crate::words::plain(&line.body)
+    )
 }
 
 /// Whether a scene's layer or element is shown.
@@ -1202,6 +1313,60 @@ mod tests {
             level('-', 0.001),
             0.0,
             "below a tenth of a percent is silence"
+        );
+    }
+
+    #[test]
+    fn a_line_of_chat_reaches_the_terminal_without_its_escapes() {
+        let line: remuxd_domain::protocol::ChatLine = serde_json::from_value(serde_json::json!({
+            "seq": 1, "from": "ev\u{1b}[31mil", "body": "olá\u{1b}[2J tudo\u{7}",
+            "platform": "twitch", "id": "x"
+        }))
+        .expect("a chat line");
+        assert_eq!(chat_row(&line), "evil: olá tudo");
+    }
+
+    #[test]
+    fn c_opens_a_line_where_every_key_is_a_letter_and_enter_says_it() {
+        let mut screen = Screen::default();
+        let status = Status::default();
+        assert_eq!(press('c', &mut screen, 0, &status), Act::Stay);
+        for key in "oi q\u{8}m".chars() {
+            assert_eq!(
+                press(key, &mut screen, 0, &status),
+                Act::Stay,
+                "{key:?} is typed, not done"
+            );
+        }
+        assert_eq!(screen.typing.as_deref(), Some("oi m"));
+        assert_eq!(
+            press('\n', &mut screen, 0, &status),
+            Act::Send(Command::Say {
+                body: "oi m".into(),
+                channel: None
+            })
+        );
+        assert_eq!(screen.typing, None);
+    }
+
+    #[test]
+    fn escape_lets_a_line_go_unsaid_and_an_empty_one_is_not_sent() {
+        let mut screen = Screen::default();
+        let status = Status::default();
+        press('c', &mut screen, 0, &status);
+        press('x', &mut screen, 0, &status);
+        assert_eq!(press('\u{1b}', &mut screen, 0, &status), Act::Stay);
+        assert_eq!(screen.typing, None);
+        press('c', &mut screen, 0, &status);
+        assert_eq!(press('\n', &mut screen, 0, &status), Act::Stay);
+        assert_eq!(screen.typing, None);
+    }
+
+    #[test]
+    fn escape_outside_a_line_still_quits() {
+        assert_eq!(
+            press('\u{1b}', &mut Screen::default(), 0, &Status::default()),
+            Act::Quit
         );
     }
 
