@@ -49,6 +49,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         let typed = match key {
             KeyCode::Char(c) => c,
             KeyCode::Esc => 'q',
+            KeyCode::Enter => '\n',
             KeyCode::Down => 'j',
             KeyCode::Up => 'k',
             _ => continue,
@@ -159,7 +160,7 @@ fn draw(
         List::new(destinations).block(Block::bordered().title(" destinations ")),
         right,
     );
-    let keys = "q quit · j/k move · L live · S stop · R record · ! cut";
+    let keys = "q quit · j/k move · enter switch · L live · S stop · R record · ! cut";
     let footer = said.map_or(keys.to_string(), |said| format!("{said} · {keys}"));
     frame.render_widget(
         Paragraph::new(footer).style(Style::new().fg(Color::DarkGray)),
@@ -203,7 +204,8 @@ fn ask_about(frame: &mut Frame, lever: &Lever) {
         ),
         Lever::Cut => (
             " cut? ",
-            "every layer of the active scene and all sound off\n\ny: cut · any other key: no"
+            "removes every layer of the active scene and every audio layer, for good:\n\
+             the scene comes back empty and has to be built again\n\ny: cut · any other key: no"
                 .to_string(),
             Color::Red,
         ),
@@ -307,7 +309,8 @@ pub enum Act {
     Send(Command),
 }
 
-/// A key. `j`/`k` move the pick without leaving the list, `q` quits. `L`, `S`, `R` and `!`
+/// A key. `j`/`k` move the pick without leaving the list, Enter switches to it, `q` quits.
+/// `L`, `S`, `R` and `!`
 /// only open a question; `y` answers it and sends, and any other key lets it go, `q`
 /// included: under a question, `q` never closes the screen.
 pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Act {
@@ -326,6 +329,16 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         'q' => return Act::Quit,
         'j' if screen.picked + 1 < rows => screen.picked += 1,
         'k' => screen.picked = screen.picked.saturating_sub(1),
+        // Switching is the live's everyday gesture: at once, no question.
+        '\n' => {
+            if let Some(scene) = status.scenes.get(screen.picked) {
+                if scene.name != status.active_scene {
+                    return Act::Send(Command::SceneSwitch {
+                        name: scene.name.clone(),
+                    });
+                }
+            }
+        }
         'L' if !status.on_air => return Act::Plan,
         'S' if status.on_air => screen.asking = Some(Lever::Stop),
         'R' => {
@@ -384,6 +397,40 @@ mod tests {
         }
         assert_eq!(screen.picked, 0, "and the first is as far up");
         assert_eq!(press('q', &mut screen, 3, &off), Act::Quit);
+    }
+
+    fn with_scenes(names: &[&str], active: &str) -> Status {
+        Status {
+            scenes: names
+                .iter()
+                .map(|n| {
+                    serde_json::from_value(serde_json::json!({ "name": n }))
+                        .expect("a scene by its name")
+                })
+                .collect(),
+            active_scene: active.to_string(),
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn enter_switches_to_the_picked_scene_at_once() {
+        let status = with_scenes(&["Screen", "Starting soon", "BRB"], "Screen");
+        let mut screen = Screen {
+            picked: 2,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('\n', &mut screen, 3, &status),
+            Act::Send(Command::SceneSwitch { name: "BRB".into() })
+        );
+    }
+
+    #[test]
+    fn enter_on_the_scene_already_out_does_nothing() {
+        let status = with_scenes(&["Screen", "BRB"], "Screen");
+        let mut screen = Screen::default();
+        assert_eq!(press('\n', &mut screen, 2, &status), Act::Stay);
     }
 
     #[test]
