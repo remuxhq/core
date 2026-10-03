@@ -6,11 +6,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use remuxd_domain::air::plan::Plan;
 use remuxd_domain::picture::scenes::Scene;
-use remuxd_domain::protocol::{Command, Reply, Status};
+use remuxd_domain::protocol::{Command, Hearing, Mixing, Reply, Status};
 
 /// The screen, until `q`: the status read once a second through `ask`, drawn after every
 /// read and every key. Only a question a person answered with `y` sends anything else.
@@ -29,10 +30,22 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             status = read();
             read_at = Instant::now();
         }
+        // The meters, every turn of the loop: one line on the socket, no device opened.
+        let levels = match ask(&Command::Levels) {
+            Ok(Reply::Levels { hearing, mixing }) => Some((hearing, mixing)),
+            _ => None,
+        };
         let rows = status.as_ref().map_or(0, |s| s.scenes.len());
-        if let Err(why) =
-            terminal.draw(|frame| draw(frame, &status, &screen, said.as_deref(), now()))
-        {
+        if let Err(why) = terminal.draw(|frame| {
+            draw(
+                frame,
+                &status,
+                levels.as_ref(),
+                &screen,
+                said.as_deref(),
+                now(),
+            )
+        }) {
             break Err(why);
         }
         match event::poll(Duration::from_millis(250)) {
@@ -90,6 +103,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
 fn draw(
     frame: &mut Frame,
     status: &Result<Status, String>,
+    levels: Option<&(Hearing, Mixing)>,
     screen: &Screen,
     said: Option<&str>,
     now: i64,
@@ -199,6 +213,21 @@ fn draw(
             ))
         })
         .collect();
+    let [right, meters] =
+        Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(right);
+    frame.render_widget(
+        Paragraph::new(sound(
+            status,
+            levels,
+            meters.width.saturating_sub(16) as usize,
+        ))
+        .block(
+            Block::bordered()
+                .title(" sound ")
+                .border_style(Style::new().fg(Color::DarkGray)),
+        ),
+        meters,
+    );
     frame.render_stateful_widget(
         List::new(destinations)
             .block(panel(" destinations ", !on_scenes))
@@ -475,6 +504,127 @@ pub fn rows_of(scene: &Scene) -> Vec<String> {
         .collect()
 }
 
+/// The sound panel: the microphone and its gate, the gate's two levels against their
+/// thresholds, the music and the mix, each a bar `width` cells wide.
+fn sound(status: &Status, levels: Option<&(Hearing, Mixing)>, width: usize) -> Vec<Line<'static>> {
+    let Some((hearing, mixing)) = levels else {
+        return vec![Line::from("no levels from the engine")];
+    };
+    let bar = |level_db: f64, mark: Option<f64>, colour: Color| {
+        let on = lit(level_db, width);
+        let mark = mark.map(|m| lit(m, width).min(width.saturating_sub(1)));
+        let cells: String = (0..width)
+            .map(|i| match (i < on, Some(i) == mark) {
+                (_, true) => '│',
+                (true, _) => '█',
+                _ => '·',
+            })
+            .collect();
+        Span::styled(cells, Style::new().fg(colour))
+    };
+    let row = |name: &str, bar: Span<'static>, reading: String| {
+        Line::from(vec![
+            Span::raw(format!("{name:<6} ")),
+            bar,
+            Span::raw(format!(" {reading}")),
+        ])
+    };
+    let mic = status.mic.is_some();
+    let word = gate_word(hearing.gate_open, status.muted, mic);
+    let lamp = if word == "open" {
+        Color::Green
+    } else if word == "closed" {
+        Color::Red
+    } else {
+        Color::DarkGray
+    };
+    let heard = if status.muted {
+        FLOOR_DB
+    } else {
+        hearing.level_db
+    };
+    vec![
+        Line::from(vec![
+            Span::raw(format!(
+                "mic    {} · ",
+                status.mic.as_deref().unwrap_or("none")
+            )),
+            Span::styled(
+                format!("gate {word}"),
+                Style::new().fg(lamp).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        row(
+            "level",
+            bar(heard, None, Color::Green),
+            format!("{heard:.0} dB"),
+        ),
+        row(
+            "voice",
+            bar(
+                db(hearing.gate_levels.full),
+                Some(db(status.gate.full)),
+                Color::Cyan,
+            ),
+            String::new(),
+        ),
+        row(
+            "highs",
+            bar(
+                db(hearing.gate_levels.hf),
+                Some(db(status.gate.hf)),
+                Color::Cyan,
+            ),
+            String::new(),
+        ),
+        Line::from(""),
+        Line::from(format!(
+            "music  {}",
+            status.music.as_deref().unwrap_or("nothing playing")
+        )),
+        row(
+            "level",
+            bar(mixing.music_db, None, Color::Magenta),
+            format!("{:.0} dB", mixing.music_db),
+        ),
+        row(
+            "mix",
+            bar(mixing.level_db, None, Color::Yellow),
+            format!("{:.0} dB", mixing.level_db),
+        ),
+    ]
+}
+
+/// The meters' floor: below it a bar is dark.
+const FLOOR_DB: f64 = -60.0;
+
+/// How many of `width` cells a level in dBFS lights, from the floor to full scale.
+pub fn lit(level_db: f64, width: usize) -> usize {
+    if level_db.is_nan() {
+        return 0;
+    }
+    let share = (level_db.clamp(FLOOR_DB, 0.0) - FLOOR_DB) / -FLOOR_DB;
+    (share * width as f64).round() as usize
+}
+
+/// An amplitude (the gate's levels and thresholds) in dBFS, silence on the floor.
+pub fn db(amplitude: f64) -> f64 {
+    if amplitude <= 0.0 {
+        return FLOOR_DB;
+    }
+    (20.0 * amplitude.log10()).max(FLOOR_DB)
+}
+
+/// The gate's lamp: a missing or muted microphone says so before open or closed.
+pub fn gate_word(open: bool, muted: bool, mic: bool) -> &'static str {
+    match (open, muted, mic) {
+        (_, _, false) => "no mic",
+        (_, true, _) => "muted",
+        (true, _, _) => "open",
+        _ => "closed",
+    }
+}
+
 /// Seconds since `since`, as HH:MM:SS; zero when the engine has not said.
 fn clock(since: Option<i64>, now: i64) -> String {
     let seconds = since.map_or(0, |since| (now - since).max(0));
@@ -645,6 +795,34 @@ mod tests {
                 "clock · timer 180 s",
             ]
         );
+    }
+
+    #[test]
+    fn a_level_lights_its_share_of_the_bar_from_minus_sixty_to_zero() {
+        assert_eq!(lit(-60.0, 20), 0);
+        assert_eq!(lit(-30.0, 20), 10);
+        assert_eq!(lit(0.0, 20), 20);
+        assert_eq!(lit(-90.0, 20), 0, "below the floor is nothing");
+        assert_eq!(lit(6.0, 20), 20, "above full scale is the whole bar");
+        assert_eq!(lit(f64::NAN, 20), 0);
+    }
+
+    #[test]
+    fn the_gate_s_thresholds_are_amplitudes_drawn_in_db() {
+        assert!((db(0.1) + 20.0).abs() < 1e-9);
+        assert_eq!(db(0.0), -60.0, "silence sits on the floor");
+    }
+
+    #[test]
+    fn the_gate_says_muted_over_open_and_no_mic_over_everything() {
+        assert_eq!(gate_word(true, false, false), "no mic");
+        assert_eq!(
+            gate_word(true, true, true),
+            "muted",
+            "a muted mic is not live, open or not"
+        );
+        assert_eq!(gate_word(true, false, true), "open");
+        assert_eq!(gate_word(false, false, true), "closed");
     }
 
     #[test]
