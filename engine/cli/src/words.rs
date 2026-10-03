@@ -193,6 +193,10 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
             _ => Err("scene stage needs exactly one name (quote names with spaces)".into()),
         },
         "scene-take" if rest.is_empty() => Ok(Command::SceneTake),
+        "scene-restore" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneRestore { name: name.clone() }),
+            _ => Err("scene restore needs exactly one name (quote names with spaces)".into()),
+        },
         "scene-draft" => match rest {
             [name] if !name.is_empty() => Ok(Command::SceneDraft {
                 name: name.clone(),
@@ -1399,6 +1403,12 @@ mod tests {
         assert_eq!(
             super::parse(&words(&["scene", "take"])),
             Ok(remuxd_domain::protocol::Command::SceneTake)
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "restore", "Close Up"])),
+            Ok(remuxd_domain::protocol::Command::SceneRestore {
+                name: "Close Up".into()
+            })
         );
         assert_eq!(
             super::parse(&words(&["scene", "draft", "Keys"])),

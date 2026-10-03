@@ -59,6 +59,11 @@ pub enum Command {
     Staged {
         command: Box<Command>,
     },
+    /// A deleted scene back from the trash, under its name, or under another
+    /// when the name was taken since. Nothing on the air moves.
+    SceneRestore {
+        name: String,
+    },
     AudioLayerAdd {
         id: String,
         source: crate::sound::audio_layers::Source,
@@ -835,6 +840,10 @@ pub struct Status {
     /// remembered: a restarted engine stages nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staged: Option<String>,
+    /// The scenes deleted, the latest first, whole: `scene-restore` brings one
+    /// back. The last ten are kept, and remembered across a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trash: Vec<crate::picture::scenes::Scene>,
     /// Independent audio captures, not ordered visual scene layers.
     #[serde(default)]
     pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
@@ -977,6 +986,7 @@ impl Default for Status {
             scenes: crate::picture::scenes::defaults(),
             active_scene: default_scene_name(),
             staged: None,
+            trash: Vec::new(),
             audio_layers: Vec::new(),
             shader: None,
             mic: None,

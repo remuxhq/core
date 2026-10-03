@@ -254,7 +254,10 @@ fn draw(
     let on_destinations = screen.focus == Panel::Destinations;
     frame.render_stateful_widget(
         List::new(scenes)
-            .block(panel(" scenes ", on_scenes))
+            .block(panel("", on_scenes).title(match status.trash.len() {
+                0 => " scenes ".to_string(),
+                n => format!(" scenes · {n} in the trash, U brings the last back "),
+            }))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         left,
         &mut picked(screen.picked, status.scenes.len(), on_scenes),
@@ -318,7 +321,7 @@ fn draw(
     );
     let keys = match screen.focus {
         Panel::Scenes => {
-            "q quit · tab layers · j/k move · enter preview · t take · N new · D copy · X delete · L live · S stop · R record · ! cut"
+            "q quit · tab layers · j/k move · enter preview · t take · N new · D copy · X delete · U undelete · L live · S stop · R record · ! cut"
         }
         Panel::Layers => {
             "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · A add · x remove · f filter · F scene filter · ! cut"
@@ -812,6 +815,14 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             }
         }
         ('X', Panel::Scenes) if on_air => return Act::Say("the scene on the air is not deleted"),
+        ('U', Panel::Scenes) => {
+            return match status.trash.first() {
+                Some(scene) => Act::Send(Command::SceneRestore {
+                    name: scene.name.clone(),
+                }),
+                None => Act::Say("the trash is empty"),
+            }
+        }
         ('X', Panel::Scenes) => {
             if let Some(scene) = scene {
                 screen.asking = Some(Lever::Delete(scene.name.clone()));
@@ -2550,6 +2561,20 @@ mod tests {
                 name: "BRB 2".into(),
                 from: Some("BRB".into())
             })
+        );
+    }
+
+    #[test]
+    fn u_brings_back_the_scene_deleted_last() {
+        let mut status = with_scenes(&["Screen"], "Screen");
+        assert_eq!(
+            press('U', &mut Screen::default(), 1, &status),
+            Act::Say("the trash is empty")
+        );
+        status.trash = with_scenes(&["BRB", "Old"], "BRB").scenes;
+        assert_eq!(
+            press('U', &mut Screen::default(), 1, &status),
+            Act::Send(Command::SceneRestore { name: "BRB".into() })
         );
     }
 

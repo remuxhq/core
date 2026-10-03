@@ -383,7 +383,14 @@ const SCENE: &[Action] = &[
         target: "scene-delete",
         prefix: &[],
         args: "<name>",
-        summary: "Delete an inactive scene.",
+        summary: "Delete an inactive scene; it goes to the trash.",
+    },
+    Action {
+        name: "restore",
+        target: "scene-restore",
+        prefix: &[],
+        args: "<name>",
+        summary: "Bring a deleted scene back from the trash.",
     },
 ];
 

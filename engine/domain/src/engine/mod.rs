@@ -521,6 +521,9 @@ impl Default for Engine {
     }
 }
 
+/// How many deleted scenes the trash keeps.
+const TRASH: usize = 10;
+
 impl Engine {
     pub fn new() -> Self {
         Self::with_sources(Box::new(NoSources))
@@ -676,6 +679,7 @@ impl Engine {
         crate::remembered::Remembered {
             layers,
             scenes,
+            trash: self.status.trash.clone(),
             active_scene: self.status.active_scene.clone(),
             audio_layers: self.status.audio_layers.clone(),
             mic: self.status.mic.clone(),
@@ -698,6 +702,7 @@ impl Engine {
     /// settings somebody spent an evening on.
     pub fn restore(&mut self, setup: &crate::remembered::Remembered) {
         self.status.faders = setup.faders;
+        self.status.trash = setup.trash.clone();
         let _ = self.handle(Command::Gate {
             patch: serde_json::to_value(setup.gate).unwrap_or_default(),
         });
@@ -1038,7 +1043,10 @@ impl Engine {
                 message: format!("no scene {name:?}"),
             };
         };
+        let gone = self.current_scenes().remove(index);
         self.status.scenes.remove(index);
+        self.status.trash.insert(0, gone);
+        self.status.trash.truncate(TRASH);
         if self.status.staged.as_deref() == Some(name.as_str()) {
             self.unstage();
         }
@@ -1191,6 +1199,28 @@ impl Engine {
             Reply::Error { message } => Reply::Error { message },
             _ => Reply::Status(Box::new(self.reported())),
         }
+    }
+
+    /// A scene out of the trash, beside the others, under a name not taken.
+    fn scene_restore(&mut self, name: String) -> Reply {
+        let Some(at) = self.status.trash.iter().position(|s| s.name == name) else {
+            return Reply::Error {
+                message: format!("no scene {name:?} in the trash"),
+            };
+        };
+        let mut scene = self.status.trash.remove(at);
+        let taken = |n: &str| self.status.scenes.iter().any(|s| s.name == n);
+        if taken(&scene.name) {
+            let mut again = format!("{name} (restored)");
+            let mut n = 2;
+            while taken(&again) {
+                again = format!("{name} (restored {n})");
+                n += 1;
+            }
+            scene.name = again;
+        }
+        self.status.scenes.push(scene);
+        Reply::Status(Box::new(self.reported()))
     }
 
     fn unstage(&mut self) {
@@ -1531,6 +1561,7 @@ impl Engine {
             Command::SceneStage { name } => self.scene_stage(name),
             Command::SceneTake => self.scene_take(),
             Command::SceneDraft { name, from } => self.scene_draft(name, from),
+            Command::SceneRestore { name } => self.scene_restore(name),
             Command::Staged { command } => self.staged_verb(*command),
             Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
@@ -2521,6 +2552,97 @@ mod tests {
             ),
             "a scene that is not there"
         );
+    }
+
+    #[test]
+    fn a_deleted_scene_goes_to_the_trash_whole_and_comes_back_by_name() {
+        let mut engine = with_next(Wrote::default());
+        engine.handle(Command::SceneDelete {
+            name: "next".into(),
+        });
+        assert!(!engine.status.scenes.iter().any(|s| s.name == "next"));
+        assert_eq!(engine.status.trash.len(), 1);
+        assert_eq!(
+            engine.status.trash[0].layers[0].id, "keys",
+            "whole, its layers kept"
+        );
+        let back = engine.handle(Command::SceneRestore {
+            name: "next".into(),
+        });
+        assert!(matches!(back, Reply::Status(_)), "{back:?}");
+        let next = engine
+            .status
+            .scenes
+            .iter()
+            .find(|s| s.name == "next")
+            .expect("back");
+        assert_eq!(next.layers[0].id, "keys");
+        assert!(engine.status.trash.is_empty());
+        assert_eq!(
+            engine.status.active_scene, "default",
+            "restoring puts nothing on the air"
+        );
+    }
+
+    #[test]
+    fn a_scene_restored_under_a_name_taken_since_gets_another() {
+        let mut engine = with_next(Wrote::default());
+        engine.handle(Command::SceneDelete {
+            name: "next".into(),
+        });
+        engine.handle(Command::SceneDraft {
+            name: "next".into(),
+            from: None,
+        });
+        engine.handle(Command::SceneRestore {
+            name: "next".into(),
+        });
+        let names: Vec<_> = engine
+            .status
+            .scenes
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"next") && names.contains(&"next (restored)"),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn the_trash_keeps_the_last_ten_and_restoring_what_is_not_there_says_so() {
+        let mut engine = with_next(Wrote::default());
+        for n in 0..12 {
+            let name = format!("s{n}");
+            engine.handle(Command::SceneDraft {
+                name: name.clone(),
+                from: None,
+            });
+            engine.handle(Command::SceneStage {
+                name: "default".into(),
+            });
+            engine.handle(Command::SceneDelete { name });
+        }
+        assert_eq!(engine.status.trash.len(), 10);
+        assert_eq!(engine.status.trash[0].name, "s11", "the latest first");
+        assert!(matches!(
+            engine.handle(Command::SceneRestore { name: "s0".into() }),
+            Reply::Error { .. }
+        ));
+    }
+
+    #[test]
+    fn the_trash_is_remembered_across_a_restart() {
+        let mut engine = with_next(Wrote::default());
+        engine.handle(Command::SceneDelete {
+            name: "next".into(),
+        });
+        let saved =
+            crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
+        let mut again = Engine::new().with_pipeline(Box::new(Wrote::default()));
+        again.restore(&saved);
+        assert_eq!(again.status.trash.len(), 1);
+        assert_eq!(again.status.trash[0].name, "next");
     }
 
     #[test]

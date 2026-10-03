@@ -60,6 +60,7 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::SceneStage { name } => format!("scene {name} staged"),
         Command::SceneTake => "staged scene taken to the air".into(),
         Command::SceneDraft { name, .. } => format!("scene {name} drafted in the preview"),
+        Command::SceneRestore { name } => format!("scene {name} restored from the trash"),
         Command::Staged { .. } => return None,
         Command::AudioLayerAdd { id, .. } => format!("audio layer {id} added"),
         Command::AudioLayerRemove { id } => format!("audio layer {id} removed"),
@@ -205,6 +206,7 @@ fn verb(command: &Command) -> &'static str {
         | Command::SceneStage { .. }
         | Command::SceneTake
         | Command::SceneDraft { .. }
+        | Command::SceneRestore { .. }
         | Command::Staged { .. } => "scene",
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
