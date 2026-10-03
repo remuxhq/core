@@ -776,13 +776,17 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
                             .and_then(|e| e.shader.clone())
                     });
                 let path = next_filter(&screen.filters, now.as_deref());
-                return send(Command::LayerShader { id, path });
+                if path != now {
+                    return send(Command::LayerShader { id, path });
+                }
             }
         }
         ('F', Panel::Layers) => {
             if let Some(scene) = scene {
                 let path = next_filter(&screen.filters, scene.shader.as_deref());
-                return send(Command::Shader { path });
+                if path != scene.shader {
+                    return send(Command::Shader { path });
+                }
             }
         }
         ('A', Panel::Layers) => {
@@ -2756,6 +2760,17 @@ mod tests {
                 })
             })
         );
+    }
+
+    #[test]
+    fn with_no_filters_to_offer_f_and_shift_f_change_nothing_and_send_nothing() {
+        let status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        assert_eq!(press('f', &mut screen, 2, &status), Act::Stay);
+        assert_eq!(press('F', &mut screen, 2, &status), Act::Stay);
     }
 
     #[test]
