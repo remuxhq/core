@@ -1295,13 +1295,15 @@ fn sound(
         Line::from(spans)
     };
     let mic = status.mic.is_some();
-    let word = gate_word(hearing.gate_open, status.muted, mic);
-    let lamp = if word == "open" {
-        Color::Green
-    } else if word == "closed" {
-        Color::Red
-    } else {
-        Color::DarkGray
+    let word = signal_word(
+        gate_word(hearing.gate_open, status.muted, mic),
+        meters.has_signal,
+    );
+    let lamp = match word {
+        "open" => Color::Green,
+        "closed" => Color::Red,
+        "no signal" => Color::Yellow,
+        _ => Color::DarkGray,
     };
     let heard = meters.level;
     vec![
@@ -1418,6 +1420,44 @@ pub struct Meters {
     pub highs: f64,
     pub music: f64,
     pub mix: f64,
+    /// Whether the microphone's samples still move.
+    pub signal: Signal,
+    pub has_signal: bool,
+    clock: f64,
+}
+
+/// Whether a device still delivers: its count of samples moving. A wireless
+/// microphone that drops and comes back stops the count and starts it again.
+#[derive(Debug, Default)]
+pub struct Signal {
+    last: u64,
+    since: f64,
+    seen: bool,
+}
+
+impl Signal {
+    /// How long a count may stand still before it is no signal.
+    const STILL: f64 = 2.0;
+
+    /// Whether there is a signal, given the count `now` seconds in.
+    pub fn heard(&mut self, samples: u64, now: f64) -> bool {
+        if !self.seen || samples != self.last {
+            self.last = samples;
+            self.since = now;
+            self.seen = true;
+            return true;
+        }
+        now - self.since < Self::STILL
+    }
+}
+
+/// The gate's word, or "no signal" for a microphone that is chosen, not muted,
+/// and silent at the source.
+pub fn signal_word(word: &'static str, signal: bool) -> &'static str {
+    match (word, signal) {
+        ("open" | "closed", false) => "no signal",
+        _ => word,
+    }
 }
 
 impl Default for Meters {
@@ -1428,6 +1468,9 @@ impl Default for Meters {
             highs: FLOOR_DB,
             music: FLOOR_DB,
             mix: FLOOR_DB,
+            signal: Signal::default(),
+            has_signal: true,
+            clock: 0.0,
         }
     }
 }
@@ -1441,6 +1484,8 @@ impl Meters {
         self.highs = fall(self.highs, db(hearing.gate_levels.hf), seconds);
         self.music = fall(self.music, mixing.music_db, seconds);
         self.mix = fall(self.mix, mixing.level_db, seconds);
+        self.clock += seconds;
+        self.has_signal = self.signal.heard(hearing.samples, self.clock);
     }
 }
 
@@ -2494,6 +2539,31 @@ mod tests {
             press('y', &mut screen, 2, &status),
             Act::Send(Command::LayerRemove { id: "desk".into() })
         );
+    }
+
+    #[test]
+    fn a_mic_whose_samples_stop_for_two_seconds_has_no_signal_and_gets_it_back_when_they_move() {
+        let mut watch = Signal::default();
+        assert!(watch.heard(100, 0.0));
+        assert!(watch.heard(100, 1.5), "a second and a half is a pause");
+        assert!(!watch.heard(100, 2.5), "two seconds still is no signal");
+        assert!(watch.heard(180, 3.0), "samples again: back");
+    }
+
+    #[test]
+    fn the_gate_says_no_signal_before_open_or_closed() {
+        assert_eq!(gate_word(true, false, true), "open");
+        assert_eq!(
+            signal_word(gate_word(true, false, true), false),
+            "no signal"
+        );
+        assert_eq!(
+            signal_word("muted", false),
+            "muted",
+            "a muted mic is not a lost one"
+        );
+        assert_eq!(signal_word("no mic", false), "no mic");
+        assert_eq!(signal_word("open", true), "open");
     }
 
     #[test]
