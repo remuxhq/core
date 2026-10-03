@@ -875,7 +875,7 @@ pub fn render(reply: &Reply) -> String {
 }
 
 /// What changed, one a line, oldest first.
-fn render_events(
+pub(crate) fn render_events(
     gap: Option<remuxd_domain::app::events::Gap>,
     events: &[remuxd_domain::app::events::Numbered],
 ) -> String {

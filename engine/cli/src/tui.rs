@@ -32,6 +32,22 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         screen.focus = screen.next_shown(screen.focus);
     }
     let mut last_said: Option<String> = None;
+    // The log starts with what the engine wrote down so far; of its events, only
+    // what happens from now on.
+    let mut journal_seen: Option<String> = None;
+    if let Ok(now) = &status {
+        for line in &now.log {
+            to_log(&mut screen, line.clone());
+        }
+        journal_seen = now.log.last().cloned();
+    }
+    let mut events_seen = match ask(&Command::Events {
+        since: 0,
+        follow: false,
+    }) {
+        Ok(Reply::Events { events, .. }) => events.iter().map(|e| e.seq).max().unwrap_or(0),
+        _ => 0,
+    };
     let mut said_at = Instant::now();
     // The genres once: they never open a device to be listed.
     if let Ok(Reply::Sources(devices)) = ask(&Command::Genres) {
@@ -48,6 +64,21 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let outcome = loop {
         if read_at.elapsed() >= Duration::from_secs(1) {
             status = read();
+            if let Ok(now) = &status {
+                for line in fresh_journal(journal_seen.as_deref(), &now.log) {
+                    to_log(&mut screen, line.clone());
+                }
+                journal_seen = now.log.last().cloned();
+            }
+            if let Ok(Reply::Events { events, .. }) = ask(&Command::Events {
+                since: events_seen,
+                follow: false,
+            }) {
+                for line in events_for_log(&events) {
+                    to_log(&mut screen, line);
+                }
+                events_seen = events.iter().map(|e| e.seq).max().unwrap_or(events_seen);
+            }
             let fresh = chat.read(&ask);
             chat.hold(&mut screen, fresh);
             look_at_companions(&mut screen);
@@ -55,6 +86,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             read_at = Instant::now();
         }
         if let Ok(said) = heard.try_recv() {
+            to_log(&mut screen, format!("{} {said}", local_time()));
             screen.said = Some(said);
             look_at_companions(&mut screen);
         }
@@ -133,7 +165,10 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Act::Stay => {}
             Act::Quit => break Ok(()),
             Act::Say(why) => screen.said = Some(why.into()),
-            Act::Said(why) => screen.said = Some(why),
+            Act::Said(why) => {
+                to_log(&mut screen, format!("{} ! {why}", local_time()));
+                screen.said = Some(why);
+            }
             Act::Companion { name, start } => {
                 screen.said = Some(format!(
                     "{} {name}…",
@@ -173,16 +208,9 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 // destinations when a live starts.
                 let later = now_status.on_air && matches!(command, Command::Arm { .. });
                 let answered = ask(&command);
-                let reply = match &answered {
-                    Ok(reply) => reply.clone(),
-                    Err(why) => Reply::Error {
-                        message: why.clone(),
-                    },
-                };
-                if let Some(line) = history_line(&command, &reply, &local_time()) {
-                    screen.history.push(line);
-                    let over = screen.history.len().saturating_sub(HISTORY);
-                    screen.history.drain(..over);
+                // What the engine did is in its journal; what never reached it is not.
+                if let Err(why) = &answered {
+                    to_log(&mut screen, format!("{} ! {why}", local_time()));
                 }
                 screen.said = Some(match answered {
                     Ok(Reply::Error { message }) => message,
@@ -476,23 +504,23 @@ fn draw_panel(
         Panel::Companions => draw_companions(frame, screen, area, block("companions".into())),
         Panel::Log => {
             let fits = area.height.saturating_sub(2) as usize;
-            let lines: Vec<ListItem> = if screen.history.is_empty() {
-                vec![ListItem::new("nothing sent from this screen yet")
-                    .style(Style::new().fg(Color::DarkGray))]
+            let end = screen.log.len().saturating_sub(screen.log_back);
+            let lines: Vec<ListItem> = if screen.log.is_empty() {
+                vec![ListItem::new("nothing yet").style(Style::new().fg(Color::DarkGray))]
             } else {
-                screen.history[screen.history.len().saturating_sub(fits)..]
+                screen.log[end.saturating_sub(fits)..end]
                     .iter()
                     .map(|line| {
-                        let style = if line.contains("  ! ") {
-                            Style::new().fg(Color::Red)
-                        } else {
-                            Style::new()
-                        };
-                        ListItem::new(line.as_str()).style(style)
+                        let style = log_colour(line).map_or(Style::new(), |c| Style::new().fg(c));
+                        ListItem::new(crate::words::plain(line)).style(style)
                     })
                     .collect()
             };
-            frame.render_widget(List::new(lines).block(block("history".into())), area);
+            let title = match screen.log_back {
+                0 => "log".to_string(),
+                back => format!("log · {back} back · j comes forward"),
+            };
+            frame.render_widget(List::new(lines).block(block(title)), area);
         }
     }
 }
@@ -541,13 +569,104 @@ fn draw_keys(frame: &mut Frame) {
     );
 }
 
-/// How many lines of history a screen keeps.
-const HISTORY: usize = 200;
+/// How many lines the log keeps.
+const LOG: usize = 500;
 
-/// A command sent, as a line: when, and what the journal says of it, or of its
-/// refusal. A read is no line.
-pub fn history_line(command: &Command, reply: &Reply, at: &str) -> Option<String> {
-    remuxd_domain::air::journal::said(command, reply).map(|line| format!("{at}  {line}"))
+/// The journal's lines after the last one seen; all of them when that one fell
+/// off its end or none was seen.
+pub fn fresh_journal<'a>(seen: Option<&str>, lines: &'a [String]) -> &'a [String] {
+    match seen.and_then(|seen| lines.iter().rposition(|line| line == seen)) {
+        Some(at) => &lines[at + 1..],
+        None => lines,
+    }
+}
+
+/// The events nobody's command made, as the log says them: what the air, a
+/// destination, a capture or the sound did by itself. What a command did is in
+/// the journal already.
+pub fn events_for_log(events: &[remuxd_domain::app::events::Numbered]) -> Vec<String> {
+    use remuxd_domain::app::events::Event;
+    events
+        .iter()
+        .filter(|n| {
+            matches!(
+                n.event,
+                Event::LiveStarted
+                    | Event::LiveEnded
+                    | Event::DestinationLive { .. }
+                    | Event::DestinationEnded { .. }
+                    | Event::LayerStalled { .. }
+                    | Event::LayerFlowing { .. }
+                    | Event::SoundComplaint { .. }
+                    | Event::AudioGlitch { .. }
+                    | Event::Notice { .. }
+                    | Event::AppReachable { .. }
+                    | Event::TimerFinished { .. }
+            )
+        })
+        .map(|n| {
+            // As the CLI words it, its number left out: "HH:MM:SS #12 what".
+            let said = crate::words::render_events(None, std::slice::from_ref(n));
+            match said
+                .split_once(" #")
+                .and_then(|(at, rest)| rest.split_once(' ').map(|(_, what)| (at, what)))
+            {
+                Some((at, what)) => format!("{at} {what}"),
+                None => said,
+            }
+        })
+        .collect()
+}
+
+/// What changed among the companions, a line each; one that fell says where to
+/// read why.
+pub fn companion_changes(before: &[(String, State)], after: &[(String, State)]) -> Vec<String> {
+    let kind = |state: &State| match state {
+        State::Up(_) => 0,
+        State::Fell(_) => 1,
+        State::Down => 2,
+    };
+    after
+        .iter()
+        .filter_map(|(name, now)| {
+            let was = before.iter().find(|(n, _)| n == name).map(|(_, s)| kind(s));
+            if was == Some(kind(now)) || (was.is_none() && matches!(now, State::Down)) {
+                return None;
+            }
+            Some(match now {
+                State::Up(_) => format!("companion {name} up"),
+                State::Fell(_) => format!("companion {name} fell: remux companion log {name}"),
+                State::Down => format!("companion {name} down"),
+            })
+        })
+        .collect()
+}
+
+/// A log line's colour: what went wrong red, a notice yellow, the rest plain.
+pub fn log_colour(line: &str) -> Option<Color> {
+    let wrong = [
+        " ! ",
+        " refused",
+        " dropped",
+        "stopped delivering",
+        " fell",
+        "glitch",
+        "complaint",
+    ];
+    if wrong.iter().any(|w| line.contains(w)) {
+        Some(Color::Red)
+    } else if line.contains("notice:") {
+        Some(Color::Yellow)
+    } else {
+        None
+    }
+}
+
+/// A line into the log, stamped now, the oldest let go past its length.
+fn to_log(screen: &mut Screen, line: String) {
+    screen.log.push(line);
+    let over = screen.log.len().saturating_sub(LOG);
+    screen.log.drain(..over);
 }
 
 /// The time of day here, HH:MM:SS.
@@ -962,8 +1081,10 @@ pub struct Screen {
     pub genre: Option<String>,
     /// The filters on offer: the WGSL files of the shaders folder.
     pub filters: Vec<String>,
-    /// What this screen sent, as lines.
-    pub history: Vec<String>,
+    /// The log: the engine's journal and what happened by itself, and what only
+    /// this screen saw; and how far back it is read.
+    pub log: Vec<String>,
+    pub log_back: usize,
     /// Whether every key is shown, over the rest.
     pub showing_keys: bool,
     /// The panels not drawn: their keys still work once shown again.
@@ -1133,6 +1254,12 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             }
         }
         ('k', Panel::Chat) => screen.chat_back += 1,
+        ('k', Panel::Log)
+            if screen.log_back + 1 < screen.log.len().max(1) || screen.log.is_empty() =>
+        {
+            screen.log_back += 1
+        }
+        ('j', Panel::Log) => screen.log_back = screen.log_back.saturating_sub(1),
         ('j', Panel::Chat) => screen.chat_back = screen.chat_back.saturating_sub(1),
         ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
             screen.picked_sound += 1
@@ -1580,8 +1707,12 @@ pub fn scene_line(status: &Status) -> String {
 fn look_at_companions(screen: &mut Screen) {
     match crate::companion::states() {
         Ok(list) => {
+            let changes = companion_changes(&screen.companions, &list);
             screen.companions = list;
             screen.companion_trouble = None;
+            for change in changes {
+                to_log(screen, format!("{} {change}", local_time()));
+            }
         }
         Err(why) => {
             screen.companions.clear();
@@ -2911,32 +3042,6 @@ mod tests {
     }
 
     #[test]
-    fn a_command_sent_is_a_line_of_history_in_the_journal_s_words_or_its_refusal() {
-        let deleted = history_line(
-            &Command::SceneDelete { name: "BRB".into() },
-            &Reply::Ok,
-            "12:00:01",
-        );
-        assert_eq!(deleted.as_deref(), Some("12:00:01  scene BRB deleted"));
-        let refused = history_line(
-            &Command::SceneDelete { name: "BRB".into() },
-            &Reply::Error {
-                message: "no scene \"BRB\"".into(),
-            },
-            "12:00:02",
-        );
-        assert_eq!(
-            refused.as_deref(),
-            Some("12:00:02  ! scene: no scene \"BRB\"")
-        );
-        assert_eq!(
-            history_line(&Command::Status, &Reply::Ok, "12:00:03"),
-            None,
-            "reads are not history"
-        );
-    }
-
-    #[test]
     fn question_mark_opens_every_key_and_any_key_closes_it() {
         let mut screen = Screen::default();
         press('?', &mut screen, 0, &Status::default());
@@ -3056,6 +3161,104 @@ mod tests {
             wrap_tokens(&tokens, 16),
             vec![vec!["[a] one", "[b] two"], vec!["[c] three"]]
         );
+    }
+
+    #[test]
+    fn only_the_journal_s_lines_after_the_last_one_seen_are_new() {
+        let lines: Vec<String> = ["12:00:01 a", "12:00:02 b", "12:00:03 c"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(fresh_journal(Some("12:00:02 b"), &lines), &lines[2..]);
+        assert_eq!(fresh_journal(None, &lines), &lines[..]);
+        assert_eq!(
+            fresh_journal(Some("gone"), &lines),
+            &lines[..],
+            "the last seen fell off: all of it"
+        );
+    }
+
+    #[test]
+    fn the_log_takes_the_events_no_command_made_and_leaves_the_rest_to_the_journal() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let at = 1_790_000_000;
+        let events = vec![
+            Numbered {
+                seq: 1,
+                at,
+                event: Event::SceneSwitched { name: "BRB".into() },
+            },
+            Numbered {
+                seq: 2,
+                at,
+                event: Event::LayerStalled { id: "face".into() },
+            },
+        ];
+        assert_eq!(
+            events_for_log(&events),
+            vec![format!(
+                "{} camera face stopped delivering",
+                remuxd_domain::air::journal::clock_of(at)
+            )]
+        );
+    }
+
+    #[test]
+    fn a_companion_that_changes_state_is_a_line_and_one_that_fell_says_where_to_look() {
+        let record = Record { pid: 7, since: 0 };
+        let before = vec![
+            ("a".to_string(), State::Up(record)),
+            ("b".to_string(), State::Down),
+        ];
+        let after = vec![
+            ("a".to_string(), State::Fell(record)),
+            ("b".to_string(), State::Up(record)),
+        ];
+        assert_eq!(
+            companion_changes(&before, &after),
+            vec![
+                "companion a fell: remux companion log a".to_string(),
+                "companion b up".to_string()
+            ]
+        );
+        assert!(companion_changes(&after, &after).is_empty());
+    }
+
+    #[test]
+    fn a_line_that_went_wrong_is_red_a_notice_yellow_the_rest_plain() {
+        assert_eq!(
+            log_colour("12:00:01 ! scene: no scene \"x\""),
+            Some(Color::Red)
+        );
+        assert_eq!(
+            log_colour("12:00:01 destination 2 dropped: timeout"),
+            Some(Color::Red)
+        );
+        assert_eq!(
+            log_colour("12:00:01 camera face stopped delivering"),
+            Some(Color::Red)
+        );
+        assert_eq!(
+            log_colour("12:00:01 companion chess fell: remux companion log chess"),
+            Some(Color::Red)
+        );
+        assert_eq!(
+            log_colour("12:00:01 notice: told the title"),
+            Some(Color::Yellow)
+        );
+        assert_eq!(log_colour("12:00:01 scene BRB staged"), None);
+    }
+
+    #[test]
+    fn k_reads_the_log_back_and_j_comes_forward() {
+        let mut screen = Screen {
+            focus: Panel::Log,
+            ..Screen::default()
+        };
+        press('k', &mut screen, 0, &Status::default());
+        press('k', &mut screen, 0, &Status::default());
+        assert_eq!(screen.log_back, 2);
+        press('j', &mut screen, 0, &Status::default());
+        assert_eq!(screen.log_back, 1);
     }
 
     #[test]
