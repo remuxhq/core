@@ -88,6 +88,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         match press(typed, &mut screen, rows, now_status) {
             Act::Stay => {}
             Act::Quit => break Ok(()),
+            Act::Say(why) => said = Some(why.into()),
             Act::Plan => match ask(&Command::Plan) {
                 Ok(Reply::Plan(plan)) => screen.planned(plan),
                 Ok(other) => said = Some(format!("the engine answered {other:?}")),
@@ -177,6 +178,8 @@ fn draw(
         ListState::default().with_selected(focused.then(|| row.min(rows.saturating_sub(1))))
     };
     let on_scenes = screen.focus == Panel::Scenes;
+    let on_layers = screen.focus == Panel::Layers;
+    let on_destinations = screen.focus == Panel::Destinations;
     frame.render_stateful_widget(
         List::new(scenes)
             .block(panel(" scenes ", on_scenes))
@@ -195,17 +198,17 @@ fn draw(
         .into_iter()
         .map(ListItem::new)
         .collect();
+    let rows = layers.len();
     let title = format!(
         " layers · {} ",
         shown.map_or("", |scene| scene.name.as_str())
     );
-    frame.render_widget(
-        List::new(layers).block(
-            Block::bordered()
-                .title(title)
-                .border_style(Style::new().fg(Color::DarkGray)),
-        ),
+    frame.render_stateful_widget(
+        List::new(layers)
+            .block(panel("", on_layers).title(title))
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         below,
+        &mut picked(screen.picked_layer, rows, on_layers),
     );
     let destinations: Vec<ListItem> = status
         .destinations
@@ -244,19 +247,25 @@ fn draw(
     );
     frame.render_stateful_widget(
         List::new(destinations)
-            .block(panel(" destinations ", !on_scenes))
+            .block(panel(" destinations ", on_destinations))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         right,
         &mut picked(
             screen.picked_destination,
             status.destinations.len(),
-            !on_scenes,
+            on_destinations,
         ),
     );
-    let keys = if on_scenes {
-        "q quit · tab destinations · j/k move · enter switch · L live · S stop · R record · ! cut"
-    } else {
-        "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
+    let keys = match screen.focus {
+        Panel::Scenes => {
+            "q quit · tab layers · j/k move · enter switch · L live · S stop · R record · ! cut"
+        }
+        Panel::Layers => {
+            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · ! cut"
+        }
+        Panel::Destinations => {
+            "q quit · tab scenes · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
+        }
     };
     let footer = said.map_or(keys.to_string(), |said| format!("{said} · {keys}"));
     frame.render_widget(
@@ -386,6 +395,8 @@ impl Lever {
 pub enum Panel {
     #[default]
     Scenes,
+    /// The picked scene's layers and elements.
+    Layers,
     Destinations,
 }
 
@@ -395,6 +406,7 @@ pub enum Panel {
 pub struct Screen {
     pub focus: Panel,
     pub picked: usize,
+    pub picked_layer: usize,
     pub picked_destination: usize,
     pub asking: Option<Lever>,
 }
@@ -415,6 +427,8 @@ pub enum Act {
     Plan,
     /// Send this, which a person confirmed.
     Send(Command),
+    /// Send nothing, and say why.
+    Say(&'static str),
 }
 
 /// A key. `j`/`k` move the pick without leaving the list, Enter switches to it, `q` quits.
@@ -434,12 +448,54 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         };
     }
     let destination = status.destinations.get(screen.picked_destination);
+    let scene = status.scenes.get(screen.picked);
+    let ids = scene.map(Scene::ordered_ids).unwrap_or_default();
+    let layer = ids.get(screen.picked_layer).cloned();
+    // A layer's verbs act on the scene on the air: a layer of another scene with the same
+    // id would be the air's.
+    let on_air = scene.is_some_and(|scene| scene.name == status.active_scene);
     match (key, screen.focus) {
         ('q', _) => return Act::Quit,
-        ('\t', Panel::Scenes) => screen.focus = Panel::Destinations,
+        ('\t', Panel::Scenes) => screen.focus = Panel::Layers,
+        ('\t', Panel::Layers) => screen.focus = Panel::Destinations,
         ('\t', Panel::Destinations) => screen.focus = Panel::Scenes,
-        ('j', Panel::Scenes) if screen.picked + 1 < rows => screen.picked += 1,
-        ('k', Panel::Scenes) => screen.picked = screen.picked.saturating_sub(1),
+        ('j', Panel::Scenes) if screen.picked + 1 < rows => {
+            screen.picked += 1;
+            screen.picked_layer = 0;
+        }
+        ('k', Panel::Scenes) => {
+            screen.picked = screen.picked.saturating_sub(1);
+            screen.picked_layer = 0;
+        }
+        ('j', Panel::Layers) if screen.picked_layer + 1 < ids.len() => screen.picked_layer += 1,
+        ('k', Panel::Layers) => screen.picked_layer = screen.picked_layer.saturating_sub(1),
+        (' ' | 'J' | 'K', Panel::Layers) if !on_air => {
+            return Act::Say("switch to this scene first")
+        }
+        (' ', Panel::Layers) => {
+            if let (Some(id), Some(scene)) = (layer, scene) {
+                let on = !shown(scene, &id);
+                return Act::Send(Command::LayerVisible { id, on });
+            }
+        }
+        ('J', Panel::Layers) if screen.picked_layer + 1 < ids.len() => {
+            screen.picked_layer += 1;
+            if let Some(id) = layer {
+                return Act::Send(Command::LayerMove {
+                    id,
+                    index: screen.picked_layer,
+                });
+            }
+        }
+        ('K', Panel::Layers) if screen.picked_layer > 0 => {
+            screen.picked_layer -= 1;
+            if let Some(id) = layer {
+                return Act::Send(Command::LayerMove {
+                    id,
+                    index: screen.picked_layer,
+                });
+            }
+        }
         ('j', Panel::Destinations) if screen.picked_destination + 1 < status.destinations.len() => {
             screen.picked_destination += 1
         }
@@ -483,6 +539,23 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         _ => {}
     }
     Act::Stay
+}
+
+/// Whether a scene's layer or element is shown.
+fn shown(scene: &Scene, id: &str) -> bool {
+    scene
+        .layers
+        .iter()
+        .find(|layer| layer.id == id)
+        .map(|layer| layer.visible)
+        .or_else(|| {
+            scene
+                .elements
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.visible)
+        })
+        .unwrap_or(false)
 }
 
 /// A scene's layers and elements, back to front, one line each: what it is, what it
@@ -777,7 +850,10 @@ mod tests {
     #[test]
     fn tab_moves_to_the_destinations_and_j_k_move_there_alone() {
         let status = with_destinations(&[(1, true, false), (2, false, false)]);
-        let mut screen = Screen::default();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Destinations);
         press('j', &mut screen, 3, &status);
@@ -919,6 +995,115 @@ mod tests {
             "a quieter one is reached by falling"
         );
         assert_eq!(fall(-10.0, -10.5, 0.05), -10.5, "never below what is heard");
+    }
+
+    /// "Screen" on the air with `desk` shown and `face` hidden, back to front, and
+    /// "BRB" beside it.
+    fn on_screen() -> Status {
+        let layer = |id: &str, visible: bool| {
+            serde_json::json!({
+                "id": id, "visible": visible,
+                "source": { "kind": "screen", "handle": "1", "name": "d", "width": 1920, "height": 1080 },
+                "transform": { "x": 0, "y": 0, "width": 1920, "height": 1080, "degrees": 0 }
+            })
+        };
+        Status {
+            scenes: vec![
+                serde_json::from_value(serde_json::json!({
+                    "name": "Screen", "layers": [layer("desk", true), layer("face", false)]
+                }))
+                .expect("a scene"),
+                serde_json::from_value(
+                    serde_json::json!({ "name": "BRB", "layers": [layer("desk", true)] }),
+                )
+                .expect("a scene"),
+            ],
+            active_scene: "Screen".into(),
+            ..Status::default()
+        }
+    }
+
+    #[test]
+    fn tab_goes_from_the_scenes_to_their_layers_to_the_destinations() {
+        let mut screen = Screen::default();
+        press('\t', &mut screen, 2, &on_screen());
+        assert_eq!(screen.focus, Panel::Layers);
+        press('\t', &mut screen, 2, &on_screen());
+        assert_eq!(screen.focus, Panel::Destinations);
+    }
+
+    #[test]
+    fn space_hides_a_shown_layer_and_shows_a_hidden_one() {
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press(' ', &mut screen, 2, &on_screen()),
+            Act::Send(Command::LayerVisible {
+                id: "desk".into(),
+                on: false
+            })
+        );
+        press('j', &mut screen, 2, &on_screen());
+        assert_eq!(
+            press(' ', &mut screen, 2, &on_screen()),
+            Act::Send(Command::LayerVisible {
+                id: "face".into(),
+                on: true
+            })
+        );
+    }
+
+    #[test]
+    fn shift_j_brings_a_layer_forward_and_shift_k_sends_it_back_the_pick_following() {
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press('J', &mut screen, 2, &on_screen()),
+            Act::Send(Command::LayerMove {
+                id: "desk".into(),
+                index: 1
+            })
+        );
+        assert_eq!(screen.picked_layer, 1);
+        assert_eq!(
+            press('J', &mut screen, 2, &on_screen()),
+            Act::Stay,
+            "already in front"
+        );
+        assert_eq!(
+            press('K', &mut screen, 2, &on_screen()),
+            Act::Send(Command::LayerMove {
+                id: "face".into(),
+                index: 0
+            })
+        );
+        assert_eq!(
+            press('K', &mut screen, 2, &on_screen()),
+            Act::Stay,
+            "already at the back"
+        );
+    }
+
+    #[test]
+    fn a_layer_of_a_scene_not_on_the_air_is_only_read() {
+        // `desk` is in both scenes: acting on BRB's would act on the air's.
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            picked: 1,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press(' ', &mut screen, 2, &on_screen()),
+            Act::Say("switch to this scene first")
+        );
+        assert_eq!(
+            press('J', &mut screen, 2, &on_screen()),
+            Act::Say("switch to this scene first")
+        );
     }
 
     #[test]
