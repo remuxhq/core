@@ -108,6 +108,7 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             Act::Stay => {}
             Act::Quit => break Ok(()),
             Act::Say(why) => screen.said = Some(why.into()),
+            Act::Said(why) => screen.said = Some(why),
             Act::Companion { name, start } => {
                 screen.said = Some(format!(
                     "{} {name}…",
@@ -307,10 +308,10 @@ fn draw(
     );
     let keys = match screen.focus {
         Panel::Scenes => {
-            "q quit · tab layers · j/k move · enter preview · t take · L live · S stop · R record · ! cut"
+            "q quit · tab layers · j/k move · enter preview · t take · N new · D copy · X delete · L live · S stop · R record · ! cut"
         }
         Panel::Layers => {
-            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · ! cut"
+            "q quit · tab destinations · j/k move · space hide/show · J/K forward/back · A add · x remove · ! cut"
         }
         Panel::Destinations => {
             "q quit · tab sound · j/k move · a arm · s sandbox · L live · S stop · R record · ! cut"
@@ -371,6 +372,23 @@ fn ask_about(frame: &mut Frame, lever: &Lever) {
                 .to_string(),
             Color::Red,
         ),
+        Lever::Delete(name) => (
+            " delete? ",
+            format!("the scene {name}, for good\n\ny: delete · any other key: no"),
+            Color::Red,
+        ),
+        Lever::Remove { id, staged } => (
+            " remove? ",
+            format!(
+                "the layer {id}{}, for good\n\ny: remove · any other key: no",
+                if *staged {
+                    " from the preview"
+                } else {
+                    " from the air"
+                }
+            ),
+            Color::Red,
+        ),
     };
     let area = frame.area();
     let [_, middle, _] = Layout::vertical([
@@ -429,6 +447,13 @@ pub enum Lever {
         on: bool,
     },
     Cut,
+    /// A scene deleted, for good.
+    Delete(String),
+    /// A layer removed from the scene on the air, or from the staged one.
+    Remove {
+        id: String,
+        staged: bool,
+    },
 }
 
 impl Lever {
@@ -442,6 +467,57 @@ impl Lever {
             Lever::Record { on: true } => Some(Command::RecordStart),
             Lever::Record { on: false } => Some(Command::RecordStop),
             Lever::Cut => Some(Command::HideEverything),
+            Lever::Delete(name) => Some(Command::SceneDelete { name: name.clone() }),
+            Lever::Remove { id, staged } => {
+                let remove = Command::LayerRemove { id: id.clone() };
+                Some(if *staged {
+                    Command::Staged {
+                        command: Box::new(remove),
+                    }
+                } else {
+                    remove
+                })
+            }
+        }
+    }
+}
+
+/// What a line typed is for.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum Typing {
+    /// A line said in the chat.
+    #[default]
+    Chat,
+    /// A new scene's name, drafted in the preview, empty or a copy of a scene.
+    Draft(Option<String>),
+    /// A layer as the CLI says it after `scene layer add`, on the air or staged.
+    Layer { staged: bool },
+}
+
+/// The line typed, done: said, drafted or added.
+fn typed_line(line: String, typing_for: Typing) -> Act {
+    match typing_for {
+        Typing::Chat => Act::Send(Command::Say {
+            body: line,
+            channel: None,
+        }),
+        Typing::Draft(from) => Act::Send(Command::SceneDraft {
+            name: line.trim().to_string(),
+            from,
+        }),
+        Typing::Layer { staged } => {
+            let words: Vec<String> = ["scene", "layer", "add"]
+                .into_iter()
+                .map(String::from)
+                .chain(line.split_whitespace().map(String::from))
+                .collect();
+            match crate::words::parse(&words) {
+                Ok(command) if staged => Act::Send(Command::Staged {
+                    command: Box::new(command),
+                }),
+                Ok(command) => Act::Send(command),
+                Err(why) => Act::Said(why),
+            }
         }
     }
 }
@@ -482,8 +558,10 @@ pub struct Screen {
     /// Whether the music plays, as the meters last said.
     pub playing: bool,
     pub asking: Option<Lever>,
-    /// A line of chat being typed: every key is a letter until Enter or Esc.
+    /// A line being typed: every key is a letter until Enter or Esc.
     pub typing: Option<String>,
+    /// What the line typed is for.
+    pub typing_for: Typing,
     /// What the last thing sent came to, in the footer.
     pub said: Option<String>,
 }
@@ -506,6 +584,8 @@ pub enum Act {
     Send(Command),
     /// Send nothing, and say why.
     Say(&'static str),
+    /// Send nothing, and say this.
+    Said(String),
     /// Start or stop a companion, by the shell's own `remux companion`.
     Companion {
         name: String,
@@ -519,22 +599,20 @@ pub enum Act {
 /// included: under a question, `q` never closes the screen.
 pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Act {
     if let Some(mut line) = screen.typing.take() {
+        let typing_for = std::mem::take(&mut screen.typing_for);
         match key {
             '\u{1b}' => {}
             '\n' if line.trim().is_empty() => {}
-            '\n' => {
-                return Act::Send(Command::Say {
-                    body: line,
-                    channel: None,
-                })
-            }
+            '\n' => return typed_line(line, typing_for),
             '\u{8}' => {
                 line.pop();
                 screen.typing = Some(line);
+                screen.typing_for = typing_for;
             }
             letter => {
                 line.push(letter);
                 screen.typing = Some(line);
+                screen.typing_for = typing_for;
             }
         }
         return Act::Stay;
@@ -554,9 +632,19 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     let scene = status.scenes.get(screen.picked);
     let ids = scene.map(Scene::ordered_ids).unwrap_or_default();
     let layer = ids.get(screen.picked_layer).cloned();
-    // A layer's verbs act on the scene on the air: a layer of another scene with the same
-    // id would be the air's.
+    // A layer's verbs act on the scene on the air, or on the staged one by way of the
+    // preview: a layer of a third scene with the same id would be the air's.
     let on_air = scene.is_some_and(|scene| scene.name == status.active_scene);
+    let in_preview = scene.is_some_and(|scene| Some(&scene.name) == status.staged.as_ref());
+    let send = |command: Command| {
+        if on_air {
+            Act::Send(command)
+        } else {
+            Act::Send(Command::Staged {
+                command: Box::new(command),
+            })
+        }
+    };
     match (key, screen.focus) {
         ('q' | '\u{1b}', _) => return Act::Quit,
         ('c', _) => screen.typing = Some(String::new()),
@@ -619,19 +707,47 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('j', Panel::Layers) if screen.picked_layer + 1 < ids.len() => screen.picked_layer += 1,
         ('k', Panel::Layers) => screen.picked_layer = screen.picked_layer.saturating_sub(1),
-        (' ' | 'J' | 'K', Panel::Layers) if !on_air => {
-            return Act::Say("switch to this scene first")
+        (' ' | 'J' | 'K' | 'A' | 'x', Panel::Layers) if !on_air && !in_preview => {
+            return Act::Say("enter stages this scene first")
+        }
+        ('A', Panel::Layers) => {
+            screen.typing = Some(String::new());
+            screen.typing_for = Typing::Layer { staged: !on_air };
+        }
+        ('x', Panel::Layers) => {
+            if let Some(id) = layer {
+                screen.asking = Some(Lever::Remove {
+                    id,
+                    staged: !on_air,
+                });
+            }
+        }
+        ('N', Panel::Scenes) => {
+            screen.typing = Some(String::new());
+            screen.typing_for = Typing::Draft(None);
+        }
+        ('D', Panel::Scenes) => {
+            if let Some(scene) = scene {
+                screen.typing = Some(String::new());
+                screen.typing_for = Typing::Draft(Some(scene.name.clone()));
+            }
+        }
+        ('X', Panel::Scenes) if on_air => return Act::Say("the scene on the air is not deleted"),
+        ('X', Panel::Scenes) => {
+            if let Some(scene) = scene {
+                screen.asking = Some(Lever::Delete(scene.name.clone()));
+            }
         }
         (' ', Panel::Layers) => {
             if let (Some(id), Some(scene)) = (layer, scene) {
                 let on = !shown(scene, &id);
-                return Act::Send(Command::LayerVisible { id, on });
+                return send(Command::LayerVisible { id, on });
             }
         }
         ('J', Panel::Layers) if screen.picked_layer + 1 < ids.len() => {
             screen.picked_layer += 1;
             if let Some(id) = layer {
-                return Act::Send(Command::LayerMove {
+                return send(Command::LayerMove {
                     id,
                     index: screen.picked_layer,
                 });
@@ -640,7 +756,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('K', Panel::Layers) if screen.picked_layer > 0 => {
             screen.picked_layer -= 1;
             if let Some(id) = layer {
-                return Act::Send(Command::LayerMove {
+                return send(Command::LayerMove {
                     id,
                     index: screen.picked_layer,
                 });
@@ -852,7 +968,15 @@ fn draw_chat(frame: &mut Frame, chat: &Chat, screen: &Screen, area: ratatui::lay
         frame.render_widget(
             Paragraph::new(format!("{line}▏")).block(
                 Block::bordered()
-                    .title(" say · enter sends · esc lets it go ")
+                    .title(match screen.typing_for {
+                        Typing::Chat => " say · enter sends · esc lets it go ",
+                        Typing::Draft(_) => {
+                            " the new scene's name · enter drafts it in the preview "
+                        }
+                        Typing::Layer { .. } => {
+                            " camera|screen|window|image <id> <source> · enter adds it "
+                        }
+                    })
                     .border_style(Style::new().fg(Color::Yellow)),
             ),
             typed,
@@ -1697,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_of_a_scene_not_on_the_air_is_only_read() {
+    fn a_layer_of_a_scene_neither_on_the_air_nor_staged_is_only_read() {
         // `desk` is in both scenes: acting on BRB's would act on the air's.
         let mut screen = Screen {
             focus: Panel::Layers,
@@ -1706,11 +1830,11 @@ mod tests {
         };
         assert_eq!(
             press(' ', &mut screen, 2, &on_screen()),
-            Act::Say("switch to this scene first")
+            Act::Say("enter stages this scene first")
         );
         assert_eq!(
             press('J', &mut screen, 2, &on_screen()),
-            Act::Say("switch to this scene first")
+            Act::Say("enter stages this scene first")
         );
     }
 
@@ -1718,6 +1842,26 @@ mod tests {
         let mut status = Status::default();
         status.faders.music = level;
         status
+    }
+
+    #[test]
+    fn a_layer_of_the_staged_scene_is_acted_on_in_the_preview() {
+        let mut status = on_screen();
+        status.staged = Some("BRB".into());
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            picked: 1,
+            ..Screen::default()
+        };
+        assert_eq!(
+            press(' ', &mut screen, 2, &status),
+            Act::Send(Command::Staged {
+                command: Box::new(Command::LayerVisible {
+                    id: "desk".into(),
+                    on: false
+                })
+            })
+        );
     }
 
     #[test]
@@ -2233,6 +2377,123 @@ mod tests {
             "✕ first  fell: remux companion log first"
         );
         assert_eq!(companion_row("first", State::Down), "○ first  down");
+    }
+
+    fn typed(screen: &mut Screen, status: &Status, words: &str) -> Act {
+        for key in words.chars() {
+            assert_eq!(press(key, screen, 3, status), Act::Stay, "{key:?} is typed");
+        }
+        press('\n', screen, 3, status)
+    }
+
+    #[test]
+    fn n_names_a_new_scene_that_is_drafted_in_the_preview() {
+        let status = with_scenes(&["Screen", "BRB"], "Screen");
+        let mut screen = Screen::default();
+        assert_eq!(press('N', &mut screen, 2, &status), Act::Stay);
+        assert_eq!(
+            typed(&mut screen, &status, "Keys"),
+            Act::Send(Command::SceneDraft {
+                name: "Keys".into(),
+                from: None
+            })
+        );
+    }
+
+    #[test]
+    fn d_drafts_a_copy_of_the_picked_scene_under_a_new_name() {
+        let status = with_scenes(&["Screen", "BRB"], "Screen");
+        let mut screen = Screen {
+            picked: 1,
+            ..Screen::default()
+        };
+        press('D', &mut screen, 2, &status);
+        assert_eq!(
+            typed(&mut screen, &status, "BRB 2"),
+            Act::Send(Command::SceneDraft {
+                name: "BRB 2".into(),
+                from: Some("BRB".into())
+            })
+        );
+    }
+
+    #[test]
+    fn x_deletes_a_scene_after_a_yes_and_never_the_one_on_the_air() {
+        let status = with_scenes(&["Screen", "BRB"], "Screen");
+        assert_eq!(
+            press('X', &mut Screen::default(), 2, &status),
+            Act::Say("the scene on the air is not deleted")
+        );
+        let mut screen = Screen {
+            picked: 1,
+            ..Screen::default()
+        };
+        assert_eq!(press('X', &mut screen, 2, &status), Act::Stay);
+        assert_eq!(
+            press('y', &mut screen, 2, &status),
+            Act::Send(Command::SceneDelete { name: "BRB".into() })
+        );
+    }
+
+    #[test]
+    fn a_adds_a_layer_typed_as_the_cli_says_it_to_the_scene_on_the_air_or_the_preview() {
+        let mut status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        press('A', &mut screen, 2, &status);
+        assert_eq!(
+            typed(&mut screen, &status, "camera keys C270"),
+            Act::Send(Command::LayerCamera {
+                id: "keys".into(),
+                device: "C270".into()
+            })
+        );
+        status.staged = Some("BRB".into());
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            picked: 1,
+            ..Screen::default()
+        };
+        press('A', &mut screen, 2, &status);
+        assert_eq!(
+            typed(&mut screen, &status, "camera keys C270"),
+            Act::Send(Command::Staged {
+                command: Box::new(Command::LayerCamera {
+                    id: "keys".into(),
+                    device: "C270".into()
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn a_layer_typed_wrong_says_why_and_sends_nothing() {
+        let status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        press('A', &mut screen, 2, &status);
+        assert!(matches!(
+            typed(&mut screen, &status, "nonsense"),
+            Act::Said(_)
+        ));
+    }
+
+    #[test]
+    fn x_removes_the_picked_layer_after_a_yes() {
+        let status = on_screen();
+        let mut screen = Screen {
+            focus: Panel::Layers,
+            ..Screen::default()
+        };
+        assert_eq!(press('x', &mut screen, 2, &status), Act::Stay);
+        assert_eq!(
+            press('y', &mut screen, 2, &status),
+            Act::Send(Command::LayerRemove { id: "desk".into() })
+        );
     }
 
     #[test]
