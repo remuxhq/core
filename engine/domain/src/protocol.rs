@@ -41,6 +41,14 @@ pub enum Command {
     SceneDelete {
         name: String,
     },
+    /// Draw this scene off the air, into the preview's staged ring, so it is
+    /// seen before it goes out. The scene on the air stages nothing.
+    SceneStage {
+        name: String,
+    },
+    /// The staged scene on the air, and the scene that was out staged in its
+    /// place: a second take goes back.
+    SceneTake,
     AudioLayerAdd {
         id: String,
         source: crate::sound::audio_layers::Source,
@@ -809,6 +817,10 @@ pub struct Status {
     pub scenes: Vec<crate::picture::scenes::Scene>,
     #[serde(default = "default_scene_name")]
     pub active_scene: String,
+    /// The scene drawn off the air, which a `scene-take` puts on it. Not
+    /// remembered: a restarted engine stages nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged: Option<String>,
     /// Independent audio captures, not ordered visual scene layers.
     #[serde(default)]
     pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
@@ -950,6 +962,7 @@ impl Default for Status {
             layers: Vec::new(),
             scenes: crate::picture::scenes::defaults(),
             active_scene: default_scene_name(),
+            staged: None,
             audio_layers: Vec::new(),
             shader: None,
             mic: None,

@@ -75,6 +75,14 @@ pub trait Picture: Send {
         Err("this pipeline cannot switch scenes".into())
     }
     fn layers_changed(&mut self, _layers: &[crate::picture::layers::Layer]) {}
+    /// Draw a scene that is not on the air into the staged ring, sharing the
+    /// captures the air already has open; `None` stops drawing one.
+    fn stage(&mut self, scene: Option<&crate::picture::scenes::Scene>) -> Result<(), String> {
+        match scene {
+            Some(_) => Err("this pipeline cannot stage a scene".into()),
+            None => Ok(()),
+        }
+    }
     /// Route system audio from exactly one display layer, or disconnect it.
     fn screen_audio(&mut self, _id: Option<&str>) -> Result<(), String> {
         Ok(())

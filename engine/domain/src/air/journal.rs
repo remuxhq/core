@@ -52,6 +52,8 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::SceneDuplicate { name } => format!("scene {name} duplicated from the active one"),
         Command::SceneSwitch { name } => format!("scene switched to {name}"),
         Command::SceneDelete { name } => format!("scene {name} deleted"),
+        Command::SceneStage { name } => format!("scene {name} staged"),
+        Command::SceneTake => "staged scene taken to the air".into(),
         Command::AudioLayerAdd { id, .. } => format!("audio layer {id} added"),
         Command::AudioLayerRemove { id } => format!("audio layer {id} removed"),
         Command::AudioLayerMute { id, on } => {
@@ -191,7 +193,9 @@ fn verb(command: &Command) -> &'static str {
         Command::SceneCreate { .. }
         | Command::SceneDuplicate { .. }
         | Command::SceneSwitch { .. }
-        | Command::SceneDelete { .. } => "scene",
+        | Command::SceneDelete { .. }
+        | Command::SceneStage { .. }
+        | Command::SceneTake => "scene",
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
         | Command::AudioLayerVolume { .. }

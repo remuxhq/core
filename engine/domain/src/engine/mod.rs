@@ -1039,7 +1039,64 @@ impl Engine {
             };
         };
         self.status.scenes.remove(index);
+        if self.status.staged.as_deref() == Some(name.as_str()) {
+            self.unstage();
+        }
         Reply::Status(Box::new(self.reported()))
+    }
+
+    /// Draws the scene off the air. The scene on the air stages nothing: it is
+    /// already what is seen.
+    fn scene_stage(&mut self, name: String) -> Reply {
+        if name == self.status.active_scene {
+            self.unstage();
+            return Reply::Status(Box::new(self.reported()));
+        }
+        let Some(scene) = self
+            .current_scenes()
+            .into_iter()
+            .find(|scene| scene.name == name)
+        else {
+            return Reply::Error {
+                message: format!("no scene {name:?}"),
+            };
+        };
+        if let Err(message) = self.pipeline.stage(Some(&scene)) {
+            return Reply::Error { message };
+        }
+        self.status.staged = Some(name);
+        Reply::Status(Box::new(self.reported()))
+    }
+
+    /// The staged scene on the air by the ordinary switch, and the one that was
+    /// out staged in its place.
+    fn scene_take(&mut self) -> Reply {
+        let Some(next) = self.status.staged.clone() else {
+            return Reply::Error {
+                message: "nothing staged: scene stage <name> first".into(),
+            };
+        };
+        let out = self.status.active_scene.clone();
+        let switched = self.scene_switch(next);
+        if matches!(switched, Reply::Error { .. }) {
+            return switched;
+        }
+        self.status.staged = None;
+        match self.scene_stage(out) {
+            Reply::Error { message } => {
+                crate::log::note(&format!(
+                    "took the staged scene, but staging the one that was out failed: {message}"
+                ));
+                self.unstage();
+                Reply::Status(Box::new(self.reported()))
+            }
+            staged => staged,
+        }
+    }
+
+    fn unstage(&mut self) {
+        let _ = self.pipeline.stage(None);
+        self.status.staged = None;
     }
 
     fn scene_switch(&mut self, name: String) -> Reply {
@@ -1362,6 +1419,8 @@ impl Engine {
             Command::SceneDuplicate { name } => self.scene_duplicate(name),
             Command::SceneSwitch { name } => self.scene_switch(name),
             Command::SceneDelete { name } => self.scene_delete(name),
+            Command::SceneStage { name } => self.scene_stage(name),
+            Command::SceneTake => self.scene_take(),
             Command::AudioLayerAdd { id, source } => self.audio_layer_add(id, source),
             Command::AudioLayerRemove { id } => self.audio_layer_remove(id),
             Command::AudioLayerVolume { id, volume } => self.audio_layer_volume(id, volume),
@@ -2125,6 +2184,131 @@ mod tests {
             Reply::Status(_)
         ));
         assert_eq!(engine.status.layers, before);
+    }
+
+    /// The air on "default" with one screen, and "next" beside it with a camera.
+    fn with_next(fake: Wrote) -> Engine {
+        let mut engine = Engine::new().with_pipeline(Box::new(fake));
+        engine.status.layers = vec![layer("desk", Kind::Screen, "1", 0)];
+        engine.status.scenes.push(Scene {
+            name: "next".into(),
+            layers: vec![layer("keys", Kind::Camera, "cam", 0)],
+            elements: vec![],
+            order: vec![],
+            shader: None,
+        });
+        engine
+    }
+
+    #[test]
+    fn staging_draws_a_scene_off_the_air_and_leaves_the_air_alone() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        engine.status.on_air = true;
+        let staged = engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        assert!(matches!(staged, Reply::Status(_)), "{staged:?}");
+        assert_eq!(engine.status.staged.as_deref(), Some("next"));
+        assert_eq!(
+            engine.status.active_scene, "default",
+            "the air did not move"
+        );
+        assert_eq!(engine.status.layers[0].id, "desk");
+        assert_eq!(*events.lock().unwrap(), ["stage next"]);
+    }
+
+    #[test]
+    fn take_puts_the_staged_scene_on_the_air_and_stages_the_one_that_was_out() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        let taken = engine.handle(Command::SceneTake);
+        assert!(matches!(taken, Reply::Status(_)), "{taken:?}");
+        assert_eq!(engine.status.active_scene, "next");
+        assert_eq!(engine.status.layers[0].id, "keys");
+        assert_eq!(
+            engine.status.staged.as_deref(),
+            Some("default"),
+            "a second take goes back"
+        );
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some("stage default")
+        );
+    }
+
+    #[test]
+    fn take_with_nothing_staged_says_so_and_moves_nothing() {
+        let mut engine = with_next(Wrote::default());
+        let Reply::Error { message } = engine.handle(Command::SceneTake) else {
+            panic!("a take with nothing staged is an error")
+        };
+        assert!(message.contains("scene stage"), "{message}");
+        assert_eq!(engine.status.active_scene, "default");
+    }
+
+    #[test]
+    fn staging_the_scene_on_the_air_stages_nothing() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        engine.handle(Command::SceneStage {
+            name: "default".into(),
+        });
+        assert_eq!(engine.status.staged, None);
+        assert_eq!(*events.lock().unwrap(), ["stage next", "unstage"]);
+    }
+
+    #[test]
+    fn a_stage_the_pipeline_refuses_leaves_nothing_staged() {
+        let mut engine = with_next(Wrote {
+            refuse: Some("stage:camera busy".into()),
+            ..Default::default()
+        });
+        let Reply::Error { message } = engine.handle(Command::SceneStage {
+            name: "next".into(),
+        }) else {
+            panic!("a refused stage is an error")
+        };
+        assert!(message.contains("camera busy"), "{message}");
+        assert_eq!(engine.status.staged, None);
+    }
+
+    #[test]
+    fn staging_a_scene_that_is_not_there_is_an_error() {
+        let mut engine = with_next(Wrote::default());
+        assert!(matches!(
+            engine.handle(Command::SceneStage {
+                name: "nope".into()
+            }),
+            Reply::Error { .. }
+        ));
+    }
+
+    #[test]
+    fn deleting_the_staged_scene_unstages_it() {
+        let fake = Wrote::default();
+        let events = fake.scene_events.clone();
+        let mut engine = with_next(fake);
+        engine.handle(Command::SceneStage {
+            name: "next".into(),
+        });
+        engine.handle(Command::SceneDelete {
+            name: "next".into(),
+        });
+        assert_eq!(engine.status.staged, None);
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some("unstage")
+        );
     }
 
     #[test]
