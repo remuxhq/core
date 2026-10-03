@@ -234,7 +234,7 @@ fn draw(
     let destinations: Vec<ListItem> = status
         .destinations
         .iter()
-        .map(|d| ListItem::new(destination_row(d)))
+        .map(|d| ListItem::new(destination_row(d)).style(Style::new().fg(destination_colour(d))))
         .collect();
     let [right, below] =
         Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(right);
@@ -846,6 +846,15 @@ pub fn out_line(status: &Status) -> String {
 
 fn count(n: Option<u32>) -> String {
     n.map_or("—".into(), |n| n.to_string())
+}
+
+/// A destination on the air is red, as the air line is; any other is grey.
+pub fn destination_colour(d: &Destination) -> Color {
+    if d.status == "live" {
+        Color::Red
+    } else {
+        Color::DarkGray
+    }
 }
 
 /// A destination: its lamp and state, its audience, what its platform last refused or
@@ -1976,6 +1985,18 @@ mod tests {
                 .expect("a chat line")
             })
             .collect()
+    }
+
+    #[test]
+    fn a_destination_on_the_air_is_red_and_one_off_it_grey() {
+        assert_eq!(
+            destination_colour(&destination(serde_json::json!({}))),
+            Color::Red
+        );
+        assert_eq!(
+            destination_colour(&destination(serde_json::json!({ "status": "off" }))),
+            Color::DarkGray
+        );
     }
 
     #[test]
