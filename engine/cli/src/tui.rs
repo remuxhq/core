@@ -529,27 +529,26 @@ fn sound(
     let Some((hearing, _)) = levels else {
         return vec![Line::from("no levels from the engine")];
     };
-    // The bar in its colour, the track dim; a threshold is a mark across the track.
+    // The bar in its colour over a dim track of the same height; a threshold is a mark
+    // across the track.
     let bar = |level_db: f64, mark: Option<f64>, colour: Color| {
         let mark = mark.map(|m| lit(m, width).min(width.saturating_sub(1)));
-        let drawn: Vec<char> = cells(level_db, width)
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                if Some(i) == mark && c == '─' {
-                    '┼'
-                } else {
-                    c
-                }
-            })
-            .collect();
-        let on = drawn.iter().take_while(|c| matches!(c, '━' | '╸')).count();
-        let (lit_part, track): (String, String) =
-            (drawn[..on].iter().collect(), drawn[on..].iter().collect());
-        vec![
-            Span::styled(lit_part, Style::new().fg(colour)),
-            Span::styled(track, Style::new().fg(Color::DarkGray)),
-        ]
+        let drawn = cells(level_db, width);
+        let on = drawn.chars().take_while(|c| *c != ' ').count();
+        let dim = Style::new().fg(Color::Indexed(238));
+        let mut spans = vec![Span::styled(
+            drawn.chars().take(on).collect::<String>(),
+            Style::new().fg(colour),
+        )];
+        match mark.filter(|m| *m >= on) {
+            Some(m) => spans.extend([
+                Span::styled("▄".repeat(m - on), dim),
+                Span::styled("│", Style::new().fg(Color::Gray)),
+                Span::styled("▄".repeat(width - m - 1), dim),
+            ]),
+            None => spans.push(Span::styled("▄".repeat(width - on), dim)),
+        }
+        spans
     };
     let row = |name: &str, bar: Vec<Span<'static>>, reading: String| {
         let mut spans = vec![Span::raw(format!("{name:<6} "))];
@@ -655,15 +654,15 @@ pub fn fall(shown: f64, heard: f64, seconds: f64) -> f64 {
     heard.max(shown - FALL_DB_PER_SECOND * seconds)
 }
 
-/// A bar `width` cells wide: a heavy line ending in half a cell, over a light one. A
-/// line, not a block, so the bars stand apart with the cell's height between them.
+/// A bar `width` cells wide, half a cell tall, ending in a quarter block: the upper half
+/// of the cell is the space between bars. The track behind it is the caller's.
 pub fn cells(level_db: f64, width: usize) -> String {
     let halves = lit(level_db, width * 2);
     let (whole, half) = (halves / 2, halves % 2 == 1);
-    let mut bar = "━".repeat(whole);
+    let mut bar = "▄".repeat(whole);
     if whole < width {
-        bar.push(if half { '╸' } else { '─' });
-        bar.push_str(&"─".repeat(width - whole - 1));
+        bar.push(if half { '▖' } else { ' ' });
+        bar.push_str(&" ".repeat(width - whole - 1));
     }
     bar
 }
@@ -899,12 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_is_a_thin_line_ending_in_half_a_cell_over_a_thinner_track() {
-        assert_eq!(cells(-60.0, 4), "────");
-        assert_eq!(cells(0.0, 4), "━━━━");
-        assert_eq!(cells(-30.0, 4), "━━──");
+    fn a_bar_is_half_a_cell_tall_and_ends_in_a_quarter_block() {
+        assert_eq!(cells(-60.0, 4), "    ");
+        assert_eq!(cells(0.0, 4), "▄▄▄▄");
+        assert_eq!(cells(-30.0, 4), "▄▄  ");
         // -22.5 dB is 2.5 cells of 4: two whole and a half.
-        assert_eq!(cells(-22.5, 4), "━━╸─");
+        assert_eq!(cells(-22.5, 4), "▄▄▖ ");
     }
 
     #[test]
