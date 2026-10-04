@@ -296,9 +296,43 @@ pub fn send(name: &str, words: &str) -> Result<String, String> {
         .custom_flags(libc::O_NONBLOCK)
         .open(input_file(name))
         .map_err(|why| format!("{name}: its input: {why}"))?;
+    let before = std::fs::metadata(log_file(name)).map_or(0, |m| m.len());
     std::io::Write::write_all(&mut pipe, format!("{line}\n").as_bytes())
         .map_err(|why| format!("{name}: its input: {why}"))?;
-    Ok(format!("{name}: {line}"))
+    // What it answers, in its log: an unknown word said back is the difference
+    // between "nothing happened" and "it does not know that word". Up to 600 ms
+    // for it to start, then until it has been quiet for 100.
+    let mut answer = String::new();
+    let mut quiet_since = None;
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(600);
+    while std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        let now = read_from(&log_file(name), before);
+        if now.len() > answer.len() {
+            answer = now;
+            quiet_since = Some(std::time::Instant::now());
+        } else if quiet_since.is_some_and(|t| t.elapsed().as_millis() >= 100) {
+            break;
+        }
+    }
+    Ok(match answer.trim() {
+        "" => format!("{name}: {line} (it said nothing back)"),
+        said => format!("{name}: {line}\n{}", crate::words::plain(said)),
+    })
+}
+
+/// A file from a byte on, as text.
+fn read_from(path: &std::path::Path, from: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut text = String::new();
+    if let Ok(mut file) = std::fs::File::open(path) {
+        if file.seek(SeekFrom::Start(from)).is_ok() {
+            let mut bytes = Vec::new();
+            let _ = file.read_to_end(&mut bytes);
+            text = String::from_utf8_lossy(&bytes).into_owned();
+        }
+    }
+    text
 }
 
 /// The last lines of a companion's log, made plain for a terminal.
@@ -381,6 +415,15 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         stop("echo").expect("it stops");
+    }
+
+    #[test]
+    fn what_a_companion_answers_to_words_is_said_back() {
+        place("[[companion]]\nname = \"answers\"\nrun = [\"sh\", \"-c\", \"while read w; do echo no such word: $w; done\"]\ninput = true\n");
+        start("answers").expect("it starts");
+        let said = send("answers", "cutoff").expect("it takes the words");
+        stop("answers").expect("it stops");
+        assert!(said.contains("no such word: cutoff"), "{said}");
     }
 
     #[test]

@@ -232,11 +232,15 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                         String::from_utf8_lossy(&text).trim().to_string()
                     })
                     .unwrap_or_else(|why| why.to_string());
-                to_log(
-                    &mut screen,
-                    format!("{} {}", local_time(), crate::words::plain(&said)),
-                );
-                screen.said = Some(crate::words::plain(&said));
+                // The words, then what the companion answered, a line each; the
+                // answer is what shows on top.
+                for line in said.lines().filter(|l| !l.trim().is_empty()) {
+                    to_log(
+                        &mut screen,
+                        format!("{} {}", local_time(), crate::words::plain(line)),
+                    );
+                }
+                screen.said = said.lines().last().map(crate::words::plain);
             }
             Act::Companion { name, start } => {
                 screen.said = Some(format!(
