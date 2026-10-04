@@ -651,6 +651,10 @@ fn draw_panel(
                             .map(move |row| ListItem::new(row).style(style))
                     })
                     .collect();
+                let seconds = screen.agent_since.map_or(0, |t| t.elapsed().as_secs());
+                if let Some(working) = agent_working(screen, seconds) {
+                    rows.push(ListItem::new(working).style(Style::new().fg(Color::Yellow)));
+                }
                 rows.drain(..rows.len().saturating_sub(fits));
                 rows
             };
@@ -725,6 +729,14 @@ fn typed_box(frame: &mut Frame, area: Rect, line: Option<&str>, title: &str) -> 
         typed,
     );
     above
+}
+
+/// The agent panel's last row while a request runs: what it is doing and for how
+/// long, so a silence is never a mystery.
+fn agent_working(screen: &Screen, seconds: u64) -> Option<String> {
+    screen
+        .agent_busy
+        .then(|| format!("… {} {seconds}s", screen.agent_doing))
 }
 
 /// The agent panel's title: what a request is doing and for how long, or how
@@ -1462,7 +1474,9 @@ impl Screen {
                 refused: true,
             } => self.agent.push(format!("! {line}")),
             Heard::Done { session, cost } => {
-                self.agent.push(format!("· ${cost:.2}"));
+                let took = self.agent_since.map_or(0, |t| t.elapsed().as_secs());
+                self.agent
+                    .push(format!("· answered in {took}s · ${cost:.2}"));
                 self.agent_session = Some(session);
                 self.agent_busy = false;
             }
@@ -3501,11 +3515,24 @@ mod tests {
                 "No, it is off air.",
                 "Anything else?",
                 "! denied",
-                "· $0.21",
+                "· answered in 0s · $0.21",
             ]
         );
         assert_eq!(screen.agent_session.as_deref(), Some("s1"));
         assert!(!screen.agent_busy);
+    }
+
+    #[test]
+    fn while_the_agent_works_its_last_row_says_so() {
+        let mut screen = Screen::default();
+        assert_eq!(agent_working(&screen, 3), None);
+        screen.asked("oi");
+        assert_eq!(agent_working(&screen, 3).as_deref(), Some("… starting 3s"));
+        screen.hear(crate::agent::Heard::Doing("thinking"));
+        assert_eq!(
+            agent_working(&screen, 12).as_deref(),
+            Some("… thinking 12s")
+        );
     }
 
     #[test]
