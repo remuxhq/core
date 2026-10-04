@@ -34,6 +34,10 @@ pub struct Companion {
     /// writes a line there.
     #[serde(default)]
     pub input: bool,
+    /// The words it takes, for a face to offer and an agent to read: `dvd`,
+    /// `size <points>` (what is in angle brackets is typed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +180,15 @@ env_file = "~/.config/remux/first.env"
 name = "second"
 run = ["./second"]
 "#;
+
+    #[test]
+    fn a_companion_may_say_the_words_it_takes() {
+        let list = parse("[[companion]]\nname = \"cam\"\nrun = [\"./cam\"]\ninput = true\nwords = [\"dvd\", \"size <points>\"]\n")
+            .expect("parsed");
+        assert_eq!(list[0].words, ["dvd", "size <points>"]);
+        let bare = parse("[[companion]]\nname = \"bot\"\nrun = [\"./bot\"]\n").expect("parsed");
+        assert!(bare[0].words.is_empty(), "words are optional");
+    }
 
     #[test]
     fn a_list_reads_each_companion_as_a_name_an_argv_a_folder_and_an_environment() {

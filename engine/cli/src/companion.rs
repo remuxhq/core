@@ -42,15 +42,28 @@ impl Verb {
 /// Runs the verb and says what came of it; a refusal exits non-zero.
 pub fn run(verb: &Verb) -> Result<String, String> {
     match verb {
-        Verb::List => Ok(states()?
-            .into_iter()
-            .map(|(name, state)| match state {
-                State::Up(record) => format!("{name:<16} up    pid {}", record.pid),
-                State::Fell(_) => format!("{name:<16} fell  (remux companion log {name})"),
-                State::Down => format!("{name:<16} down"),
-            })
-            .collect::<Vec<_>>()
-            .join("\n")),
+        Verb::List => {
+            let words = listed()?;
+            Ok(states()?
+                .into_iter()
+                .map(|(name, state)| {
+                    let line = match state {
+                        State::Up(record) => format!("{name:<16} up    pid {}", record.pid),
+                        State::Fell(_) => {
+                            format!("{name:<16} fell  (remux companion log {name})")
+                        }
+                        State::Down => format!("{name:<16} down"),
+                    };
+                    match words.iter().find(|c| c.name == name).map(|c| &c.words) {
+                        Some(words) if !words.is_empty() => {
+                            format!("{line}\n{:<16} words: {}", "", words.join(", "))
+                        }
+                        _ => line,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
         Verb::Start(name) => start(name),
         Verb::Stop(name) => stop(name),
         Verb::Log(name) => log(name, 40),

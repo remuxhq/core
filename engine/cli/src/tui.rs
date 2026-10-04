@@ -1101,6 +1101,29 @@ pub struct Picker {
     pub title: String,
     pub rows: Vec<(String, Option<String>)>,
     pub at: usize,
+    pub picking: Picking,
+}
+
+/// What a list picks: a microphone (none is a row), or words for a companion
+/// (typing others is a row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Picking {
+    Mic,
+    Words(String),
+}
+
+/// A companion's words, and a row to type others.
+fn words_picker(name: &str, words: &[String]) -> Picker {
+    Picker {
+        title: format!("words for {name}"),
+        rows: words
+            .iter()
+            .map(|w| (w.clone(), Some(w.clone())))
+            .chain(std::iter::once(("other words…".to_string(), None)))
+            .collect(),
+        at: 0,
+        picking: Picking::Words(name.into()),
+    }
 }
 
 /// The microphones, and none.
@@ -1116,6 +1139,7 @@ pub fn mic_picker(devices: &remuxd_domain::protocol::Devices) -> Picker {
             )
             .collect(),
         at: 0,
+        picking: Picking::Mic,
     }
 }
 
@@ -1347,6 +1371,8 @@ pub struct Screen {
     pub picked_companion: usize,
     /// Each companion and its state as last read.
     pub companions: Vec<(String, State)>,
+    /// The words each companion says it takes, as last read.
+    pub companion_words: Vec<(String, Vec<String>)>,
     /// Why there is no list of companions, when there is none.
     pub companion_trouble: Option<String>,
     /// Whether the music plays, as the meters last said.
@@ -1526,9 +1552,24 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             'k' => picker.at = picker.at.saturating_sub(1),
             '\u{1b}' | 'q' => return Act::Stay,
             '\n' => {
-                return match picker.rows.get(picker.at).cloned() {
-                    Some((_, device)) => Act::Send(Command::Mic { device }),
-                    None => Act::Stay,
+                let Some((_, picked)) = picker.rows.get(picker.at).cloned() else {
+                    return Act::Stay;
+                };
+                return match (picker.picking, picked) {
+                    (Picking::Mic, device) => Act::Send(Command::Mic { device }),
+                    // A word with an argument is typed from where the argument goes.
+                    (Picking::Words(name), Some(word)) if word.contains('<') => {
+                        let typed = word.split('<').next().unwrap_or("").to_string();
+                        screen.typing_for = Typing::Companion(name);
+                        screen.typing = Some(typed);
+                        Act::Stay
+                    }
+                    (Picking::Words(name), Some(words)) => Act::CompanionSend { name, words },
+                    (Picking::Words(name), None) => {
+                        screen.typing_for = Typing::Companion(name);
+                        screen.typing = Some(String::new());
+                        Act::Stay
+                    }
                 };
             }
             _ => {}
@@ -1617,8 +1658,18 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('e', Panel::Companions) => {
             if let Some((name, _)) = screen.companions.get(screen.picked_companion) {
-                screen.typing_for = Typing::Companion(name.clone());
-                screen.typing = Some(String::new());
+                let words = screen
+                    .companion_words
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, w)| w.clone())
+                    .unwrap_or_default();
+                if words.is_empty() {
+                    screen.typing_for = Typing::Companion(name.clone());
+                    screen.typing = Some(String::new());
+                } else {
+                    screen.picker = Some(words_picker(name, &words));
+                }
             }
         }
         (' ', Panel::Companions) => {
@@ -2089,6 +2140,11 @@ fn look_at_companions(screen: &mut Screen) {
         Ok(list) => {
             let changes = companion_changes(&screen.companions, &list);
             screen.companions = list;
+            screen.companion_words = crate::companion::listed()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| (c.name, c.words))
+                .collect();
             screen.companion_trouble = None;
             for change in changes {
                 to_log(screen, format!("{} {change}", local_time()));
@@ -3456,6 +3512,36 @@ mod tests {
             cost: 0.1,
         });
         assert_eq!(agent_title(&screen, 30), "agent");
+    }
+
+    #[test]
+    fn e_on_a_companion_that_says_its_words_lists_them_and_enter_sends_one() {
+        let mut screen = on_companions(0);
+        screen.companion_words = vec![("first".into(), vec!["dvd".into(), "size <points>".into()])];
+        press('e', &mut screen, 0, &Status::default());
+        let picker = screen.picker.as_ref().expect("a list");
+        let rows: Vec<&str> = picker
+            .rows
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert_eq!(rows, ["dvd", "size <points>", "other words…"]);
+        assert_eq!(
+            press('\n', &mut screen, 0, &Status::default()),
+            Act::CompanionSend {
+                name: "first".into(),
+                words: "dvd".into()
+            }
+        );
+        press('e', &mut screen, 0, &Status::default());
+        press('j', &mut screen, 0, &Status::default());
+        press('\n', &mut screen, 0, &Status::default());
+        assert_eq!(
+            screen.typing.as_deref(),
+            Some("size "),
+            "the word, its argument to type"
+        );
+        assert_eq!(screen.typing_for, Typing::Companion("first".into()));
     }
 
     #[test]
