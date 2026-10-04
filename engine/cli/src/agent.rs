@@ -18,6 +18,10 @@ use serde_json::Value;
 /// What the panel hears from a running request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Heard {
+    /// What it is doing before it says anything: starting, thinking, running a
+    /// command. Seconds of each pass with nothing written (measured: 15 s of a
+    /// person's start-up hook, then as much thinking).
+    Doing(&'static str),
     /// A piece of the answer, as it is written.
     Text(String),
     /// A command it runs.
@@ -49,7 +53,11 @@ person's screen while they run a live. Act through the remux CLI alone. Going li
 stopping, the panic cut, quitting or restarting the engine, signing in and adding a \
 destination are the person's: never run them, say which key or command does it. \
 Build and change scenes off the air with --staged and say that t in the TUI takes \
-them to the air. Answer in a few short lines, in the person's language.";
+them to the air. The person's own programs beside the engine (windows, cameras with \
+effects, bots) are companions: remux companion list names each, its state and the \
+words it takes; remux companion send <name> <words> gives it words and says back what \
+it answered; remux companion log <name> is what it said. Answer in a few short lines, \
+in the person's language.";
 
 /// The argv of one request: its words, the session it continues, the rules and
 /// the guide, the `remux` command allowed and the person's verbs refused.
@@ -65,6 +73,9 @@ pub fn args(prompt: &str, session: Option<&str>, guide: &str) -> Vec<String> {
         "dontAsk",
         "--allowedTools",
         "Bash(remux:*)",
+        "--settings",
+        r#"{"disableAllHooks":true}"#,
+        "--strict-mcp-config",
     ]
     .into_iter()
     .map(String::from)
@@ -95,6 +106,21 @@ pub fn heard(line: &str) -> Vec<Heard> {
             .unwrap_or_default()
     };
     match event["type"].as_str().unwrap_or("") {
+        "system" => match event["subtype"].as_str().unwrap_or("") {
+            "hook_started" => vec![Heard::Doing("starting")],
+            "init" => vec![Heard::Doing("thinking")],
+            _ => vec![],
+        },
+        "stream_event" if event["event"]["type"] == "content_block_start" => {
+            match event["event"]["content_block"]["type"]
+                .as_str()
+                .unwrap_or("")
+            {
+                "thinking" => vec![Heard::Doing("thinking")],
+                "tool_use" => vec![Heard::Doing("running a command")],
+                _ => vec![],
+            }
+        }
         "stream_event" => match &event["event"]["delta"] {
             delta if delta["type"] == "text_delta" => delta["text"]
                 .as_str()
@@ -220,6 +246,18 @@ mod tests {
     }
 
     #[test]
+    fn what_it_is_doing_is_heard_before_it_says_anything() {
+        let hook = r#"{"type":"system","subtype":"hook_started"}"#;
+        let init = r#"{"type":"system","subtype":"init","session_id":"s1"}"#;
+        let thinking = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}"#;
+        let tool = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t","name":"Bash","input":{}}}}"#;
+        assert_eq!(heard(hook), [Heard::Doing("starting")]);
+        assert_eq!(heard(init), [Heard::Doing("thinking")]);
+        assert_eq!(heard(thinking), [Heard::Doing("thinking")]);
+        assert_eq!(heard(tool), [Heard::Doing("running a command")]);
+    }
+
+    #[test]
     fn a_long_answer_from_a_command_is_its_beginning() {
         let long = format!(
             r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","content":"{}"}}]}}}}"#,
@@ -242,6 +280,10 @@ mod tests {
         let args = args("make a scene", Some("s1"), "the guide");
         let after = |flag: &str| args[args.iter().position(|a| a == flag).expect(flag) + 1].clone();
         assert_eq!(after("--allowedTools"), "Bash(remux:*)");
+        // The person's hooks and MCP servers cost seconds a request (measured: 7 s
+        // to ready with them, 1 s without) and nothing here needs them.
+        assert_eq!(after("--settings"), r#"{"disableAllHooks":true}"#);
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
         assert_eq!(after("--permission-mode"), "dontAsk");
         for verb in ["live", "stop", "cut", "quit", "daemon"] {
             assert!(args.contains(&format!("Bash(remux {verb}:*)")), "{verb}");

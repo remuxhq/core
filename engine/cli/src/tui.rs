@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
@@ -319,7 +319,7 @@ fn draw(
         Constraint::Length(4),
         Constraint::Min(3),
         Constraint::Length(
-            if screen.typing.is_some() && screen.typing_for != Typing::Chat {
+            if screen.typing.is_some() && !screen.typing_for.in_its_panel() {
                 3
             } else {
                 0
@@ -410,7 +410,7 @@ fn draw(
             placed.push((*panel, *area));
         }
     }
-    if let (Some(line), false) = (&screen.typing, screen.typing_for == Typing::Chat) {
+    if let (Some(line), false) = (&screen.typing, screen.typing_for.in_its_panel()) {
         frame.render_widget(
             Paragraph::new(format!("{line}▏")).block(
                 Block::bordered()
@@ -625,21 +625,7 @@ fn draw_panel(
                 .typing
                 .as_deref()
                 .filter(|_| screen.typing_for == Typing::Chat);
-            let [area, typed] = Layout::vertical([
-                Constraint::Min(3),
-                Constraint::Length(if saying.is_some() { 3 } else { 0 }),
-            ])
-            .areas(area);
-            if let Some(line) = saying {
-                frame.render_widget(
-                    Paragraph::new(format!("{line}▏")).block(
-                        Block::bordered()
-                            .title(" say · enter sends · esc lets it go ")
-                            .border_style(Style::new().fg(Color::Yellow)),
-                    ),
-                    typed,
-                );
-            }
+            let area = typed_box(frame, area, saying, " say · enter sends · esc lets it go ");
             let fits = area.height.saturating_sub(2) as usize;
             let width = area.width.saturating_sub(2) as usize;
             let read = chat.lines.len().saturating_sub(screen.chat_back);
@@ -676,21 +662,7 @@ fn draw_panel(
                 .typing
                 .as_deref()
                 .filter(|_| screen.typing_for == Typing::Agent);
-            let [area, typed] = Layout::vertical([
-                Constraint::Min(3),
-                Constraint::Length(if asking.is_some() { 3 } else { 0 }),
-            ])
-            .areas(area);
-            if let Some(line) = asking {
-                frame.render_widget(
-                    Paragraph::new(format!("{line}▏")).block(
-                        Block::bordered()
-                            .title(" ask · enter sends · esc lets it go ")
-                            .border_style(Style::new().fg(Color::Yellow)),
-                    ),
-                    typed,
-                );
-            }
+            let area = typed_box(frame, area, asking, " ask · enter sends · esc lets it go ");
             let width = area.width.saturating_sub(2).max(1) as usize;
             let fits = area.height.saturating_sub(2) as usize;
             let end = screen.agent.len().saturating_sub(screen.agent_back);
@@ -715,13 +687,44 @@ fn draw_panel(
                 rows.drain(..rows.len().saturating_sub(fits));
                 rows
             };
-            let title = match (screen.agent_busy, screen.agent_back) {
-                (true, _) => "agent · at it · x stops it".to_string(),
-                (false, 0) => "agent".to_string(),
-                (false, back) => format!("agent · {back} back · j comes forward"),
-            };
-            frame.render_widget(List::new(rows).block(block(title)), area);
+            let seconds = screen.agent_since.map_or(0, |t| t.elapsed().as_secs());
+            frame.render_widget(
+                List::new(rows).block(block(agent_title(screen, seconds))),
+                area,
+            );
         }
+    }
+}
+
+/// A line being typed inside a panel, at its foot: broken between words and as
+/// tall as it needs, up to half the panel. What is left above is returned.
+fn typed_box(frame: &mut Frame, area: Rect, line: Option<&str>, title: &str) -> Rect {
+    let Some(line) = line else { return area };
+    let width = area.width.saturating_sub(2).max(1) as usize;
+    let rows = wrapped(&format!("{line}▏"), width, "");
+    let tall = (rows.len() as u16 + 2).min((area.height / 2).max(3));
+    let [above, typed] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(tall)]).areas(area);
+    // The end of what is typed stays in sight when it is taller than the box.
+    let shown = rows.len().saturating_sub(tall.saturating_sub(2) as usize);
+    frame.render_widget(
+        Paragraph::new(rows[shown..].join("\n")).block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::new().fg(Color::Yellow)),
+        ),
+        typed,
+    );
+    above
+}
+
+/// The agent panel's title: what a request is doing and for how long, or how
+/// far back the conversation is read.
+fn agent_title(screen: &Screen, seconds: u64) -> String {
+    match (screen.agent_busy, screen.agent_back) {
+        (true, _) => format!("agent · {} {seconds}s · x stops it", screen.agent_doing),
+        (false, 0) => "agent".to_string(),
+        (false, back) => format!("agent · {back} back · j comes forward"),
     }
 }
 
@@ -1130,6 +1133,13 @@ pub enum Typing {
     Agent,
 }
 
+impl Typing {
+    /// Whether it is typed inside its panel rather than in the strip below.
+    fn in_its_panel(&self) -> bool {
+        matches!(self, Typing::Chat | Typing::Agent)
+    }
+}
+
 /// The line typed, done: said, drafted or added.
 fn typed_line(line: String, typing_for: Typing) -> Act {
     match typing_for {
@@ -1371,6 +1381,9 @@ pub struct Screen {
     pub agent_back: usize,
     pub agent_session: Option<String>,
     pub agent_busy: bool,
+    /// What the running request is doing, and since when.
+    pub agent_doing: &'static str,
+    pub agent_since: Option<std::time::Instant>,
 }
 
 impl Screen {
@@ -1378,6 +1391,8 @@ impl Screen {
     pub fn asked(&mut self, prompt: &str) {
         self.agent.push(format!("> {prompt}"));
         self.agent_busy = true;
+        self.agent_doing = "starting";
+        self.agent_since = Some(std::time::Instant::now());
         self.agent_back = 0;
     }
 
@@ -1386,7 +1401,9 @@ impl Screen {
     pub fn hear(&mut self, heard: crate::agent::Heard) {
         use crate::agent::Heard;
         match heard {
+            Heard::Doing(doing) => self.agent_doing = doing,
             Heard::Text(text) => {
+                self.agent_doing = "writing";
                 let mut pieces = text.split('\n');
                 let first = pieces.next().unwrap_or("");
                 match self.agent.last_mut() {
@@ -3422,6 +3439,23 @@ mod tests {
         );
         assert_eq!(screen.agent_session.as_deref(), Some("s1"));
         assert!(!screen.agent_busy);
+    }
+
+    #[test]
+    fn the_agent_title_says_what_it_is_doing_and_for_how_long() {
+        let mut screen = Screen::default();
+        screen.asked("oi");
+        screen.hear(crate::agent::Heard::Doing("thinking"));
+        assert_eq!(screen.agent, ["> oi"], "a phase is the title's, not a line");
+        assert_eq!(
+            agent_title(&screen, 12),
+            "agent · thinking 12s · x stops it"
+        );
+        screen.hear(crate::agent::Heard::Done {
+            session: "s".into(),
+            cost: 0.1,
+        });
+        assert_eq!(agent_title(&screen, 30), "agent");
     }
 
     #[test]
