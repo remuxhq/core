@@ -30,6 +30,16 @@ pub struct Config {
     pub web: Web,
     pub daemon: Daemon,
     pub byo: Byo,
+    pub companions: Companions,
+}
+
+/// Where the companions file is: the operator's own programs a face runs
+/// beside the engine (`crate::companions`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Companions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -59,6 +69,9 @@ pub struct Daemon {
     pub music_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clips_dir: Option<String>,
+    /// Where a face finds the WGSL filters it offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shaders_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub obs_app: Option<String>,
 }
@@ -164,6 +177,15 @@ pub fn clips_dir() -> PathBuf {
         .unwrap_or_else(|| home().join("Music/remux/clips"))
 }
 
+/// Where a face finds the filters it offers: `REMUX_SHADERS_DIR`, else
+/// `[daemon] shaders_dir`, else `shaders` beside the config.
+pub fn shaders_dir() -> PathBuf {
+    env("REMUX_SHADERS_DIR")
+        .or_else(|| read(&path()).daemon.shaders_dir)
+        .map(|p| expand(&p))
+        .unwrap_or_else(|| crate::os::config_dir().join("shaders"))
+}
+
 pub fn obs_app() -> String {
     env("OBS_APP")
         .or_else(|| read(&path()).daemon.obs_app)
@@ -191,7 +213,9 @@ pub fn describe() -> String {
          record_dir {}{}\n\
          music_dir  {}{}\n\
          clips_dir  {}{}\n\
+         shaders_dir {}{}\n\
          obs_app    {}{}\n\
+         companions {}{}\n\
          byo.twitch  {}  (config, read by byo/bridge.py)\n\
          byo.youtube {}  (config, read by byo/bridge.py)",
         file.display(),
@@ -212,8 +236,12 @@ pub fn describe() -> String {
         from("REMUX_MUSIC_DIR", kept.daemon.music_dir.is_some()),
         clips_dir().display(),
         from("REMUX_CLIPS_DIR", kept.daemon.clips_dir.is_some()),
+        shaders_dir().display(),
+        from("REMUX_SHADERS_DIR", kept.daemon.shaders_dir.is_some()),
         obs_app(),
         from("OBS_APP", kept.daemon.obs_app.is_some()),
+        crate::companions::path().map_or_else(|| "none".into(), |p| p.display().to_string()),
+        from("REMUX_COMPANIONS", kept.companions.file.is_some()),
         kept.byo.twitch.unwrap_or_else(|| "none".into()),
         kept.byo.youtube.unwrap_or_else(|| "none".into()),
     )

@@ -30,12 +30,13 @@ pub fn of(status: &Status, grants: &Grants) -> Health {
         Grant::Refused => Some(format!(
             "{name}: refused; System Settings, Privacy & Security, {name} for remux"
         )),
-        // Screen recording is the one macOS never grants from the dialog: it
-        // lists the asker in System Settings, the person turns it on there,
-        // and the process has to start again to see it.
+        // Screen recording is granted in System Settings alone: an engine not
+        // granted is shown no display, so nothing it does makes macOS ask.
+        // The grant is tied to the build's signature, so a new build is a new
+        // app there, under the old one's name: the old entry has to go.
         Grant::NotAsked if name == "screen recording" => Some(format!(
-            "{name}: not granted yet; remux scene layer add screen <id> <display> asks once, then System Settings, \
-             Privacy & Security, Screen Recording, remuxd on, then remux daemon restart"
+            "{name}: not granted to this build; System Settings, Privacy & Security, Screen Recording: \
+             remove remuxd if it is listed, add it again with +, turn it on, then remux daemon restart"
         )),
         Grant::NotAsked => Some(format!("{name}: not granted yet; the first use asks")),
         Grant::Granted => None,
@@ -123,6 +124,22 @@ pub(crate) mod tests {
                 microphone: Grant::Granted,
             },
         )
+    }
+
+    #[test]
+    fn a_screen_not_granted_is_sent_to_the_settings_not_told_to_wait_for_a_dialog() {
+        let (status, mut grants) = ready();
+        grants.screen = Grant::NotAsked;
+        let said = of(&status, &grants).trouble.join("\n");
+        // macOS lists no display to an engine it has not granted, so nothing ever
+        // asks: the settings are the way, and a new build is a new app there.
+        assert!(
+            said.contains("System Settings, Privacy & Security, Screen Recording"),
+            "{said}"
+        );
+        assert!(said.contains("remove remuxd"), "{said}");
+        assert!(said.contains("remux daemon restart"), "{said}");
+        assert!(!said.contains("asks once"), "{said}");
     }
 
     #[test]

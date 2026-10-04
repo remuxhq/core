@@ -316,6 +316,27 @@ const SCENE: &[Action] = &[
         summary: "Switch scene without stopping the live.",
     },
     Action {
+        name: "stage",
+        target: "scene-stage",
+        prefix: &[],
+        args: "<name>",
+        summary: "Draw a scene off the air, in the preview, before it goes out.",
+    },
+    Action {
+        name: "draft",
+        target: "scene-draft",
+        prefix: &[],
+        args: "<name> [--from <scene>]",
+        summary: "A new scene in the preview, empty or a copy, off the air.",
+    },
+    Action {
+        name: "take",
+        target: "scene-take",
+        prefix: &[],
+        args: "",
+        summary: "Put the staged scene on the air; the one that was out is staged.",
+    },
+    Action {
         name: "list",
         target: "scenes",
         prefix: &[],
@@ -362,7 +383,14 @@ const SCENE: &[Action] = &[
         target: "scene-delete",
         prefix: &[],
         args: "<name>",
-        summary: "Delete an inactive scene.",
+        summary: "Delete an inactive scene; it goes to the trash.",
+    },
+    Action {
+        name: "restore",
+        target: "scene-restore",
+        prefix: &[],
+        args: "<name>",
+        summary: "Bring a deleted scene back from the trash.",
     },
 ];
 
@@ -397,9 +425,30 @@ pub(super) const GROUPS: &[Group] = &[
 /// The commands outside every group: the live's levers, what the engine is
 /// and what this shell keeps by itself.
 pub(super) const TOP: &[&str] = &[
-    "status", "sources", "grants", "levels", "plan", "live", "stop", "record", "cut", "quit",
-    "health", "wait", "events", "history", "log", "login", "logout", "config", "daemon", "bug",
+    "status",
+    "sources",
+    "grants",
+    "levels",
+    "plan",
+    "live",
+    "stop",
+    "record",
+    "cut",
+    "quit",
+    "health",
+    "wait",
+    "events",
+    "history",
+    "log",
+    "login",
+    "logout",
+    "config",
+    "daemon",
+    "bug",
     "schema",
+    "tui",
+    "companion",
+    "bench",
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static Group> {

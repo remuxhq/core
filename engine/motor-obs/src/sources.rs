@@ -120,6 +120,18 @@ unsafe fn rows(props: *mut sys::obs_properties_t, property: &str) -> Vec<(String
 }
 
 impl Sources for ObsSources {
+    /// Off the source type alone, as `available` reads them: no camera is
+    /// listed, so none is opened.
+    fn mics(&self) -> Result<Vec<remuxd_domain::protocol::Named>, String> {
+        Ok(list_of_type(
+            crate::platform::TABLE.mic.source,
+            crate::platform::TABLE.mic.devices,
+        )
+        .into_iter()
+        .map(|(name, id)| remuxd_domain::protocol::Named { id, name })
+        .collect())
+    }
+
     fn available(&self) -> Result<Available, String> {
         let table = crate::platform::screen();
         let displays = if table.portal {
