@@ -366,41 +366,7 @@ fn draw(
             inner,
         );
     }
-    // Three columns, each of the panels it holds that are shown; a column with none
-    // gives its room to the others.
-    let columns: [(&[(Panel, u16)], u16); 3] = [
-        (
-            &[
-                (Panel::Scenes, 30),
-                (Panel::Layers, 45),
-                (Panel::Companions, 25),
-            ],
-            28,
-        ),
-        (
-            &[
-                (Panel::Destinations, 25),
-                (Panel::Sound, 40),
-                (Panel::Agent, 35),
-            ],
-            42,
-        ),
-        (&[(Panel::Chat, 65), (Panel::Log, 35)], 30),
-    ];
-    let present: Vec<(Vec<(Panel, u16)>, u16)> = columns
-        .iter()
-        .map(|(panels, weight)| {
-            (
-                panels
-                    .iter()
-                    .copied()
-                    .filter(|(p, _)| screen.shows(*p))
-                    .collect::<Vec<_>>(),
-                *weight,
-            )
-        })
-        .filter(|(panels, _)| !panels.is_empty())
-        .collect();
+    let present = laid_out(screen);
     let areas = Layout::horizontal(present.iter().map(|(_, w)| Constraint::Fill(*w))).split(middle);
     for ((panels, _), column) in present.iter().zip(areas.iter()) {
         let rows =
@@ -694,6 +660,48 @@ fn draw_panel(
             );
         }
     }
+}
+
+/// The columns drawn, each with its panels and their weights: three columns of
+/// the panels shown, a column with none giving its room to the others; zoomed,
+/// the focused panel alone.
+fn laid_out(screen: &Screen) -> Vec<(Vec<(Panel, u16)>, u16)> {
+    if screen.zoomed {
+        return vec![(vec![(screen.focus, 1)], 1)];
+    }
+    let columns: [(&[(Panel, u16)], u16); 3] = [
+        (
+            &[
+                (Panel::Scenes, 30),
+                (Panel::Layers, 45),
+                (Panel::Companions, 25),
+            ],
+            28,
+        ),
+        (
+            &[
+                (Panel::Destinations, 25),
+                (Panel::Sound, 40),
+                (Panel::Agent, 35),
+            ],
+            42,
+        ),
+        (&[(Panel::Chat, 65), (Panel::Log, 35)], 30),
+    ];
+    columns
+        .iter()
+        .map(|(panels, weight)| {
+            (
+                panels
+                    .iter()
+                    .copied()
+                    .filter(|(p, _)| screen.shows(*p))
+                    .collect::<Vec<_>>(),
+                *weight,
+            )
+        })
+        .filter(|(panels, _)| !panels.is_empty())
+        .collect()
 }
 
 /// A line being typed inside a panel, at its foot: broken between words and as
@@ -1320,6 +1328,7 @@ pub const GLOBAL_KEYS: &[&str] = &[
     "[tab/shift+tab] panels",
     "[1-8] go to",
     "[0] show all",
+    "[z] zoom",
     "[L] live",
     "[S] stop",
     "[R] record",
@@ -1407,6 +1416,8 @@ pub struct Screen {
     pub agent_back: usize,
     pub agent_session: Option<String>,
     pub agent_busy: bool,
+    /// The focused panel alone on the screen, as tmux zooms a pane.
+    pub zoomed: bool,
     /// What the running request is doing, and since when.
     pub agent_doing: &'static str,
     pub agent_since: Option<std::time::Instant>,
@@ -1613,6 +1624,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     match (key, screen.focus) {
         ('q' | '\u{1b}', _) => return Act::Quit,
         ('?', _) => screen.showing_keys = true,
+        ('z', _) => screen.zoomed = !screen.zoomed,
         ('1'..='8', _) => {
             let panel = Panel::ALL[(key as u8 - b'1') as usize];
             screen.hidden.retain(|p| *p != panel);
@@ -3689,6 +3701,26 @@ mod tests {
             Panel::Destinations,
             "layers hidden: tab goes past it"
         );
+    }
+
+    #[test]
+    fn z_zooms_the_focused_panel_to_the_whole_screen_and_back() {
+        let mut screen = Screen {
+            focus: Panel::Agent,
+            ..Screen::default()
+        };
+        assert_eq!(laid_out(&screen).len(), 3, "three columns");
+        press('z', &mut screen, 0, &Status::default());
+        assert_eq!(laid_out(&screen), [(vec![(Panel::Agent, 1)], 1)]);
+        press('5', &mut screen, 0, &Status::default());
+        assert_eq!(
+            laid_out(&screen),
+            [(vec![(Panel::Chat, 1)], 1)],
+            "zoomed, a panel picked is zoomed"
+        );
+        press('z', &mut screen, 0, &Status::default());
+        assert_eq!(laid_out(&screen).len(), 3, "and back");
+        assert!(GLOBAL_KEYS.iter().any(|k| k.contains("[z]")));
     }
 
     #[test]
