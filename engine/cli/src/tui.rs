@@ -13,6 +13,7 @@ use remuxd_domain::air::plan::Plan;
 use remuxd_domain::companions::State;
 use remuxd_domain::picture::scenes::Scene;
 use remuxd_domain::protocol::{ChatLine, Command, Destination, Hearing, Mixing, Reply, Status};
+use remuxd_domain::sound::music::music_step;
 
 /// The screen, until `q`: the status read once a second through `ask`, drawn after every
 /// read and every key. Only a question a person answered with `y` sends anything else.
@@ -1654,12 +1655,12 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('+', focus) if focus != Panel::Sound => {
             return Act::Send(Command::MusicVolume {
-                level: louder(status.faders.music, 1.0),
+                level: music_step(status.faders.music, 3.0),
             })
         }
         ('-', focus) if focus != Panel::Sound => {
             return Act::Send(Command::MusicVolume {
-                level: quieter(status.faders.music),
+                level: music_step(status.faders.music, -3.0),
             })
         }
         ('j', Panel::Companions) if screen.picked_companion + 1 < screen.companions.len() => {
@@ -1872,14 +1873,14 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
     Act::Stay
 }
 
-/// One step of the music fader: 3 dB, a gain of 10^(3/20). The fader is a linear gain,
-/// and the music sits near half a percent, where a step of a percent would be 6 dB.
+/// One step of a linear-gain fader (the mic, an audio layer): 3 dB, a gain of 10^(3/20).
+/// The music's fader is a curve in dB and steps by `music_step`.
 const STEP: f64 = 1.412_537_544_622_754;
 /// Below this the fader is silence; a step louder from silence lands here.
 const QUIETEST: f64 = 0.001;
 
-/// A fader's step louder, never past its ceiling: 100% for the music, 200% for the
-/// mic and the audio layers, which a quiet source needs.
+/// A linear fader's step louder, never past its ceiling: 200% for the mic and the
+/// audio layers, which a quiet source needs.
 fn louder(level: f64, ceiling: f64) -> f64 {
     (level * STEP).clamp(QUIETEST, ceiling)
 }
@@ -1904,10 +1905,10 @@ fn sound_verb(key: char, row: usize, playing: bool, status: &Status) -> Option<C
             on: !status.music_to_stream,
         },
         ('+', 1) => Command::MusicVolume {
-            level: louder(status.faders.music, 1.0),
+            level: music_step(status.faders.music, 3.0),
         },
         ('-', 1) => Command::MusicVolume {
-            level: quieter(status.faders.music),
+            level: music_step(status.faders.music, -3.0),
         },
         // Off, then 6 dB deeper a press, to 18, then off again.
         ('d', 1) => Command::Duck {
@@ -2968,12 +2969,13 @@ mod tests {
 
     #[test]
     fn plus_and_minus_move_the_music_three_db_at_a_time() {
-        let level = |key| match press(key, &mut Screen::default(), 0, &music_at(0.01)) {
+        use remuxd_domain::sound::music::music_fader_db;
+        let level = |key| match press(key, &mut Screen::default(), 0, &music_at(0.3)) {
             Act::Send(Command::MusicVolume { level }) => level,
             other => panic!("{other:?}"),
         };
-        assert!((level('+') - 0.01 * 10f64.powf(0.15)).abs() < 1e-9);
-        assert!((level('-') - 0.01 / 10f64.powf(0.15)).abs() < 1e-9);
+        assert!((music_fader_db(level('+')) - music_fader_db(0.3) - 3.0).abs() < 1e-6);
+        assert!((music_fader_db(0.3) - music_fader_db(level('-')) - 3.0).abs() < 1e-6);
     }
 
     #[test]
@@ -2982,17 +2984,14 @@ mod tests {
             Act::Send(Command::MusicVolume { level }) => level,
             other => panic!("{other:?}"),
         };
-        assert_eq!(level('+', 0.9), 1.0);
-        assert_eq!(
-            level('+', 0.0),
-            0.001,
-            "silence has no three db louder: a step out of it"
-        );
-        assert_eq!(
-            level('-', 0.001),
-            0.0,
-            "below a tenth of a percent is silence"
-        );
+        use remuxd_domain::sound::music::music_fader_db;
+        assert_eq!(level('+', 0.95), 1.0);
+        for at in [0.2, 0.5, 0.8] {
+            let step = music_fader_db(level('+', at)) - music_fader_db(at);
+            assert!((step - 3.0).abs() < 1e-6, "+ is 3 dB at {at}: {step}");
+        }
+        assert!(level('+', 0.0) > 0.0, "silence has a step out of it");
+        assert_eq!(level('-', 0.05), 0.0, "under the first step is off");
     }
 
     #[test]

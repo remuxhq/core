@@ -43,7 +43,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["music"], args: "[on|off|genre]", summary: "Play, stop or choose a music genre.", note: "Find genres with `remux sources`; omitted means on." },
     Topic { names: &["next"], args: "", summary: "Skip to the next music track.", note: "" },
     Topic { names: &["vol"], args: "<percent>", summary: "Set microphone volume as a percentage.", note: "Example: remux audio vol 80 (80% and values above 100 also work)." },
-    Topic { names: &["mvol"], args: "<percent>", summary: "Set music volume as a percentage.", note: "Example: remux music vol 30" },
+    Topic { names: &["mvol"], args: "<percent>", summary: "Set music volume as a percentage.", note: "Linear in dB: 1% is just heard (-50 dB), 100% is a bed alone (-18 dB), every 10% is 3.2 dB; under a voice a bed sits around 30 to 40. Example: remux music vol 30" },
     Topic { names: &["duck"], args: "<dB>", summary: "Set how far music dips under speech.", note: "Example: remux audio duck 18 (the engine applies -18 dB)." },
     Topic { names: &["scene-timer"], args: "start|stop <id>", summary: "Start or stop an active scene timer.", note: "Example: remux scene timer start clock. Switching scenes or restarting clears running timers; reaching 00:00 never changes scenes." },
     Topic { names: &["cut"], args: "", summary: "Panic button: turn everything off, including sound.", note: "" },

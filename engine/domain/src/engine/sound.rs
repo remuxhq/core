@@ -1133,12 +1133,12 @@ mod tests {
     #[test]
     fn the_faders_read_in_db_and_the_speakers_read_off_the_status() {
         let (mut engine, _) = speaking_engine();
-        assert_eq!(engine.music_db(), crate::sound::music::fader_db(0.85));
+        assert_eq!(engine.music_db(), crate::sound::music::music_fader_db(0.85));
         assert_eq!(engine.mic_db(), crate::sound::music::fader_db(1.0));
         assert_eq!(engine.duck_db(), crate::sound::music::DUCK_DEFAULT_DB);
         assert!(!engine.monitoring());
         engine.handle(Command::MusicVolume { level: 0.25 });
-        assert_eq!(engine.music_db(), crate::sound::music::fader_db(0.25));
+        assert_eq!(engine.music_db(), crate::sound::music::music_fader_db(0.25));
         engine.handle(Command::Genre {
             name: "lofi".into(),
         });

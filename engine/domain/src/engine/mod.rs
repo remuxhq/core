@@ -1902,7 +1902,7 @@ impl Engine {
     }
 
     pub fn music_db(&self) -> f64 {
-        fader_db(self.status.faders.music)
+        crate::sound::music::music_fader_db(self.status.faders.music)
     }
 
     pub fn duck_db(&self) -> f64 {
