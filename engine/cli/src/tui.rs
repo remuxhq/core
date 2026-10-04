@@ -36,9 +36,6 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         screen.focus = screen.next_shown(screen.focus);
     }
     let mut last_said: Option<String> = None;
-    // The agent's request, when one runs, and what it says on the way.
-    let (agent_out, agent_in) = std::sync::mpsc::channel::<crate::agent::Heard>();
-    let mut agent: Option<std::process::Child> = None;
     // The log starts with what the engine wrote down so far; of its events, only
     // what happens from now on.
     let mut journal_seen: Option<String> = None;
@@ -96,14 +93,6 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
             to_log(&mut screen, format!("{} {said}", local_time()));
             screen.said = Some(said);
             look_at_companions(&mut screen);
-        }
-        while let Ok(heard) = agent_in.try_recv() {
-            screen.hear(heard);
-        }
-        if !screen.agent_busy {
-            if let Some(mut done) = agent.take() {
-                let _ = done.wait();
-            }
         }
         // The meters, every turn of the loop: one line on the socket, no device opened.
         let levels = match ask(&Command::Levels) {
@@ -198,25 +187,6 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
                 Ok(other) => screen.said = Some(format!("the engine answered {other:?}")),
                 Err(why) => screen.said = Some(why),
             },
-            Act::Agent(prompt) if screen.agent_busy => {
-                let _ = prompt;
-                screen.said = Some("the agent is still at it: x stops it".into());
-            }
-            Act::Agent(prompt) => {
-                screen.asked(&prompt);
-                match crate::agent::ask(&prompt, screen.agent_session.as_deref(), agent_out.clone())
-                {
-                    Ok(child) => agent = Some(child),
-                    Err(why) => screen.hear(crate::agent::Heard::Failed(why)),
-                }
-            }
-            Act::AgentStop => {
-                if let Some(mut running) = agent.take() {
-                    let _ = running.kill();
-                    let _ = running.wait();
-                    screen.hear(crate::agent::Heard::Failed("stopped".into()));
-                }
-            }
             Act::CompanionSend { name, words } => {
                 let said = std::env::current_exe()
                     .and_then(|me| {
@@ -387,7 +357,6 @@ fn draw(
                             " the new scene's name · enter drafts it in the preview "
                         }
                         Typing::Companion(_) => " words to the companion · enter sends them ",
-                        Typing::Agent => " ask · enter sends · esc lets it go ",
                     })
                     .border_style(Style::new().fg(Color::Yellow)),
             ),
@@ -624,46 +593,6 @@ fn draw_panel(
             };
             frame.render_widget(List::new(lines).block(block(title)), area);
         }
-        Panel::Agent => {
-            let asking = screen
-                .typing
-                .as_deref()
-                .filter(|_| screen.typing_for == Typing::Agent);
-            let area = typed_box(frame, area, asking, " ask · enter sends · esc lets it go ");
-            let width = area.width.saturating_sub(2).max(1) as usize;
-            let fits = area.height.saturating_sub(2) as usize;
-            let end = screen.agent.len().saturating_sub(screen.agent_back);
-            let rows: Vec<ListItem> = if screen.agent.is_empty() {
-                vec![ListItem::new("c asks your claude; it acts through remux")
-                    .style(Style::new().fg(Color::DarkGray))]
-            } else {
-                let mut rows: Vec<ListItem> = screen.agent[..end]
-                    .iter()
-                    .flat_map(|line| {
-                        let style = match line.chars().next() {
-                            Some('>') => Style::new().fg(Color::Yellow),
-                            Some('$' | ' ' | '·') => Style::new().fg(Color::DarkGray),
-                            Some('!') => Style::new().fg(Color::Red),
-                            _ => Style::new(),
-                        };
-                        wrapped(&crate::words::plain(line), width, "  ")
-                            .into_iter()
-                            .map(move |row| ListItem::new(row).style(style))
-                    })
-                    .collect();
-                let seconds = screen.agent_since.map_or(0, |t| t.elapsed().as_secs());
-                if let Some(working) = agent_working(screen, seconds) {
-                    rows.push(ListItem::new(working).style(Style::new().fg(Color::Yellow)));
-                }
-                rows.drain(..rows.len().saturating_sub(fits));
-                rows
-            };
-            let seconds = screen.agent_since.map_or(0, |t| t.elapsed().as_secs());
-            frame.render_widget(
-                List::new(rows).block(block(agent_title(screen, seconds))),
-                area,
-            );
-        }
     }
 }
 
@@ -683,14 +612,7 @@ fn laid_out(screen: &Screen) -> Vec<(Vec<(Panel, u16)>, u16)> {
             ],
             28,
         ),
-        (
-            &[
-                (Panel::Destinations, 25),
-                (Panel::Sound, 40),
-                (Panel::Agent, 35),
-            ],
-            42,
-        ),
+        (&[(Panel::Destinations, 40), (Panel::Sound, 60)], 42),
         (&[(Panel::Chat, 65), (Panel::Log, 35)], 30),
     ];
     columns
@@ -729,24 +651,6 @@ fn typed_box(frame: &mut Frame, area: Rect, line: Option<&str>, title: &str) -> 
         typed,
     );
     above
-}
-
-/// The agent panel's last row while a request runs: what it is doing and for how
-/// long, so a silence is never a mystery.
-fn agent_working(screen: &Screen, seconds: u64) -> Option<String> {
-    screen
-        .agent_busy
-        .then(|| format!("… {} {seconds}s", screen.agent_doing))
-}
-
-/// The agent panel's title: what a request is doing and for how long, or how
-/// far back the conversation is read.
-fn agent_title(screen: &Screen, seconds: u64) -> String {
-    match (screen.agent_busy, screen.agent_back) {
-        (true, _) => format!("agent · {} {seconds}s · x stops it", screen.agent_doing),
-        (false, 0) => "agent".to_string(),
-        (false, back) => format!("agent · {back} back · j comes forward"),
-    }
 }
 
 /// A list to pick from, over the rest.
@@ -1174,14 +1078,12 @@ pub enum Typing {
     Draft(Option<String>),
     /// Words to a companion that takes input.
     Companion(String),
-    /// A request to the agent.
-    Agent,
 }
 
 impl Typing {
     /// Whether it is typed inside its panel rather than in the strip below.
     fn in_its_panel(&self) -> bool {
-        matches!(self, Typing::Chat | Typing::Agent)
+        matches!(self, Typing::Chat)
     }
 }
 
@@ -1200,7 +1102,6 @@ fn typed_line(line: String, typing_for: Typing) -> Act {
             name,
             words: line.trim().to_string(),
         },
-        Typing::Agent => Act::Agent(line.trim().to_string()),
     }
 }
 
@@ -1221,13 +1122,11 @@ pub enum Panel {
     /// What the engine did and what went wrong, from any face, and this
     /// screen's own.
     Log,
-    /// The person's own claude, asked in words, acting through remux.
-    Agent,
 }
 
 impl Panel {
     /// Every panel, in the order of its number and of tab.
-    pub const ALL: [Panel; 8] = [
+    pub const ALL: [Panel; 7] = [
         Panel::Scenes,
         Panel::Layers,
         Panel::Destinations,
@@ -1235,7 +1134,6 @@ impl Panel {
         Panel::Chat,
         Panel::Companions,
         Panel::Log,
-        Panel::Agent,
     ];
 
     /// The digit that shows or hides it.
@@ -1253,7 +1151,6 @@ impl Panel {
             Panel::Chat => "chat",
             Panel::Companions => "companions",
             Panel::Log => "log",
-            Panel::Agent => "agent",
         }
     }
 }
@@ -1326,20 +1223,13 @@ pub fn keys_of(panel: Panel) -> &'static [&'static str] {
             "[h] hide",
         ],
         Panel::Log => &["[k] older", "[j] newer", "[h] hide"],
-        Panel::Agent => &[
-            "[c] ask",
-            "[x] stop it",
-            "[k] older",
-            "[j] newer",
-            "[h] hide",
-        ],
     }
 }
 
 /// The keys every panel has.
 pub const GLOBAL_KEYS: &[&str] = &[
     "[tab/shift+tab] panels",
-    "[1-8] go to",
+    "[1-7] go to",
     "[0] show all",
     "[z] zoom",
     "[L] live",
@@ -1423,73 +1313,11 @@ pub struct Screen {
     /// What the last thing sent came to, and whether it is new enough to show.
     pub said: Option<String>,
     pub said_fresh: bool,
-    /// The conversation with the agent, line by line; how far back it is
-    /// read; the session it goes on in; whether a request runs.
-    pub agent: Vec<String>,
-    pub agent_back: usize,
-    pub agent_session: Option<String>,
-    pub agent_busy: bool,
     /// The focused panel alone on the screen, as tmux zooms a pane.
     pub zoomed: bool,
-    /// What the running request is doing, and since when.
-    pub agent_doing: &'static str,
-    pub agent_since: Option<std::time::Instant>,
 }
 
 impl Screen {
-    /// A request is on its way.
-    pub fn asked(&mut self, prompt: &str) {
-        self.agent.push(format!("> {prompt}"));
-        self.agent_busy = true;
-        self.agent_doing = "starting";
-        self.agent_since = Some(std::time::Instant::now());
-        self.agent_back = 0;
-    }
-
-    /// What the agent said, into the conversation: its text as it is written,
-    /// each command and the first line it answered, and the end of the turn.
-    pub fn hear(&mut self, heard: crate::agent::Heard) {
-        use crate::agent::Heard;
-        match heard {
-            Heard::Doing(doing) => self.agent_doing = doing,
-            Heard::Text(text) => {
-                self.agent_doing = "writing";
-                let mut pieces = text.split('\n');
-                let first = pieces.next().unwrap_or("");
-                match self.agent.last_mut() {
-                    Some(last) if !last.starts_with(['>', '$', ' ', '!', '·']) => {
-                        last.push_str(first)
-                    }
-                    _ => self.agent.push(first.to_string()),
-                }
-                self.agent.extend(pieces.map(String::from));
-            }
-            Heard::Ran(command) => self.agent.push(format!("$ {command}")),
-            Heard::Output {
-                line,
-                refused: false,
-            } => self.agent.push(format!("  {line}")),
-            Heard::Output {
-                line,
-                refused: true,
-            } => self.agent.push(format!("! {line}")),
-            Heard::Done { session, cost } => {
-                let took = self.agent_since.map_or(0, |t| t.elapsed().as_secs());
-                self.agent
-                    .push(format!("· answered in {took}s · ${cost:.2}"));
-                self.agent_session = Some(session);
-                self.agent_busy = false;
-            }
-            Heard::Failed(why) => {
-                self.agent.push(format!("! {why}"));
-                self.agent_busy = false;
-            }
-        }
-        // Long enough for a live, short enough to keep drawing it cheap.
-        let over = self.agent.len().saturating_sub(LOG);
-        self.agent.drain(..over);
-    }
-
     /// Whether this panel is drawn.
     pub fn shows(&self, panel: Panel) -> bool {
         !self.hidden.contains(&panel)
@@ -1533,9 +1361,6 @@ pub enum Act {
     Say(&'static str),
     /// Ask the engine for the microphones, to offer them in a list.
     AskMics,
-    /// A request to the agent, and stopping the one running.
-    Agent(String),
-    AgentStop,
     /// Words to a companion's standard input, by the shell's own `remux companion`.
     CompanionSend {
         name: String,
@@ -1640,7 +1465,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('q' | '\u{1b}', _) => return Act::Quit,
         ('?', _) => screen.showing_keys = true,
         ('z', _) => screen.zoomed = !screen.zoomed,
-        ('1'..='8', _) => {
+        ('1'..='7', _) => {
             let panel = Panel::ALL[(key as u8 - b'1') as usize];
             screen.hidden.retain(|p| *p != panel);
             screen.focus = panel;
@@ -1714,13 +1539,6 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
             screen.log_back += 1
         }
         ('j', Panel::Log) => screen.log_back = screen.log_back.saturating_sub(1),
-        ('c', Panel::Agent) => {
-            screen.typing_for = Typing::Agent;
-            screen.typing = Some(String::new());
-        }
-        ('x', Panel::Agent) => return Act::AgentStop,
-        ('k', Panel::Agent) if screen.agent_back + 1 < screen.agent.len() => screen.agent_back += 1,
-        ('j', Panel::Agent) => screen.agent_back = screen.agent_back.saturating_sub(1),
         ('j', Panel::Chat) => screen.chat_back = screen.chat_back.saturating_sub(1),
         ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
             screen.picked_sound += 1
@@ -2684,8 +2502,6 @@ mod tests {
         press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Log);
         press('\t', &mut screen, 3, &status);
-        assert_eq!(screen.focus, Panel::Agent);
-        press('\t', &mut screen, 3, &status);
         assert_eq!(screen.focus, Panel::Scenes);
     }
 
@@ -3462,97 +3278,6 @@ mod tests {
     }
 
     #[test]
-    fn eight_goes_to_the_agent_and_c_asks_it_in_its_own_panel() {
-        let mut screen = Screen::default();
-        press('8', &mut screen, 0, &Status::default());
-        assert_eq!(screen.focus, Panel::Agent);
-        press('c', &mut screen, 0, &Status::default());
-        assert_eq!(screen.typing_for, Typing::Agent);
-        for key in "make a scene".chars() {
-            press(key, &mut screen, 0, &Status::default());
-        }
-        assert_eq!(
-            press('\n', &mut screen, 0, &Status::default()),
-            Act::Agent("make a scene".into())
-        );
-        assert_eq!(
-            press('x', &mut screen, 0, &Status::default()),
-            Act::AgentStop
-        );
-    }
-
-    #[test]
-    fn the_agent_panel_is_the_conversation_as_it_is_heard() {
-        use crate::agent::Heard;
-        let mut screen = Screen::default();
-        screen.asked("is it on air?");
-        assert!(screen.agent_busy);
-        for heard in [
-            Heard::Ran("remux status".into()),
-            Heard::Output {
-                line: "off air".into(),
-                refused: false,
-            },
-            Heard::Text("No, ".into()),
-            Heard::Text("it is off air.\nAnything else?".into()),
-            Heard::Output {
-                line: "denied".into(),
-                refused: true,
-            },
-            Heard::Done {
-                session: "s1".into(),
-                cost: 0.21,
-            },
-        ] {
-            screen.hear(heard);
-        }
-        assert_eq!(
-            screen.agent,
-            [
-                "> is it on air?",
-                "$ remux status",
-                "  off air",
-                "No, it is off air.",
-                "Anything else?",
-                "! denied",
-                "· answered in 0s · $0.21",
-            ]
-        );
-        assert_eq!(screen.agent_session.as_deref(), Some("s1"));
-        assert!(!screen.agent_busy);
-    }
-
-    #[test]
-    fn while_the_agent_works_its_last_row_says_so() {
-        let mut screen = Screen::default();
-        assert_eq!(agent_working(&screen, 3), None);
-        screen.asked("oi");
-        assert_eq!(agent_working(&screen, 3).as_deref(), Some("… starting 3s"));
-        screen.hear(crate::agent::Heard::Doing("thinking"));
-        assert_eq!(
-            agent_working(&screen, 12).as_deref(),
-            Some("… thinking 12s")
-        );
-    }
-
-    #[test]
-    fn the_agent_title_says_what_it_is_doing_and_for_how_long() {
-        let mut screen = Screen::default();
-        screen.asked("oi");
-        screen.hear(crate::agent::Heard::Doing("thinking"));
-        assert_eq!(screen.agent, ["> oi"], "a phase is the title's, not a line");
-        assert_eq!(
-            agent_title(&screen, 12),
-            "agent · thinking 12s · x stops it"
-        );
-        screen.hear(crate::agent::Heard::Done {
-            session: "s".into(),
-            cost: 0.1,
-        });
-        assert_eq!(agent_title(&screen, 30), "agent");
-    }
-
-    #[test]
     fn e_on_a_companion_that_says_its_words_lists_them_and_enter_sends_one() {
         let mut screen = on_companions(0);
         screen.companion_words = vec![("first".into(), vec!["dvd".into(), "size <points>".into()])];
@@ -3713,13 +3438,9 @@ mod tests {
             ..Screen::default()
         };
         press('\u{19}', &mut screen, 0, &Status::default());
-        assert_eq!(
-            screen.focus,
-            Panel::Agent,
-            "back from the first is the last"
-        );
+        assert_eq!(screen.focus, Panel::Log, "back from the first is the last");
         press('\u{19}', &mut screen, 0, &Status::default());
-        assert_eq!(screen.focus, Panel::Log);
+        assert_eq!(screen.focus, Panel::Companions);
         screen.focus = Panel::Scenes;
         press('\t', &mut screen, 0, &Status::default());
         assert_eq!(
@@ -3732,12 +3453,12 @@ mod tests {
     #[test]
     fn z_zooms_the_focused_panel_to_the_whole_screen_and_back() {
         let mut screen = Screen {
-            focus: Panel::Agent,
+            focus: Panel::Log,
             ..Screen::default()
         };
         assert_eq!(laid_out(&screen).len(), 3, "three columns");
         press('z', &mut screen, 0, &Status::default());
-        assert_eq!(laid_out(&screen), [(vec![(Panel::Agent, 1)], 1)]);
+        assert_eq!(laid_out(&screen), [(vec![(Panel::Log, 1)], 1)]);
         press('5', &mut screen, 0, &Status::default());
         assert_eq!(
             laid_out(&screen),
@@ -3775,7 +3496,7 @@ mod tests {
         }
         assert!(
             GLOBAL_KEYS.iter().any(|k| k.contains("[0]"))
-                && GLOBAL_KEYS.iter().any(|k| k.contains("[1-8]"))
+                && GLOBAL_KEYS.iter().any(|k| k.contains("[1-7]"))
         );
         assert!(Panel::ALL
             .iter()
