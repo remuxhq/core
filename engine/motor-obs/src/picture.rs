@@ -46,6 +46,10 @@ pub struct Drawing {
     pub filter: Option<(String, *mut sys::obs_source_t)>,
     pub mask: *mut sys::obs_source_t,
     pub masked: Option<((u32, u32), Region)>,
+    /// Whether this layer's filter and mask are its own to put on the
+    /// capture. A staged layer borrowing the air's capture is not: the
+    /// capture keeps the air's, and the preview shows them.
+    pub own: bool,
 }
 
 /// One element on the picture.
@@ -159,7 +163,7 @@ impl Drawing {
         // SAFETY: the item is this drawing's own.
         unsafe { sys::obs_sceneitem_set_visible(item, placed.visible) };
         let wanted = placed.circle.map(|region| (self.size, region));
-        if wanted != self.masked {
+        if self.own && wanted != self.masked {
             self.remask(wanted);
         }
     }
@@ -227,8 +231,10 @@ impl Drawing {
     }
 
     fn release(mut self) {
-        self.remask(None);
-        set_filter(self.source, &mut self.filter, None, None);
+        if self.own {
+            self.remask(None);
+            set_filter(self.source, &mut self.filter, None, None);
+        }
         // SAFETY: the item goes before its source.
         unsafe {
             sys::obs_sceneitem_remove(self.item);
@@ -337,6 +343,205 @@ pub unsafe extern "C" fn tick(param: *mut c_void, _seconds: f32) {
 }
 
 impl ObsPipeline {
+    /// A capture of this source: the other picture's, when it holds one (a
+    /// camera opens once), or a new one; and whether it was the other's.
+    fn capture(&self, source: &Source) -> Result<(*mut sys::obs_source_t, bool), String> {
+        let held = self
+            .staged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .layers
+            .iter()
+            .find(|d| d.layer.source.same_capture(source))
+            .map(|d| d.source);
+        match held {
+            // SAFETY: a new reference to a live source, released with the
+            // drawing that takes it.
+            Some(held) => Ok((unsafe { sys::obs_source_get_ref(held) }, true)),
+            None => self.open(source).map(|opened| (opened, false)),
+        }
+    }
+
+    /// The staged scene's picture in the air's place, or back: every layer
+    /// call in between acts on the staged scene. The rings are left alone
+    /// while it does, and pointed again after.
+    pub(crate) fn swap_staged(&mut self, on: bool) {
+        if on == self.editing_staged || (on && self.staged_scene.is_null()) {
+            return;
+        }
+        std::mem::swap(&mut self.picture, &mut self.staged);
+        std::mem::swap(&mut self.scene, &mut self.staged_scene);
+        std::mem::swap(&mut self.scene_filter, &mut self.staged_filter);
+        self.editing_staged = on;
+        if !on {
+            self.point_rings();
+        }
+    }
+
+    /// The staged scene drawn off the air: each layer on the air's capture
+    /// when the air has it, borrowed and left as the air dresses it, else on
+    /// one of its own. Every capture is in hand before the old staging goes,
+    /// so a refusal leaves the preview as it was. Its text and timers are its
+    /// own, a timer shown at its full time (it runs on the air alone), and its
+    /// own filter is on the staged scene.
+    pub(crate) fn stage_scene(
+        &mut self,
+        scene: Option<&remuxd_domain::picture::scenes::Scene>,
+    ) -> Result<(), String> {
+        let Some(scene) = scene else {
+            self.staging = false;
+            self.point_rings();
+            self.release_staged();
+            return Ok(());
+        };
+        for layer in &scene.layers {
+            if let Some(path) = &layer.shader {
+                effect::check(path).map_err(|why| format!("layer {}: {why}", layer.id))?;
+            }
+        }
+        let mut held: Vec<(*mut sys::obs_source_t, bool)> = Vec::new();
+        for layer in &scene.layers {
+            let aired = self
+                .drawn()
+                .layers
+                .iter()
+                .find(|d| d.layer.source.same_capture(&layer.source))
+                .map(|d| d.source);
+            let got = match aired {
+                // SAFETY: a new reference to the air's live capture.
+                Some(source) => Ok((unsafe { sys::obs_source_get_ref(source) }, false)),
+                None => self
+                    .capture(&layer.source)
+                    .map(|(source, _)| (source, true)),
+            };
+            match got {
+                Ok(it) => held.push(it),
+                Err(why) => {
+                    // SAFETY: references taken above and put nowhere.
+                    unsafe {
+                        held.into_iter()
+                            .for_each(|(s, _)| sys::obs_source_release(s))
+                    };
+                    return Err(format!("layer {}: {why}", layer.id));
+                }
+            }
+        }
+        self.release_staged();
+        let staged = self.staged_scene();
+        let mut drawings = Vec::new();
+        for (layer, (source, own)) in scene.layers.iter().zip(held) {
+            let mut item = std::ptr::null_mut();
+            // SAFETY: the staged scene takes its own reference to the source.
+            atomically(staged, || unsafe {
+                item = sys::obs_scene_add(staged, source);
+                sys::obs_sceneitem_set_visible(item, false);
+            });
+            let mut drawing = Drawing {
+                layer: layer.clone(),
+                source,
+                item,
+                size: (0, 0),
+                filter: None,
+                mask: std::ptr::null_mut(),
+                masked: None,
+                own,
+            };
+            if own {
+                if let Err(why) = drawing.refilter(layer.shader.as_deref()) {
+                    remuxd_domain::log::note(&format!("staged layer {}: {why}", layer.id));
+                }
+            }
+            drawing.place();
+            drawings.push(drawing);
+        }
+        let mut written = Vec::new();
+        for element in &scene.elements {
+            let (words, _) = timer_words(element, None);
+            let source = match effect::element(element.width, element.height, &words) {
+                Ok(source) => source,
+                Err(why) => {
+                    remuxd_domain::log::note(&format!("staged element {}: {why}", element.id));
+                    continue;
+                }
+            };
+            let mut item = std::ptr::null_mut();
+            let at = crate::vec2(element.x as f32, element.y as f32);
+            // SAFETY: the staged scene takes its own reference to the source.
+            atomically(staged, || unsafe {
+                item = sys::obs_scene_add(staged, source);
+                sys::obs_sceneitem_set_alignment(item, sys::OBS_ALIGN_LEFT | sys::OBS_ALIGN_TOP);
+                sys::obs_sceneitem_set_pos(item, &at);
+                sys::obs_sceneitem_set_visible(item, element.visible);
+            });
+            let mut it = Written {
+                element: element.clone(),
+                source,
+                item,
+                filter: None,
+                deadline: None,
+                words,
+            };
+            if let Some(path) = &element.shader {
+                match effect::filter(path) {
+                    Ok(made) => set_filter(it.source, &mut it.filter, Some(path), Some(made)),
+                    Err(why) => remuxd_domain::log::note(&format!(
+                        "staged element {}: its filter did not build: {why}",
+                        element.id
+                    )),
+                }
+            }
+            written.push(it);
+        }
+        {
+            let mut drawn = self
+                .staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drawn.layers = drawings;
+            drawn.elements = written;
+            drawn.order = scene.ordered_ids();
+            drawn.reorder();
+        }
+        // The scene's own filter, on the staged scene's source.
+        // SAFETY: the staged scene is ours until drop.
+        let whole = unsafe { sys::obs_scene_get_source(staged) };
+        let made = match scene.shader.as_deref().map(effect::filter).transpose() {
+            Ok(made) => made,
+            Err(why) => {
+                remuxd_domain::log::note(&format!("staged scene's filter: {why}"));
+                None
+            }
+        };
+        let path = made.and(scene.shader.as_deref());
+        set_filter(whole, &mut self.staged_filter, path, made);
+        self.staging = true;
+        self.point_rings();
+        Ok(())
+    }
+
+    /// Every staged layer off the staged scene; a capture the air shares
+    /// keeps its dress.
+    pub(crate) fn release_staged(&mut self) {
+        let (layers, elements) = {
+            let mut drawn = self
+                .staged
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drawn.order.clear();
+            (
+                std::mem::take(&mut drawn.layers),
+                std::mem::take(&mut drawn.elements),
+            )
+        };
+        layers.into_iter().for_each(Drawing::release);
+        elements.into_iter().for_each(Written::release);
+        if !self.staged_scene.is_null() {
+            // SAFETY: the staged scene's own source; the filter is ours on it.
+            let whole = unsafe { sys::obs_scene_get_source(self.staged_scene) };
+            set_filter(whole, &mut self.staged_filter, None, None);
+        }
+    }
+
     /// A capture of this source, opened: a display, a window, a camera or a
     /// picture file.
     fn open(&self, source: &Source) -> Result<*mut sys::obs_source_t, String> {
@@ -513,6 +718,9 @@ impl ObsPipeline {
     /// The rings follow the layers of now: the first camera, and the first
     /// display or window.
     fn point_rings(&mut self) {
+        if self.editing_staged {
+            return;
+        }
         let (camera, screen) = {
             let drawn = self.drawn();
             (
@@ -520,8 +728,15 @@ impl ObsPipeline {
                 drawn.first(&[Kind::Screen, Kind::Window]),
             )
         };
+        let staged = if self.staging && !self.staged_scene.is_null() {
+            // SAFETY: the staged scene is ours until drop.
+            unsafe { sys::obs_scene_get_source(self.staged_scene) }
+        } else {
+            std::ptr::null_mut()
+        };
         if let Some(ring) = self.preview.as_deref() {
             ring.alone(camera, screen);
+            ring.stage(staged);
         }
     }
 
@@ -763,7 +978,9 @@ impl Picture for ObsPipeline {
     }
 
     fn layer_add(&mut self, layer: &Layer) -> Result<(u32, u32), String> {
-        let source = self.open(&layer.source)?;
+        let (source, borrowed) = self.capture(&layer.source)?;
+        // A staged layer on the air's capture leaves the air's dress on it.
+        let own = !(self.editing_staged && borrowed);
         let size = Self::first_size(source);
         if size.0 == 0 || size.1 == 0 {
             // SAFETY: ours, never put anywhere.
@@ -787,9 +1004,12 @@ impl Picture for ObsPipeline {
             filter: None,
             mask: std::ptr::null_mut(),
             masked: None,
+            own,
         };
-        if let Err(why) = drawing.refilter(layer.shader.as_deref()) {
-            remuxd_domain::log::note(&format!("layer {}: {why}", layer.id));
+        if own {
+            if let Err(why) = drawing.refilter(layer.shader.as_deref()) {
+                remuxd_domain::log::note(&format!("layer {}: {why}", layer.id));
+            }
         }
         drawing.place();
         {
@@ -873,8 +1093,8 @@ impl Picture for ObsPipeline {
             if reuse.is_some() {
                 continue;
             }
-            match self.open(&layer.source) {
-                Ok(source) => opened.push(source),
+            match self.capture(&layer.source) {
+                Ok((source, _)) => opened.push(source),
                 Err(why) => {
                     // SAFETY: opened here and never put anywhere.
                     unsafe { opened.into_iter().for_each(|s| sys::obs_source_release(s)) };
@@ -899,6 +1119,7 @@ impl Picture for ObsPipeline {
                         filter: None,
                         mask: std::ptr::null_mut(),
                         masked: None,
+                        own: true,
                     }
                 }
             };
@@ -918,6 +1139,17 @@ impl Picture for ObsPipeline {
         }
         self.point_rings();
         self.shader(shader)
+    }
+
+    fn stage(
+        &mut self,
+        scene: Option<&remuxd_domain::picture::scenes::Scene>,
+    ) -> Result<(), String> {
+        self.stage_scene(scene)
+    }
+
+    fn edit_staged(&mut self, on: bool) {
+        self.swap_staged(on);
     }
 
     fn layers_changed(&mut self, layers: &[Layer]) {
@@ -1025,10 +1257,12 @@ impl Picture for ObsPipeline {
 
     fn previewing(&mut self, on: bool) {
         self.previewing = on;
-        self.point_rings();
+        // The ring is made here the first time: pointed after, or a ring
+        // born now draws nothing until the layers next change.
         if let Some(ring) = self.ring() {
             ring.watch(on);
             ring.render(on);
         }
+        self.point_rings();
     }
 }

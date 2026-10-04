@@ -47,11 +47,15 @@ pub struct Remembered {
     pub monitoring: bool,
     #[serde(default)]
     pub denoise: bool,
+    /// The deleted scenes kept to be restored.
+    #[serde(default)]
+    pub trash: Vec<crate::picture::scenes::Scene>,
 }
 
 impl Default for Remembered {
     fn default() -> Self {
         Self {
+            trash: Vec::new(),
             layers: Vec::new(),
             scenes: Vec::new(),
             active_scene: crate::protocol::default_scene_name(),
@@ -162,6 +166,7 @@ mod tests {
         let setup = Remembered {
             layers: Vec::new(),
             scenes: Vec::new(),
+            trash: Vec::new(),
             active_scene: crate::protocol::default_scene_name(),
             audio_layers: Vec::new(),
             mic: Some("HyperX DuoCast".into()),

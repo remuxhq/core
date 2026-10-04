@@ -9,7 +9,11 @@
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 
+mod agent;
+mod bench;
+mod companion;
 mod daemon;
+mod tui;
 mod words;
 
 use remuxd_domain::protocol::{decode_reply, encode, Command, Reply};
@@ -82,7 +86,27 @@ fn main() {
             View::Logout => log_out(),
             View::ChatKeep(url) => keep_a_chat_source(&path, url),
             View::Daemon(verb) => daemon::run_verb(verb, &path, &self::ask),
-            View::Bug { open } => report_a_bug(&path, *open),
+            View::Bug { open } => report_a_bug(&path, open.as_deref()),
+            View::Bench(verb) => match bench::run(verb, &mut |command| self::ask(&path, command)) {
+                Ok(said) => {
+                    println!("{said}");
+                    return;
+                }
+                Err(why) => fail(&why, json, 1),
+            },
+            View::Companion(verb) => match companion::run(verb) {
+                Ok(said) => {
+                    println!("{said}");
+                    return;
+                }
+                Err(why) => fail(&why, json, 1),
+            },
+            View::Tui => {
+                if let Err(why) = tui::run(|command| self::ask(&path, command)) {
+                    fail(&why.to_string(), json, 1);
+                }
+                return;
+            }
             _ => {}
         }
         println!("{}", cli::local(&ask.view, ask.format));
@@ -344,7 +368,7 @@ fn keep_a_chat_source(path: &std::path::Path, url: &str) -> ! {
 
 /// `remux bug`: the report, gathered from the engine when it answers and
 /// from the files when it does not; `--open` hands it to the browser.
-fn report_a_bug(path: &std::path::Path, open: bool) -> ! {
+fn report_a_bug(path: &std::path::Path, open: Option<&str>) -> ! {
     use remuxd_domain::{bug, health};
     let (engine, health_lines, log) = match ask(path, &Command::Status) {
         Ok(Reply::Status(status)) => {
@@ -390,8 +414,8 @@ fn report_a_bug(path: &std::path::Path, open: bool) -> ! {
     };
     let report = bug::report(&pieces);
     println!("{report}");
-    if open {
-        let url = bug::issue_url(&report, "remux: ");
+    if let Some(title) = open {
+        let url = bug::issue_url(&report, &format!("remux: {title}"));
         let (program, args) = remuxd_domain::os::OS.open.split_first().expect("an opener");
         match std::process::Command::new(program)
             .args(args)

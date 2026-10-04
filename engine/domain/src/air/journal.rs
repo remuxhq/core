@@ -27,6 +27,10 @@ use crate::sound::audio_layers::Duck;
 /// only thing in here.
 #[must_use]
 pub fn said(command: &Command, reply: &Reply) -> Option<String> {
+    // A verb on the preview says what the verb says, of the preview.
+    if let Command::Staged { command } = command {
+        return said(command, reply).map(|line| format!("preview: {line}"));
+    }
     if let Reply::Error { message } = reply {
         return match command {
             Command::Status
@@ -34,6 +38,8 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
             | Command::Present
             | Command::Levels
             | Command::Sources
+            | Command::Genres
+            | Command::Mics
             | Command::Shot { .. }
             | Command::LayerShot { .. }
             | Command::Chat { .. }
@@ -52,6 +58,12 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::SceneDuplicate { name } => format!("scene {name} duplicated from the active one"),
         Command::SceneSwitch { name } => format!("scene switched to {name}"),
         Command::SceneDelete { name } => format!("scene {name} deleted"),
+        Command::SceneStage { name } => format!("scene {name} staged"),
+        Command::SceneTake => "staged scene taken to the air".into(),
+        Command::SceneDraft { name, .. } => format!("scene {name} drafted in the preview"),
+        Command::SceneRestore { name } => format!("scene {name} restored from the trash"),
+        Command::SceneAdd { scene } => format!("scene {} added", scene.name),
+        Command::Staged { .. } => return None,
         Command::AudioLayerAdd { id, .. } => format!("audio layer {id} added"),
         Command::AudioLayerRemove { id } => format!("audio layer {id} removed"),
         Command::AudioLayerMute { id, on } => {
@@ -168,6 +180,8 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::Plan
         | Command::Levels
         | Command::Sources
+        | Command::Genres
+        | Command::Mics
         | Command::AudioLayerVolume { .. }
         | Command::Volume { .. }
         | Command::MusicVolume { .. }
@@ -191,7 +205,13 @@ fn verb(command: &Command) -> &'static str {
         Command::SceneCreate { .. }
         | Command::SceneDuplicate { .. }
         | Command::SceneSwitch { .. }
-        | Command::SceneDelete { .. } => "scene",
+        | Command::SceneDelete { .. }
+        | Command::SceneStage { .. }
+        | Command::SceneTake
+        | Command::SceneDraft { .. }
+        | Command::SceneRestore { .. }
+        | Command::SceneAdd { .. }
+        | Command::Staged { .. } => "scene",
         Command::AudioLayerAdd { .. }
         | Command::AudioLayerRemove { .. }
         | Command::AudioLayerVolume { .. }
@@ -258,6 +278,8 @@ fn verb(command: &Command) -> &'static str {
         | Command::Watching { .. }
         | Command::Levels
         | Command::Sources
+        | Command::Genres
+        | Command::Mics
         | Command::Shot { .. }
         | Command::Plan
         | Command::LayerShot { .. }

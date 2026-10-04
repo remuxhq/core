@@ -299,6 +299,27 @@ impl Picture for Wrote {
         let _ = path;
         Ok(())
     }
+    fn stage(&mut self, scene: Option<&crate::picture::scenes::Scene>) -> Result<(), String> {
+        if let (Some(_), Some(why)) = (
+            scene,
+            self.refuse
+                .as_deref()
+                .and_then(|r| r.strip_prefix("stage:")),
+        ) {
+            return Err(why.to_string());
+        }
+        self.scene_events.lock().unwrap().push(match scene {
+            Some(scene) => format!("stage {}", scene.name),
+            None => "unstage".into(),
+        });
+        Ok(())
+    }
+    fn edit_staged(&mut self, on: bool) {
+        self.scene_events
+            .lock()
+            .unwrap()
+            .push(if on { "edit staged" } else { "edit air" }.into());
+    }
     fn previewing(&mut self, on: bool) {
         *self.previewed.lock().expect("previewed") = Some(on);
     }

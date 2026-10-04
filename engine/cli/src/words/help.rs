@@ -16,6 +16,10 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["scene-create"], args: "<name>", summary: "Make a new, empty scene and switch to it.", note: "Then add its layers with `remux scene layer`. Quote names with spaces. On the air the picture is empty until layers are added; to start from what is showing, use `remux scene duplicate <name>`." },
     Topic { names: &["scene-duplicate"], args: "<name>", summary: "Copy the active scene under a new name and switch to the copy.", note: "Its layers, elements, order and filter are copied, and the captures stay open: nothing on the air changes. Quote names with spaces." },
     Topic { names: &["scene-switch"], args: "<name>", summary: "Switch to a saved scene without stopping the live.", note: "New sources are prepared first; shared physical captures stay open even when their layer IDs differ. Use `remux scene list` to see names." },
+    Topic { names: &["scene-stage"], args: "<name>", summary: "Draw a scene off the air, in the preview, before it goes out.", note: "Nothing on the air changes. A preview window reads it from the staged ring; `remux scene take` puts it on the air. Staging the scene on the air stages nothing." },
+    Topic { names: &["scene-restore"], args: "<name>", summary: "Bring a deleted scene back from the trash.", note: "The last ten deleted scenes are kept, whole, across a restart: `remux status --json` lists them under trash. One whose name was taken since comes back as \"<name> (restored)\". Nothing on the air moves." },
+    Topic { names: &["scene-draft"], args: "<name> [--from <scene>]", summary: "Make a new scene in the preview, off the air.", note: "Empty, or a copy of another scene. Edit it there with `--staged` on any scene layer verb (remux scene layer add camera keys DeskCam --staged), then `remux scene take` puts it on the air." },
+    Topic { names: &["scene-take"], args: "", summary: "Put the staged scene on the air.", note: "The switch is the ordinary one, and the scene that was out is staged in its place: a second take goes back." },
     Topic { names: &["scene-delete"], args: "<name>", summary: "Delete an inactive scene.", note: "The active scene cannot be deleted; switch first." },
     Topic { names: &["levels"], args: "", summary: "Read microphone, mix and music levels in dB.", note: "" },
     Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; the panel uses its bytes. For one layer use `remux scene layer shot <id>`." },
@@ -39,7 +43,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["music"], args: "[on|off|genre]", summary: "Play, stop or choose a music genre.", note: "Find genres with `remux sources`; omitted means on." },
     Topic { names: &["next"], args: "", summary: "Skip to the next music track.", note: "" },
     Topic { names: &["vol"], args: "<percent>", summary: "Set microphone volume as a percentage.", note: "Example: remux audio vol 80 (80% and values above 100 also work)." },
-    Topic { names: &["mvol"], args: "<percent>", summary: "Set music volume as a percentage.", note: "Example: remux music vol 30" },
+    Topic { names: &["mvol"], args: "<percent>", summary: "Set music volume as a percentage.", note: "Linear in dB: 1% is just heard (-50 dB), 100% is a bed alone (-18 dB), every 10% is 3.2 dB; under a voice a bed sits around 30 to 40. Example: remux music vol 30" },
     Topic { names: &["duck"], args: "<dB>", summary: "Set how far music dips under speech.", note: "Example: remux audio duck 18 (the engine applies -18 dB)." },
     Topic { names: &["scene-timer"], args: "start|stop <id>", summary: "Start or stop an active scene timer.", note: "Example: remux scene timer start clock. Switching scenes or restarting clears running timers; reaching 00:00 never changes scenes." },
     Topic { names: &["cut"], args: "", summary: "Panic button: turn everything off, including sound.", note: "" },
@@ -66,13 +70,16 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["health"], args: "", summary: "Say what stands in the way of a live, one line each.", note: "Exit 1 when anything does." },
     Topic { names: &["wait"], args: "on-air|off-air|picture|recording|not-recording|live <id|name> [--for <seconds>]", summary: "Wait until the engine is so.", note: "Thirty seconds unless --for says otherwise; exit 1 when it runs out." },
     Topic { names: &["history"], args: "", summary: "Every live on record, newest first.", note: "" },
+    Topic { names: &["tui"], args: "", summary: "The engine on one screen: the air, scenes and layers, destinations, sound and chat.", note: "Eight numbered panels, the last your own claude acting through remux (never live, stop, cut or quit): 1-8 shows or hides each, z zooms the focused one to the whole screen and back (kept in ~/.config/remux/tui.toml), tab moves between those shown, the bar below says the focused one's keys and ? all of them; a lever asks before it acts; q quits." },
     Topic { names: &["events"], args: "[-f|--follow|follow]", summary: "What changed: the live, the recording, the scene, the mic, the music, the app, the chat.", note: "One a line, numbered, with the time. Follow keeps the connection and prints each one as it happens, until interrupted; with --json, one event per line, and `{\"gap\":…}` for what was missed. A line saying what was missed means the engine moved on without you: read `remux status`." },
     Topic { names: &["log"], args: "[-f]", summary: "The engine's journal, newest last.", note: "" },
     Topic { names: &["login"], args: "[--url <web>]", summary: "Sign in to the web with a code typed there.", note: "The token is kept in ~/.config/remux/session.json; restart the engine to use it." },
     Topic { names: &["logout"], args: "", summary: "Forget the web session.", note: "" },
     Topic { names: &["config"], args: "", summary: "What is in effect and where each value came from.", note: "The environment, then ~/.config/remux/config.toml, then the defaults." },
+    Topic { names: &["bench"], args: "export|import <file.tar.gz> [--anyway]", summary: "A setup to hand to another machine: scenes, filters, pictures, sound and companions.", note: "Export packs the scenes (their pictures and .wgsl beside them), the audio layers, the gate, the faders and the companions list; never a key, a token, the destinations, the chat URL or the session. Import adds the scenes beside yours under free names, hides a layer whose device is not here, lists the companions without starting them, and applies no sound; one made on another system is refused unless --anyway." },
+    Topic { names: &["companion"], args: "[list] | start|stop|log <name> | send <name> <words>", summary: "Your own programs beside the engine: started, stopped and watched here.", note: "The list is a file of yours (REMUX_COMPANIONS, or `[companions] file` in config.toml): each [[companion]] a name, run (an argv, never a shell), cwd, an optional env_file kept 0600, and input = true for one that reads words: send writes a line to it and says back what it answered; words = [...] lists the words it takes, which list shows and e in the tui offers. Each is told its own name in REMUX_COMPANION, to stop itself with. The engine never runs them." },
     Topic { names: &["daemon"], args: "start|stop|restart|status|log|path", summary: "The engine as a service of your session.", note: "" },
-    Topic { names: &["bug"], args: "[--open]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form for a person to submit." },
+    Topic { names: &["bug"], args: "[--open <title>]", summary: "A report for an issue, keys redacted.", note: "--open fills GitHub's form, titled with the words after it, for a person to submit." },
     Topic { names: &["schema"], args: "", summary: "The wire's JSON Schema.", note: "" },
 ];
 
@@ -87,7 +94,7 @@ pub fn guide(words: &[String]) -> Option<Result<&'static str, String>> {
     }
 }
 
-pub(super) const GUIDE: &str = "remux CLI guide for agents
+pub(crate) const GUIDE: &str = "remux CLI guide for agents
 
 Every command answers prose for a person and, with --json anywhere, one JSON
 value for a program; `remux schema` prints the shapes. Exit codes: 0 done,
@@ -96,7 +103,8 @@ Read before changes: remux status --json; remux sources --json; remux grants --j
 Use remux help <group> <command> for syntax. Groups: scene, audio, music,
 destination, chat. No video group or capture shortcuts. Top-level: status,
 sources, grants, levels, plan, live, stop, record, cut, quit, health, wait,
-events, history, log, login, logout, config, daemon, bug, schema.
+events, history, log, login, logout, config, daemon, bug, schema, tui,
+companion.
 
 Status lists active_scene, scenes, layers, layer_flowing and scene_flowing.
 Fresh setups contain only the default scene: no Starting Soon, BRB or Nothing
@@ -190,8 +198,33 @@ Named scenes: remux scene list; remux scene create 'Camera only' starts an
 empty scene and switches to it (on the air, nothing shows until its layers are
 added); remux scene duplicate 'Camera only' copies the active scene and switches
 to the copy, with nothing on the air changing. remux scene switch 'Camera only';
-remux scene delete 'Camera only'.
+remux scene delete 'Camera only' puts it in the trash (the last ten, kept across a
+restart, under trash in status); remux scene restore 'Camera only' brings it back.
 Build the scenes before going live: off the air a switch shows nobody anything.
+
+The preview: a scene can be drawn off the air before it goes out, as a studio
+does. remux scene stage 'Camera only' draws it in the preview's own ring
+(staged in status), and nothing on the air moves; remux scene take puts it on
+the air and stages the scene that was out, so a second take goes back.
+remux scene draft Keys makes a new scene in the preview, empty, or a copy with
+--from 'Camera only'. Any scene layer verb with --staged acts on the scene in
+the preview instead of the air: remux scene layer add camera keys c920 --staged;
+remux scene layer hide desktop --staged; remux scene filter fire.wgsl --staged.
+On the air, make the scene in the preview and take it; never create or duplicate there,
+which switches the air to the new scene. The preview is drawn while a window
+reads it (the watching lease), in the ring after the screen's.
+
+remux tui is the engine on one screen for a person: the air, scenes and their
+layers (on the air or in the preview), destinations, sound, chat and the
+companions; the footer says each panel's keys. remux companion list|start|stop|log
+<name> runs the operator's own programs beside the engine (a chat bridge, a
+window, a bot) from a file of theirs (REMUX_COMPANIONS, or [companions] file in
+config.toml), each an argv, never a shell. remux bench export <file.tar.gz> packs
+the scenes, their pictures and filters, the sound and the companions list for
+another machine, no key or token; remux bench import adds them beside the
+scenes there. The music's genres without listing any
+device: {\"cmd\":\"genres\"} (sources lists cameras by opening one, and the camera
+on the air stutters: never poll sources).
 remux live sends the active scene, so switch to the opening one first; remux plan
 names it. A switch closes the captures the next scene does not use and opens its
 own, so a camera coming back takes a moment for its first frame.
@@ -330,7 +363,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 62, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 69, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
@@ -418,6 +451,19 @@ mod tests {
         assert!(copy.contains("elements, order and filter are copied"));
         assert!(!GUIDE.contains("Built-in"));
         assert!(GUIDE.contains("remux scene timer"));
+        for taught in [
+            "remux scene stage",
+            "remux scene take",
+            "remux scene draft",
+            "--staged",
+            "remux scene restore",
+            "remux companion",
+            "remux bench",
+            "remux tui",
+            "genres",
+        ] {
+            assert!(GUIDE.contains(taught), "the guide teaches {taught}");
+        }
         assert!(!GUIDE.contains("shader, card"));
     }
 
