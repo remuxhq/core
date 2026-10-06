@@ -475,6 +475,17 @@ impl ObsPipeline {
             if made.is_null() {
                 return Err(format!("libobs could not open {}", source.name));
             }
+
+            if let (Kind::Camera, Some((key, choose))) =
+                (source.kind, crate::platform::TABLE.camera.format)
+            {
+                if let Some(format) = choose(&crate::sources::list_of_source(made, key)) {
+                    let update = sys::obs_data_create();
+                    sys::obs_data_set_int(update, c(key).as_ptr(), format);
+                    sys::obs_source_update(made, update);
+                    sys::obs_data_release(update);
+                }
+            }
             Ok(made)
         }
     }

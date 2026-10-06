@@ -69,6 +69,19 @@ pub fn list(source: &str, property: &str) -> Vec<(String, String)> {
     }
 }
 
+/// The same list off a live source, by its own settings: what its device
+/// offers, where the list depends on the device.
+///
+/// # Safety
+/// `source` is a live source.
+pub unsafe fn list_of_source(
+    source: *mut sys::obs_source_t,
+    property: &str,
+) -> Vec<(String, String)> {
+    // SAFETY: the caller's source is live; the properties are ours to destroy.
+    unsafe { rows(sys::obs_source_properties(source), property) }
+}
+
 /// The same list off the source type, with no source made. A microphone
 /// source starts capturing the moment it exists: on AirPods that switched
 /// them to the headset profile ("[24000 Hz] initialized") and glitched what

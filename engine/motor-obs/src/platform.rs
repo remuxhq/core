@@ -74,6 +74,7 @@ pub struct Camera {
     pub device_key: &'static str,
     /// A preset the source takes for 720p, where it has presets.
     pub preset: Option<(&'static str, &'static str)>,
+    pub format: Option<(&'static str, fn(&[(String, String)]) -> Option<i64>)>,
     /// Whether asking the source for its devices is safe right now: OBS 30's
     /// v4l2 plugin corrupts the heap when it is probed with no /dev/video*.
     pub probe: fn() -> bool,
@@ -139,6 +140,7 @@ pub const TABLE: Table = Table {
         devices: "device",
         device_key: "device",
         preset: Some(("preset", "AVCaptureSessionPreset1280x720")),
+        format: None,
         probe: || true,
     },
     mic: Mic {
@@ -284,6 +286,7 @@ pub const TABLE: Table = Table {
         devices: "device_id",
         device_key: "device_id",
         preset: None,
+        format: Some(("pixelformat", v4l2_format)),
         probe: || {
             std::fs::read_dir("/dev")
                 .map(|dir| {
@@ -311,6 +314,56 @@ pub const TABLE: Table = Table {
     // DejaVu has no Medium; Book is its regular weight.
     card_style: "Book",
 };
+
+#[cfg(target_os = "linux")]
+fn v4l2_format(offered: &[(String, String)]) -> Option<i64> {
+    // `fourcc('Y','U','1','2')`, V4L2_PIX_FMT_YUV420.
+    const I420: i64 = 0x3231_5559;
+    let value = |(_, v): &(String, String)| v.parse::<i64>().ok();
+    offered
+        .iter()
+        .filter(|(name, _)| !name.ends_with("(Emulated)"))
+        .find_map(value)
+        .or_else(|| offered.iter().filter_map(value).find(|v| *v == I420))
+        .or_else(|| offered.iter().find_map(value))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod v4l2_tests {
+    use super::v4l2_format;
+
+    fn offered(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_native_format_comes_before_an_emulated_one() {
+        let rows = offered(&[
+            ("BGR3 (Emulated)", "861030210"),
+            ("YUYV 4:2:2", "1448695129"),
+            ("Motion-JPEG", "1196444237"),
+        ]);
+        assert_eq!(v4l2_format(&rows), Some(1448695129));
+    }
+
+    #[test]
+    fn with_only_emulated_formats_i420_is_the_one() {
+        // The Apple ISP (Asahi): NV12 alone, which libv4l2 hides.
+        let rows = offered(&[
+            ("BGR3 (Emulated)", "861030210"),
+            ("YU12 (Emulated)", "842093913"),
+            ("YV12 (Emulated)", "842094169"),
+        ]);
+        assert_eq!(v4l2_format(&rows), Some(842093913));
+    }
+
+    #[test]
+    fn nothing_offered_is_no_choice() {
+        assert_eq!(v4l2_format(&[]), None);
+    }
+}
 
 /// Wayland: the desktop's portal (xdg-desktop-portal and its backend) picks
 /// a screen or a window in its own dialog and hands the frames over
