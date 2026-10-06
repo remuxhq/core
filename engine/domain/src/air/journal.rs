@@ -117,17 +117,8 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         Command::Mute { on: muted } => format!("mic {}", if *muted { "muted" } else { "open" }),
         Command::Monitor { on: hearing } => format!("monitoring {}", on(hearing)),
         Command::Denoise { on: cleaned } => format!("denoise {}", on(cleaned)),
-        Command::Hear { apps } if apps.is_empty() => "hearing the whole screen".into(),
-        Command::Hear { apps } => format!("hearing {}", apps.join(", ")),
         Command::Clip { name } => format!("clip: {name}"),
         Command::StreamMusic { on: sent } => format!("music to the stream {}", on(sent)),
-        Command::ScreenSound { on: sent } => {
-            format!("the screen's sound to the stream {}", on(sent))
-        }
-        Command::LayerScreenSound { id, on: sent } => {
-            format!("display layer {id} sound {}", on(sent))
-        }
-        Command::AppAudio { app } => format!("app audio: {}", named(app)),
         Command::Music { on: playing } => format!("music {}", on(playing)),
         Command::Genre { name } => format!("music: {name}"),
         Command::NextTrack => "music: next".into(),
@@ -171,7 +162,6 @@ pub fn said(command: &Command, reply: &Reply) -> Option<String> {
         | Command::AudioLayerVolume { .. }
         | Command::Volume { .. }
         | Command::MusicVolume { .. }
-        | Command::AppAudioVolume { .. }
         | Command::Duck { .. }
         | Command::Gate { .. }
         | Command::Shot { .. }
@@ -229,12 +219,8 @@ fn verb(command: &Command) -> &'static str {
         Command::Mute { .. } => "mute",
         Command::Monitor { .. } => "monitor",
         Command::Denoise { .. } => "denoise",
-        Command::Hear { .. } => "hear",
         Command::Clip { .. } => "play",
         Command::StreamMusic { .. } => "stream-music",
-        Command::ScreenSound { .. } | Command::LayerScreenSound { .. } => "screen-sound",
-        Command::AppAudio { .. } => "app-audio",
-        Command::AppAudioVolume { .. } => "app-audio-volume",
         Command::Music { .. } | Command::Genre { .. } | Command::NextTrack => "music",
         Command::Volume { .. } | Command::MusicVolume { .. } | Command::Duck { .. } => "volume",
         Command::Gate { .. } => "gate",

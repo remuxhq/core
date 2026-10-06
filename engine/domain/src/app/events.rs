@@ -114,6 +114,29 @@ pub enum Event {
     LayerFlowing {
         id: String,
     },
+    /// A sound put in the active scene: `source` as a person reads it,
+    /// `app Discord`, `mic USB`, `system`.
+    AudioLayerAdded {
+        id: String,
+        source: String,
+    },
+    AudioLayerRemoved {
+        id: String,
+    },
+    AudioLayerMuted {
+        id: String,
+        on: bool,
+    },
+    /// Its fader, 0 to 2.
+    AudioLayerVolume {
+        id: String,
+        volume: f64,
+    },
+    /// Whether it steps back under the voice now.
+    AudioLayerDucked {
+        id: String,
+        on: bool,
+    },
     /// A capture of sound saying what is wrong with it, a format it does not
     /// read, or `None` once it is over it.
     SoundComplaint {
@@ -143,22 +166,8 @@ pub enum Event {
     MusicToStream {
         on: bool,
     },
-    /// The screen's sound in the mix, and the display layer it comes from.
-    ScreenSound {
-        on: bool,
-        layer: Option<String>,
-    },
     Denoise {
         on: bool,
-    },
-    /// The applications heard alone in the screen's sound; empty is all.
-    Hearing {
-        apps: Vec<String>,
-    },
-    /// One application's sound on its own fader, `None` when off.
-    AppAudio {
-        app: Option<String>,
-        volume: f64,
     },
     /// The self-view flipped.
     Mirrored {
@@ -221,10 +230,9 @@ impl Event {
             | Self::Gate { .. }
             | Self::Monitoring { .. }
             | Self::MusicToStream { .. }
-            | Self::ScreenSound { .. }
             | Self::Denoise { .. }
-            | Self::Hearing { .. }
-            | Self::AppAudio { .. }
+            | Self::AudioLayerVolume { .. }
+            | Self::AudioLayerDucked { .. }
             | Self::Mirrored { .. }
             | Self::Viewers { .. } => Ring::Detail,
             _ => Ring::State,
@@ -237,8 +245,6 @@ impl Event {
 #[serde(rename_all = "kebab-case")]
 pub enum Heard {
     Mic,
-    Screen,
-    App,
 }
 
 /// The three rings, so that what is said often never pushes out what is
@@ -390,13 +396,13 @@ pub struct Snapshot {
     pub scenes: std::collections::BTreeSet<String>,
     /// The active scene's layers, captures and generated alike.
     pub layers: std::collections::BTreeMap<String, LayerSeen>,
+    /// The active scene's sounds.
+    pub audio_layers: std::collections::BTreeMap<String, AudioLayerSeen>,
     /// The active scene's filter.
     pub filter: Option<String>,
     /// The timers of the active scene at 00:00.
     pub timers_done: std::collections::BTreeSet<String>,
     pub mic_complaint: Option<String>,
-    pub screen_complaint: Option<String>,
-    pub app_complaint: Option<String>,
     /// The voice's holes and crackles, counted since the microphone opened.
     pub starved: u64,
     pub dropped: u64,
@@ -404,14 +410,33 @@ pub struct Snapshot {
     pub gate: crate::sound::mixer::gate::GateParams,
     pub monitoring: bool,
     pub music_to_stream: bool,
-    pub screen_sound: bool,
-    pub screen_sound_layer: Option<String>,
     pub denoise: bool,
-    pub hearing_apps: Vec<String>,
-    pub app_audio: Option<String>,
-    pub app_audio_volume: f64,
     pub mirrored: bool,
     pub viewers: Option<u32>,
+}
+
+/// A sound, as far as the events follow it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AudioLayerSeen {
+    pub source: String,
+    pub muted: bool,
+    pub volume: f64,
+    pub ducks: bool,
+}
+
+impl AudioLayerSeen {
+    #[must_use]
+    pub fn of(layer: &crate::sound::audio_layers::Layer) -> (String, Self) {
+        (
+            layer.id.clone(),
+            Self {
+                source: layer.source.said(),
+                muted: layer.muted,
+                volume: layer.volume,
+                ducks: layer.ducks(),
+            },
+        )
+    }
 }
 
 /// A layer, as far as the events follow it.
@@ -496,22 +521,16 @@ impl From<&Status> for Snapshot {
                 )
                 .collect(),
             filter: status.shader.clone(),
+            audio_layers: status.audio_layers.iter().map(AudioLayerSeen::of).collect(),
             timers_done: std::collections::BTreeSet::new(),
             mic_complaint: status.hearing.complaint.clone(),
-            screen_complaint: status.hearing.screen_complaint.clone(),
-            app_complaint: status.hearing.app_complaint.clone(),
             starved: status.hearing.starved,
             dropped: status.hearing.dropped,
             faders: status.faders,
             gate: status.gate,
             monitoring: status.monitoring,
             music_to_stream: status.music_to_stream,
-            screen_sound: status.screen_sound,
-            screen_sound_layer: status.screen_sound_layer.clone(),
             denoise: status.denoise,
-            hearing_apps: status.hearing_apps.clone(),
-            app_audio: status.app_audio.clone(),
-            app_audio_volume: status.app_audio_volume,
             mirrored: status.mirrored,
             viewers: status.viewers,
         }
@@ -558,10 +577,11 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
     for name in before.scenes.difference(&after.scenes) {
         events.push(Event::SceneDeleted { name: name.clone() });
     }
-    // Within one scene only: a switch moves every layer and every filter,
+    // Within one scene only: a switch moves every layer, filter and sound,
     // and the switch is the one thing that happened.
     if !switched {
         picture_between(before, after, &mut events);
+        audio_layers_between(before, after, &mut events);
     }
     for id in after.timers_done.difference(&before.timers_done) {
         events.push(Event::TimerFinished { id: id.clone() });
@@ -588,15 +608,7 @@ pub fn between(before: &Snapshot, after: &Snapshot) -> Vec<Event> {
 
 /// The captures' complaints, the voice's glitches, the switches and faders.
 fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
-    for (source, was, now) in [
-        (Heard::Mic, &before.mic_complaint, &after.mic_complaint),
-        (
-            Heard::Screen,
-            &before.screen_complaint,
-            &after.screen_complaint,
-        ),
-        (Heard::App, &before.app_complaint, &after.app_complaint),
-    ] {
+    for (source, was, now) in [(Heard::Mic, &before.mic_complaint, &after.mic_complaint)] {
         if was != now {
             events.push(Event::SoundComplaint {
                 source,
@@ -631,30 +643,55 @@ fn sound_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
             on: after.music_to_stream,
         });
     }
-    if (before.screen_sound, &before.screen_sound_layer)
-        != (after.screen_sound, &after.screen_sound_layer)
-    {
-        events.push(Event::ScreenSound {
-            on: after.screen_sound,
-            layer: after.screen_sound_layer.clone(),
-        });
-    }
     if before.denoise != after.denoise {
         events.push(Event::Denoise { on: after.denoise });
     }
-    if before.hearing_apps != after.hearing_apps {
-        events.push(Event::Hearing {
-            apps: after.hearing_apps.clone(),
-        });
-    }
-    if (&before.app_audio, before.app_audio_volume) != (&after.app_audio, after.app_audio_volume) {
-        events.push(Event::AppAudio {
-            app: after.app_audio.clone(),
-            volume: after.app_audio_volume,
-        });
-    }
     if before.mirrored != after.mirrored {
         events.push(Event::Mirrored { on: after.mirrored });
+    }
+}
+
+/// The active scene's sounds, from `before` to `after`.
+fn audio_layers_between(before: &Snapshot, after: &Snapshot, events: &mut Vec<Event>) {
+    for id in before.audio_layers.keys() {
+        if !after.audio_layers.contains_key(id) {
+            events.push(Event::AudioLayerRemoved { id: id.clone() });
+        }
+    }
+    for (id, now) in &after.audio_layers {
+        let Some(was) = before.audio_layers.get(id) else {
+            events.push(Event::AudioLayerAdded {
+                id: id.clone(),
+                source: now.source.clone(),
+            });
+            continue;
+        };
+        if was.source != now.source {
+            events.push(Event::AudioLayerRemoved { id: id.clone() });
+            events.push(Event::AudioLayerAdded {
+                id: id.clone(),
+                source: now.source.clone(),
+            });
+            continue;
+        }
+        if was.muted != now.muted {
+            events.push(Event::AudioLayerMuted {
+                id: id.clone(),
+                on: now.muted,
+            });
+        }
+        if was.volume != now.volume {
+            events.push(Event::AudioLayerVolume {
+                id: id.clone(),
+                volume: now.volume,
+            });
+        }
+        if was.ducks != now.ducks {
+            events.push(Event::AudioLayerDucked {
+                id: id.clone(),
+                on: now.ducks,
+            });
+        }
     }
 }
 
@@ -771,6 +808,48 @@ mod tests {
 
     fn changed(before: &Status, after: &Status) -> Vec<Event> {
         between(&before.into(), &after.into())
+    }
+
+    // A sound added, muted, turned down, told not to duck and taken away,
+    // each said once.
+    #[test]
+    fn an_audio_layer_and_its_changes_are_events() {
+        use crate::sound::audio_layers::{Duck, Layer, Source};
+        let call = Layer::new("call".into(), Source::app("Discord".into())).unwrap();
+        let mut with = status();
+        with.audio_layers = vec![call.clone()];
+        assert_eq!(
+            changed(&status(), &with),
+            vec![Event::AudioLayerAdded {
+                id: "call".into(),
+                source: "app Discord".into()
+            }]
+        );
+        let mut changed_one = with.clone();
+        changed_one.audio_layers[0].muted = true;
+        changed_one.audio_layers[0].volume = 0.5;
+        changed_one.audio_layers[0].duck = Duck::Off;
+        assert_eq!(
+            changed(&with, &changed_one),
+            vec![
+                Event::AudioLayerMuted {
+                    id: "call".into(),
+                    on: true
+                },
+                Event::AudioLayerVolume {
+                    id: "call".into(),
+                    volume: 0.5
+                },
+                Event::AudioLayerDucked {
+                    id: "call".into(),
+                    on: false
+                },
+            ]
+        );
+        assert_eq!(
+            changed(&with, &status()),
+            vec![Event::AudioLayerRemoved { id: "call".into() }]
+        );
     }
 
     #[test]
@@ -1431,11 +1510,7 @@ mod tests {
         after.gate.full = 0.2;
         after.monitoring = true;
         after.music_to_stream = !before.music_to_stream;
-        after.screen_sound = true;
-        after.screen_sound_layer = Some("desk".into());
         after.denoise = true;
-        after.hearing_apps = vec!["Spotify".into()];
-        after.app_audio = Some("Safari".into());
         after.mirrored = true;
         after.viewers = Some(12);
         let said = changed(&before, &after);
@@ -1452,18 +1527,7 @@ mod tests {
                 Event::MusicToStream {
                     on: after.music_to_stream
                 },
-                Event::ScreenSound {
-                    on: true,
-                    layer: Some("desk".into())
-                },
                 Event::Denoise { on: true },
-                Event::Hearing {
-                    apps: vec!["Spotify".into()]
-                },
-                Event::AppAudio {
-                    app: Some("Safari".into()),
-                    volume: before.app_audio_volume
-                },
                 Event::Mirrored { on: true },
                 Event::Viewers { total: Some(12) },
             ]

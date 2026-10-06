@@ -294,19 +294,6 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         "mic" => Ok(Command::Mic {
             device: off_or(&joined),
         }),
-        // `remux hear Spotify, Brave`: those apps' sound alone; `hear off`,
-        // the whole screen's again.
-        "hear" => Ok(Command::Hear {
-            apps: match joined.as_str() {
-                "" => return Err("hear takes app names, or off".into()),
-                "off" | "all" | "screen" => Vec::new(),
-                names => names
-                    .split(',')
-                    .map(|n| n.trim().to_string())
-                    .filter(|n| !n.is_empty())
-                    .collect(),
-            },
-        }),
         "denoise" => Ok(Command::Denoise {
             on: on_or(&joined)?,
         }),
@@ -324,15 +311,6 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
         }),
         "stream-music" => Ok(Command::StreamMusic {
             on: on_or(&joined)?,
-        }),
-        "screen-sound" => Ok(Command::ScreenSound {
-            on: on_or(&joined)?,
-        }),
-        "app-audio" => Ok(Command::AppAudio {
-            app: off_or(&joined),
-        }),
-        "app-audio-volume" => Ok(Command::AppAudioVolume {
-            level: percentage(&joined, "audio app-volume")?,
         }),
         "music" => match joined.as_str() {
             "" | "on" | "off" => Ok(Command::Music {
@@ -606,17 +584,14 @@ fn parse_scene_element(words: &[String]) -> Result<Command, String> {
 
 fn parse_audio_layer(words: &[String]) -> Result<Command, String> {
     use remuxd_domain::sound::audio_layers::Source;
-    let usage = "audio layer: add mic|app|screen <id> <device|name|display-id>, volume <id> <percent>, mute <id> on|off, duck <id> on|off|auto, remove <id>";
+    let usage = "audio layer: add mic <id> <device>, add app <id> <name>, add system <id>, volume <id> <percent>, mute <id> on|off, duck <id> on|off|auto, remove <id>";
     match words {
-        [add, kind, id, source @ ..] if add == "add" && !source.is_empty() => {
+        [add, kind, id, source @ ..] if add == "add" => {
             let said = source.join(" ");
             let source = match kind.as_str() {
-                "mic" => Source::mic(said),
-                "app" => Source::app(said),
-                "screen" if source.len() == 1 => Source::screen(
-                    said.parse()
-                        .map_err(|_| "screen needs a display id from `remux sources`")?,
-                ),
+                "mic" if !source.is_empty() => Source::mic(said),
+                "app" if !source.is_empty() => Source::app(said),
+                "system" if source.is_empty() => Source::system(),
                 _ => return Err(usage.into()),
             };
             remuxd_domain::sound::audio_layers::Layer::new(id.clone(), source.clone())?;
@@ -671,9 +646,6 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
     };
     match words {
         [mirror, name, on] if mirror == "mirror" => Ok(Command::LayerMirror { id: id(name)?, on: on_or(on)? }),
-        [sound, name, setting @ ..] if sound == "screen-sound" && setting.len() <= 1 => Ok(Command::LayerScreenSound {
-            id: id(name)?, on: on_or(&setting.join(" "))?,
-        }),
         [set, kind, name, display] if set == "set" && kind == "screen" => Ok(Command::LayerReplaceScreen {
             id: id(name)?,
             display: display.parse().map_err(|_| format!("{display} is not a display id; `remux sources` lists them"))?,
@@ -750,7 +722,7 @@ fn parse_layer(words: &[String]) -> Result<Command, String> {
             transform.validate()?;
             Ok(Command::LayerTransform { id: id(name)?, transform })
         }
-        _ => Err("layer: add|set screen|camera|window|image <id> <display-id|name|file>, filter <id> <file.wgsl|off>, screen-sound <id> [on|off], hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
+        _ => Err("layer: add|set screen|camera|window|image <id> <display-id|name|file>, filter <id> <file.wgsl|off>, hide|show <id>, shot <id>, crop <id> <x> <y> <width> <height>|off, shape <id> circle|rectangle, position <id> <x> <y>|default, remove <id>, move <id> <index>, or transform <id> <x> <y> <width> <height> <degrees>".into()),
     }
 }
 
@@ -797,8 +769,12 @@ pub fn render(reply: &Reply) -> String {
         // The panel's meters on one line: bar and held peak for the mic, the
         // gate's lamp with the gain it applies, what its two detectors hear,
         // then the mix and the bed with how far the duck has it.
-        Reply::Levels { hearing, mixing } => format!(
-            "mic {:.1} dB (peak {:.1}) gate {}{}, voice {:.0} highs {:.0}, mix {:.1} dB, music {:.1} dB{}",
+        Reply::Levels {
+            hearing,
+            mixing,
+            audio_layers,
+        } => format!(
+            "mic {:.1} dB (peak {:.1}) gate {}{}, voice {:.0} highs {:.0}, mix {:.1} dB, music {:.1} dB{}{}",
             hearing.level_db,
             hearing.peak_db,
             if hearing.gate_open { "open" } else { "closed" },
@@ -815,7 +791,15 @@ pub fn render(reply: &Reply) -> String {
                 format!(" (ducking {:.0})", mixing.ducked_db)
             } else {
                 String::new()
-            }
+            },
+            audio_layers
+                .iter()
+                .map(|layer| if layer.samples == 0 {
+                    format!(", sound {} hears nothing", plain(&layer.id))
+                } else {
+                    format!(", sound {} {:.1} dB", plain(&layer.id), layer.level_db)
+                })
+                .collect::<String>()
         ),
         // Every one of them, always, including the ones that are fine: a
         // person reading this is looking for the one that is not, and a list
@@ -927,11 +911,28 @@ fn render_events(
             Event::TimerFinished { id } => format!("timer {} at zero", plain(id)),
             Event::LayerStalled { id } => format!("camera {} stopped delivering", plain(id)),
             Event::LayerFlowing { id } => format!("camera {} delivering again", plain(id)),
+            Event::AudioLayerAdded { id, source } => {
+                format!("sound {} added ({})", plain(id), plain(source))
+            }
+            Event::AudioLayerRemoved { id } => format!("sound {} removed", plain(id)),
+            Event::AudioLayerMuted { id, on: muted } => {
+                format!(
+                    "sound {} {}",
+                    plain(id),
+                    if *muted { "muted" } else { "open" }
+                )
+            }
+            Event::AudioLayerVolume { id, volume } => {
+                format!("sound {} at {:.0}%", plain(id), volume * 100.0)
+            }
+            Event::AudioLayerDucked { id, on: ducks } => format!(
+                "sound {} {}",
+                plain(id),
+                if *ducks { "ducks" } else { "does not duck" }
+            ),
             Event::SoundComplaint { source, complaint } => {
                 let what = match source {
                     Heard::Mic => "mic",
-                    Heard::Screen => "screen sound",
-                    Heard::App => "app sound",
                 };
                 match complaint {
                     Some(why) => format!("{what}: {}", plain(why)),
@@ -955,27 +956,7 @@ fn render_events(
             Event::MusicToStream { on: out } => {
                 on(*out, "music in the stream", "music off the stream")
             }
-            Event::ScreenSound { on: true, layer } => format!(
-                "screen sound on{}",
-                layer
-                    .as_deref()
-                    .map_or_else(String::new, |id| format!(" ({})", plain(id)))
-            ),
-            Event::ScreenSound { on: false, .. } => "screen sound off".into(),
             Event::Denoise { on: up } => on(*up, "denoise on", "denoise off"),
-            Event::Hearing { apps } if apps.is_empty() => "hearing the whole screen".into(),
-            Event::Hearing { apps } => format!(
-                "hearing only {}",
-                apps.iter()
-                    .map(|app| plain(app))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            Event::AppAudio {
-                app: Some(app),
-                volume,
-            } => format!("app sound {} at {:.0}%", plain(app), volume * 100.0),
-            Event::AppAudio { app: None, .. } => "app sound off".into(),
             Event::Mirrored { on: flipped } => {
                 on(*flipped, "self-view mirrored", "self-view not mirrored")
             }
@@ -1032,8 +1013,16 @@ fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
         }
     ));
     lines.push(format!(
-        "screen sound {}",
-        if plan.screen_sound { "sent" } else { "off" }
+        "sounds    {}",
+        if plan.sounds.is_empty() {
+            "none".into()
+        } else {
+            plan.sounds
+                .iter()
+                .map(|sound| plain(sound))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
     ));
     if plan.recording {
         lines.push("recording".into());
@@ -1149,20 +1138,10 @@ fn render_status(status: &Status) -> String {
         ));
     }
     for layer in &status.audio_layers {
-        let source = match layer.source.kind {
-            remuxd_domain::sound::audio_layers::Kind::Mic => {
-                layer.source.device.as_deref().unwrap_or("?")
-            }
-            remuxd_domain::sound::audio_layers::Kind::App => {
-                layer.source.name.as_deref().unwrap_or("?")
-            }
-            remuxd_domain::sound::audio_layers::Kind::Screen => "display",
-        };
         said.push(format!(
-            "audio layer {}: {:?} {} ({}%){}{}",
+            "audio layer {}: {} ({}%){}{}",
             layer.id,
-            layer.source.kind,
-            plain(source),
+            plain(&layer.source.said()),
             (layer.volume * 100.0).round(),
             if layer.muted { " muted" } else { "" },
             match layer.duck {
@@ -1170,28 +1149,6 @@ fn render_status(status: &Status) -> String {
                 remuxd_domain::sound::audio_layers::Duck::On => " ducked",
                 remuxd_domain::sound::audio_layers::Duck::Off => " not ducked",
             }
-        ));
-    }
-    if status.screen_sound {
-        let audible = status.screen_sound_layer.as_deref().is_some_and(|id| {
-            status
-                .layers
-                .iter()
-                .any(|layer| layer.id == id && layer.visible)
-        });
-        said.push(
-            if audible {
-                "screen sound out"
-            } else {
-                "screen sound paused (hidden)"
-            }
-            .into(),
-        );
-    }
-    if let Some(app) = &status.app_audio {
-        said.push(format!(
-            "app audio {app} ({}%)",
-            (status.app_audio_volume * 100.0).round()
         ));
     }
     match (&status.mic, status.muted) {
@@ -1680,12 +1637,13 @@ mod tests {
             })
         );
         assert_eq!(
-            typed("audio layer add screen desktop 3"),
+            typed("audio layer add system desktop"),
             Ok(Command::AudioLayerAdd {
                 id: "desktop".into(),
-                source: Source::screen(3),
+                source: Source::system(),
             })
         );
+        assert!(typed("audio layer add system desktop 3").is_err());
         assert_eq!(
             typed("audio layer volume chat 80"),
             Ok(Command::AudioLayerVolume {
@@ -1767,10 +1725,6 @@ mod tests {
             ("audio gate full 0.2", "gate full 0.2"),
             ("audio duck -18", "duck -18"),
             ("audio monitor", "monitor"),
-            ("audio screen-sound on", "screen-sound on"),
-            ("audio app Safari", "app-audio Safari"),
-            ("audio app off", "app-audio off"),
-            ("audio app-volume 65", "app-audio-volume 65"),
             ("audio levels", "levels"),
             ("music play", "music on"),
             ("music off", "music off"),
@@ -1872,17 +1826,6 @@ mod tests {
                 follow: false
             })
         );
-    }
-
-    #[test]
-    fn screen_sound_from_a_hidden_layer_reads_as_paused() {
-        let status = Status {
-            screen_sound: true,
-            screen_sound_layer: Some("desk".into()),
-            ..Status::default()
-        };
-        let said = render(&Reply::Status(Box::new(status)));
-        assert!(said.contains("screen sound paused (hidden)"), "{said}");
     }
 
     #[test]
@@ -2133,14 +2076,6 @@ mod tests {
             said("stream-music off"),
             Ok(Command::StreamMusic { on: false })
         );
-        assert_eq!(said("screen-sound"), Ok(Command::ScreenSound { on: true }));
-        assert_eq!(
-            said("app-audio Brave Browser"),
-            Ok(Command::AppAudio {
-                app: Some("Brave Browser".into())
-            })
-        );
-        assert_eq!(said("app-audio off"), Ok(Command::AppAudio { app: None }));
     }
 
     #[test]
@@ -2907,11 +2842,13 @@ fn render_verbose(status: &Status, now: i64) -> String {
             if layer.mirrored { ", mirrored" } else { "" }
         ));
     }
-    if status.screen_sound {
-        lines.push(match status.hearing_apps.as_slice() {
-            [] => "screen sound out".into(),
-            apps => format!("screen sound out: {}", apps.join(", ")),
-        });
+    for layer in &status.audio_layers {
+        lines.push(format!(
+            "sound {}: {}{}",
+            plain(&layer.id),
+            plain(&layer.source.said()),
+            if layer.muted { ", muted" } else { "" }
+        ));
     }
     match &status.mic {
         Some(mic) => lines.push(format!(
@@ -3137,17 +3074,6 @@ mod reading {
                 name: "clap".into()
             })
         );
-        assert_eq!(
-            parse(&w("audio hear Spotify, Brave")),
-            Ok(Command::Hear {
-                apps: vec!["Spotify".into(), "Brave".into()]
-            })
-        );
-        assert_eq!(
-            parse(&w("audio hear off")),
-            Ok(Command::Hear { apps: vec![] })
-        );
-        assert!(parse(&w("audio hear")).is_err());
         assert!(parse(&w("audio clip")).is_err());
         assert_eq!(read(&w("audio clips")).unwrap().view, View::Clips);
         assert!(parse(&w("live --confirm")).is_err());
@@ -3174,6 +3100,7 @@ mod reading {
             order: vec![],
             elements: vec![],
             shader: None,
+            audio_layers: vec![],
         };
         let status = Status {
             scenes: vec![scene("code"), scene("talk")],
@@ -3369,6 +3296,73 @@ mod reading {
              01:01:07 #8 app unreachable\n\
              01:01:08 #9 mic open\n\
              01:01:09 #10 off air"
+        );
+    }
+
+    #[test]
+    fn a_sound_and_what_happens_to_it_read_as_lines() {
+        use remuxd_domain::app::events::{Event, Numbered};
+        let id = || "call".to_string();
+        let events = [
+            Event::AudioLayerAdded {
+                id: id(),
+                source: "app Discord".into(),
+            },
+            Event::AudioLayerMuted { id: id(), on: true },
+            Event::AudioLayerMuted {
+                id: id(),
+                on: false,
+            },
+            Event::AudioLayerVolume {
+                id: id(),
+                volume: 0.5,
+            },
+            Event::AudioLayerDucked {
+                id: id(),
+                on: false,
+            },
+            Event::AudioLayerRemoved { id: id() },
+        ];
+        let reply = Reply::Events {
+            gap: None,
+            events: events
+                .into_iter()
+                .zip(1..)
+                .map(|(event, seq)| Numbered { seq, at: 0, event })
+                .collect(),
+        };
+        assert_eq!(
+            render(&reply),
+            "00:00:00 #1 sound call added (app Discord)\n\
+             00:00:00 #2 sound call muted\n\
+             00:00:00 #3 sound call open\n\
+             00:00:00 #4 sound call at 50%\n\
+             00:00:00 #5 sound call does not duck\n\
+             00:00:00 #6 sound call removed"
+        );
+    }
+
+    // A sound whose capture hands over nothing reads as such, not as a
+    // quiet one: that was a microphone layer silent for a whole recording.
+    #[test]
+    fn levels_name_each_sound_and_the_one_that_hears_nothing() {
+        use remuxd_domain::protocol::{AudioLayerHeard, Hearing, Mixing};
+        let said = render(&Reply::Levels {
+            hearing: Hearing::default(),
+            mixing: Mixing::default(),
+            audio_layers: vec![
+                AudioLayerHeard {
+                    id: "call".into(),
+                    level_db: -30.24,
+                    peak_db: -20.0,
+                    samples: 9600,
+                },
+                AudioLayerHeard::silent("ghost".into()),
+            ],
+        });
+        assert!(
+            said.ends_with(", sound call -30.2 dB, sound ghost hears nothing"),
+            "{said}"
         );
     }
 
@@ -3790,7 +3784,7 @@ mod reading {
                 at(
                     2,
                     Event::SoundComplaint {
-                        source: Heard::Screen,
+                        source: Heard::Mic,
                         complaint: None,
                     },
                 ),
@@ -3811,27 +3805,7 @@ mod reading {
                 ),
                 at(5, Event::Monitoring { on: true }),
                 at(6, Event::MusicToStream { on: false }),
-                at(
-                    7,
-                    Event::ScreenSound {
-                        on: true,
-                        layer: Some("desk".into()),
-                    },
-                ),
                 at(8, Event::Denoise { on: true }),
-                at(
-                    9,
-                    Event::Hearing {
-                        apps: vec!["Spotify".into(), "Brave".into()],
-                    },
-                ),
-                at(
-                    10,
-                    Event::AppAudio {
-                        app: Some("Safari".into()),
-                        volume: 1.0,
-                    },
-                ),
                 at(11, Event::Mirrored { on: true }),
                 at(12, Event::Viewers { total: Some(12) }),
             ],
@@ -3839,15 +3813,12 @@ mod reading {
         assert_eq!(
             render(&reply),
             "00:00:00 #1 mic: speaks 8-bit\n\
-             00:00:00 #2 screen sound fine again\n\
+             00:00:00 #2 mic fine again\n\
              00:00:00 #3 voice glitched: 5 holes, 1 dropped so far\n\
              00:00:00 #4 faders: mic 80%, music 85%, duck -18 dB\n\
              00:00:00 #5 speakers on\n\
              00:00:00 #6 music off the stream\n\
-             00:00:00 #7 screen sound on (desk)\n\
              00:00:00 #8 denoise on\n\
-             00:00:00 #9 hearing only Spotify, Brave\n\
-             00:00:00 #10 app sound Safari at 100%\n\
              00:00:00 #11 self-view mirrored\n\
              00:00:00 #12 12 watching"
         );

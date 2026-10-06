@@ -938,12 +938,6 @@ impl Picture for ObsPipeline {
         drawn.reorder();
     }
 
-    /// Screen sound is the system's, whichever display asked for it: the
-    /// capture hears every app but this one, not one display's.
-    fn screen_audio(&mut self, id: Option<&str>) -> Result<(), String> {
-        self.set_screen_sound(id.is_some())
-    }
-
     fn shader(&mut self, path: Option<&str>) -> Result<(), String> {
         if self.scene_filter.as_ref().map(|(p, _)| p.as_str()) == path {
             return Ok(());

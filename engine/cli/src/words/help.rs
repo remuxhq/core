@@ -27,15 +27,12 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["live"], args: "[--confirm <plan>|--yes]", summary: "Go live on every armed destination.", note: "Alone, it prints the plan and asks a person at a terminal. A script runs `remux plan --json`, then `remux live --confirm <fingerprint>`, which goes only if nothing moved since the plan. Arm destinations first with `remux destination arm <id>`." },
     Topic { names: &["stop"], args: "", summary: "Stop the live broadcast.", note: "" },
     Topic { names: &["quit"], args: "", summary: "Shut down the engine.", note: "" },
-    Topic { names: &["layer"], args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default | screen-sound <id> [on|off]", summary: "Compose captures, images, text and timers in one back-to-front order.", note: "Example: `remux scene layer add image logo ~/Pictures/logo.png`; `remux scene layer add text title 200 200 1000 160 Welcome`; `remux scene layer add timer clock 700 450 520 160 180`; `remux scene timer start clock`. Set uses the same arguments and preserves ID, order and visibility. Move uses a zero-based back-to-front index across captures and generated layers. Hide/show and remove work for all layers; hiding a capture keeps its device open. Transform uses scene pixels and clockwise degrees for captures; generated text/timer layers require degrees 0 and must fit in 1920x1080. Crop uses native capture pixels; crop, shape, mirror, position and screen-sound do not apply to text or timers. Shape and mirror apply only to cameras; `remux scene layer mirror face off` overrides that camera's broadcast mirror independently of the legacy panel self-view mirror. Shot reads one layer even while hidden. A layer filter processes captured pixels or a generated layer's own width×height pixels before composition; a scene filter runs after composition. Both may be active at once. Filter files are WGSL (see `remux help scene filter`) and must be trusted local files; paths and layouts survive restart. A set to a new capture source keeps its order and viewport, discarding a crop that no longer fits." },
+    Topic { names: &["layer"], args: "add|set screen|camera|window|image <id> <source> | add|set text|timer <id> <x> <y> <width> <height> <words|seconds> | hide|show|remove|shot <id> | move <id> <index> | transform <id> <x> <y> <width> <height> <degrees> | filter <id> <file.wgsl|off> | crop <id> <x> <y> <width> <height>|off | shape <id> circle|rectangle | mirror <id> on|off | position <id> <x> <y>|default", summary: "Compose captures, images, text and timers in one back-to-front order.", note: "Example: `remux scene layer add image logo ~/Pictures/logo.png`; `remux scene layer add text title 200 200 1000 160 Welcome`; `remux scene layer add timer clock 700 450 520 160 180`; `remux scene timer start clock`. Set uses the same arguments and preserves ID, order and visibility. Move uses a zero-based back-to-front index across captures and generated layers. Hide/show and remove work for all layers; hiding a capture keeps its device open. Transform uses scene pixels and clockwise degrees for captures; generated text/timer layers require degrees 0 and must fit in 1920x1080. Crop uses native capture pixels; crop, shape, mirror and position do not apply to text or timers. Shape and mirror apply only to cameras; `remux scene layer mirror face off` overrides that camera's broadcast mirror independently of the legacy panel self-view mirror. Shot reads one layer even while hidden. A layer filter processes captured pixels or a generated layer's own width×height pixels before composition; a scene filter runs after composition. Both may be active at once. Filter files are WGSL (see `remux help scene filter`) and must be trusted local files; paths and layouts survive restart. A set to a new capture source keeps its order and viewport, discarding a crop that no longer fits." },
     Topic { names: &["shader"], args: "<file.wgsl|off>", summary: "Apply a WGSL filter to the whole scene.", note: "A WGSL file, the same in both motors: one @fragment function taking @location(0) uv: vec2<f32> ((0, 0) is the top left) and returning @location(0) vec4<f32>, with the picture as a texture_2d<f32> at @group(0) @binding(0) and its sampler at @binding(1); sample it with `textureSample(scene, scene_sampler, uv)`. It is the composed 1920x1080 frame for a scene filter, or the layer's own pixels for a layer filter (a capture's native pixels, or a text/timer layer's width×height box). Optionally declare `struct Remux { time: f32, resolution: vec2<f32> }` and `@group(0) @binding(2) var<uniform> remux: Remux;`: time is seconds since the engine started drawing, resolution the picture's size in pixels, so `uv * remux.resolution` is a pixel; `textureDimensions(scene)` is the same size. A file that does not build, or does not keep to this, is the reply, with the reason. Load only trusted local files: GPU code is not sandboxed. Example: remux scene filter /path/to/invert.wgsl. `off` removes it. Filters belong to scenes and reload on restart; a missing or invalid file is skipped." },
     Topic { names: &["mic"], args: "[name|off]", summary: "Select a microphone or turn it off.", note: "Find microphone names with `remux sources`; omitted also turns it off." },
     Topic { names: &["mute"], args: "[on|off]", summary: "Mute or unmute the microphone.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["monitor"], args: "[on|off]", summary: "Toggle monitoring music through the speakers.", note: "Omitted means on; true/yes and false/no also work." },
     Topic { names: &["stream-music"], args: "[on|off]", summary: "Include music in the live mix.", note: "Omitted means on; true/yes and false/no also work." },
-    Topic { names: &["screen-sound"], args: "[on|off]", summary: "Include one display layer's audio in the live mix.", note: "Omitted means on if exactly one display layer exists; with several choose an ID using `remux scene layer screen-sound <id> on`. Mute your own live player to prevent echo." },
-    Topic { names: &["app-audio"], args: "<running app name|off>", summary: "Capture one application's sound independently of screen sound.", note: "Choose a name from remux sources; both sources on will double that app." },
-    Topic { names: &["app-audio-volume"], args: "<percent>", summary: "Set dedicated application audio volume.", note: "Example: remux audio app-volume 80" },
     Topic { names: &["music"], args: "[on|off|genre]", summary: "Play, stop or choose a music genre.", note: "Find genres with `remux sources`; omitted means on." },
     Topic { names: &["next"], args: "", summary: "Skip to the next music track.", note: "" },
     Topic { names: &["vol"], args: "<percent>", summary: "Set microphone volume as a percentage.", note: "Example: remux audio vol 80 (80% and values above 100 also work)." },
@@ -56,7 +53,6 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["arm"], args: "<destination id>", summary: "Include a destination in the next live.", note: "Does not start the live. Find destination IDs with `remux destination list`." },
     Topic { names: &["disarm"], args: "<destination id>", summary: "Leave a destination out of the next live.", note: "Does not stop a live. Find destination IDs with `remux destination list`." },
     Topic { names: &["scenes"], args: "", summary: "List scenes and the active scene.", note: "" },
-    Topic { names: &["hear"], args: "<apps|off>", summary: "Hear these applications alone in the screen's sound.", note: "Names as `remux sources` lists them, comma-separated: remux audio hear Spotify, Brave. `off` is the whole screen's sound again." },
     Topic { names: &["denoise"], args: "[on|off]", summary: "Take the room out of the microphone before the gate.", note: "Omitted means on." },
     Topic { names: &["play"], args: "<clip|file>", summary: "Play one clip once over the mix.", note: "A name from `remux audio clips`, or a file." },
     Topic { names: &["clips"], args: "", summary: "List the clips `audio clip` can play.", note: "Read off the clips folder here; `remux config` says where it is." },
@@ -136,7 +132,8 @@ The picture: scene-switched, scene-created, scene-deleted, layer-added
 scene), timer-finished (a timer at 00:00; the engine never switches for it),
 layer-stalled and layer-flowing (a camera that stopped delivering frames).
 The sound: muted, track-changed (title null when the music stopped),
-sound-complaint (mic, screen or app; null once over it).
+sound-complaint (the mic's; null once over it), audio-layer-added (id,
+source), audio-layer-removed, audio-layer-muted.
 The room: app-reachable, chat (line, platform, channel, from, body, id),
 chat-hidden (line); line is what remux chat hide and delete take.
 chat-event is the rest a bridge says, by type: sub, gift, tip (micros to add
@@ -144,8 +141,8 @@ up), raid, follow, deleted, banned, cleared, custom (a platform's own, named
 <platform>.<what>); deleted, banned and cleared also hide what they took down.
 remux chat say [--to <channel>] <words> answers; the line comes back as chat.
 Detail, said often and kept apart so it never pushes the rest out:
-audio-glitch, faders, gate, monitoring, music-to-stream, screen-sound,
-denoise, hearing, app-audio, mirrored, viewers.
+audio-glitch, faders, gate, monitoring, music-to-stream, denoise,
+audio-layer-volume, audio-layer-ducked, mirrored, viewers.
 {\"gap\":{\"from\",\"to\"}} means some of those were lost while you were
 behind: read remux status --json before trusting what you knew. Without -f,
 remux events --json is what the engine still holds. React to them rather than
@@ -169,16 +166,17 @@ remux scene layer crop editor 10 20 400 300 or crop editor off;
 remux scene layer shape face circle; remux scene layer mirror face on.
 That mirror setting belongs to this camera layer; the panel's legacy mirror
 switch affects only its local self-view. Generated text/timer transforms
-require degrees 0; crop, shape, mirror and screen-sound apply only to captures
+require degrees 0; crop, shape and mirror apply only to captures
 (shape/mirror only to cameras).
 remux scene layer hide editor and remux scene layer show editor preserve capture and layout;
-screen sound is paused until shown. remux scene layer remove editor closes it.
+remux scene layer remove editor closes it.
 remux scene layer shot editor reads a source; remux scene shot reads the
 composed picture; --out file.jpg writes it.
 Layer choices, layout and visibility survive a restart.
-Use remux audio screen-sound on for a unique display, or remux scene layer
-screen-sound <id> on with multiple displays. remux audio hear Spotify keeps
-one app's sound alone; remux audio app Spotify captures it on its own fader.
+Sound beside the microphone is the scene's too: remux audio layer add app game
+Steam hears one application, remux audio layer add system pc what the computer
+plays; a switch keeps the sounds both scenes hear and closes the others, as
+with pictures.
 
 The microphone goes through the remux gate: your voice opens it, a keyboard
 behind the mic opens it at a lift of its own, and closed it turns the room down
@@ -330,7 +328,7 @@ mod tests {
             assert!(text.contains(topic.summary), "{name}: {text}");
             assert_eq!(help(&[name.into(), "--help".into()]), Some(Ok(text)));
         }
-        assert_eq!(TOPICS.len(), 62, "a new verb needs its own help topic");
+        assert_eq!(TOPICS.len(), 58, "a new verb needs its own help topic");
         for name in [
             "arm", "mute", "screen", "music", "chat", "present", "watching", "meters",
         ] {
@@ -437,6 +435,7 @@ mod tests {
             "refused",
             "timer-finished",
             "layer-stalled",
+            "audio-layer-added",
             "audio-glitch",
             "remux schema has every shape",
         ] {
@@ -471,8 +470,7 @@ mod tests {
             "remux scene shot",
             "remux scene layer hide editor",
             "remux scene layer show editor",
-            "screen-sound <id> on",
-            "screen sound is paused until shown",
+            "remux audio layer add system pc",
             "Layer choices, layout and visibility survive a restart",
             "layer_flowing",
             "scene_flowing",

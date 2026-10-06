@@ -43,7 +43,9 @@ pub struct Plan {
     pub muted: bool,
     pub music: Option<String>,
     pub music_to_stream: bool,
-    pub screen_sound: bool,
+    /// The scene's sounds beside the microphone that would go out, each as
+    /// `id (kind source)`; a muted one is not going anywhere.
+    pub sounds: Vec<String>,
     pub destinations: Vec<Planned>,
     /// What stops the live before it starts. Empty means it would go.
     pub blockers: Vec<String>,
@@ -83,7 +85,12 @@ impl Plan {
             muted: status.muted,
             music: status.music.clone(),
             music_to_stream: status.music_to_stream,
-            screen_sound: status.screen_sound,
+            sounds: status
+                .audio_layers
+                .iter()
+                .filter(|l| !l.muted)
+                .map(|l| format!("{} ({})", l.id, l.source.said()))
+                .collect(),
             destinations,
             blockers,
             fingerprint: 0,
@@ -104,7 +111,7 @@ impl Plan {
             self.muted,
             &self.music,
             self.music_to_stream,
-            self.screen_sound,
+            &self.sounds,
             &self.scene,
             &self.destinations,
             &self.blockers,
@@ -229,6 +236,22 @@ mod tests {
         assert_eq!(plan.picture, "desk (screen VG2791R)");
         assert_eq!(plan.scene, "default");
         assert_eq!(plan.destinations[0].title.as_deref(), Some("remux"));
+    }
+
+    // A call captured as an app is on the air with the picture: the plan
+    // says so, and a sound added since the plan was read moves its number.
+    #[test]
+    fn the_sounds_that_would_go_out_are_in_the_plan() {
+        use crate::sound::audio_layers::{Layer, Source};
+        let mut status = ready();
+        status.audio_layers = vec![
+            Layer::new("call".into(), Source::app("Discord".into())).unwrap(),
+            Layer::new("pc".into(), Source::system()).unwrap(),
+        ];
+        status.audio_layers[1].muted = true;
+        let plan = Plan::of(&status);
+        assert_eq!(plan.sounds, ["call (app Discord)"]);
+        assert_ne!(plan.fingerprint, Plan::of(&ready()).fingerprint);
     }
 
     #[test]
