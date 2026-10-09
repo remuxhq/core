@@ -1,0 +1,61 @@
+# The other owner's yes on a release. The owners may merge their own pull
+# requests without a review (the ruleset lets the repository's admins bypass
+# it, on pull requests only); a release is the exception: it publishes, so it
+# waits for an approval from an owner who did not open it. A pull request that
+# is not a release passes at once.
+#
+# It runs when a pull request moves and when it is reviewed, so the approval
+# turns it green without running ci again. A release is told as ci.yml's
+# release guard tells it: the version moves, notes change, or a release/ branch.
+#
+# Every action is pinned by commit, with the release beside it.
+name: release approval
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted, dismissed]
+
+concurrency:
+  group: release-approval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  approval:
+    name: release approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          version() { sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+          was=$(git show "origin/$BASE:engine/cli/Cargo.toml" | version)
+          now=$(version < engine/cli/Cargo.toml)
+          notes=$(git diff --name-only "origin/$BASE...HEAD" -- docs/releases/)
+          case "$HEAD_REF" in release/*) branch=yes ;; *) branch=no ;; esac
+          if [ "$was" = "$now" ] && [ -z "$notes" ] && [ "$branch" = no ]; then
+            echo "not a release: no other owner's approval needed"; exit 0
+          fi
+          owners=$(git show "origin/$BASE:.github/CODEOWNERS" | awk '$1 == "/.github/" { for (i = 2; i <= NF; i++) print substr($i, 2) }')
+          # Each reviewer's last word that is a verdict; a comment is not one.
+          approved=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" \
+            --jq '.[] | select(.state != "COMMENTED") | "\(.user.login) \(.state)"' |
+            awk '{ last[$1] = $2 } END { for (who in last) if (last[who] == "APPROVED") print who }')
+          for who in $approved; do
+            if [ "$who" != "$AUTHOR" ] && echo "$owners" | grep -qx "$who"; then
+              echo "release approved by $who"; exit 0
+            fi
+          done
+          echo "a release waits for an approval from an owner other than $AUTHOR"; exit 1

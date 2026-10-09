@@ -11,7 +11,8 @@ runs `integration`: the libobs motor, its clippy and its tests, and the daemon t
 socket tests spawn, on macOS against the OBS the release builds with and on Linux
 against the distribution's. `release guard` refuses it when the author is not an
 owner, the version does not move, or the notes are missing. The other owner approves,
-and the merge is the release.
+which `release approval` requires (an owner may merge any other pull request of theirs
+without a review, a release never), and the merge is the release.
 
 The merge touches `engine/cli/Cargo.toml`, which runs `release.yml`: it checks the
 version and the notes, builds the tarball for every target (macOS on Apple silicon,
@@ -112,7 +113,7 @@ git add engine/*/Cargo.toml engine/Cargo.lock engine/motor-obs/Cargo.lock instal
 git commit -m "remux $new"
 git push -u origin release/$new
 gh pr create --title "remux $new" --body-file docs/releases/$new.md
-gh pr checks --watch     # lint, unit, sec, integration (macos, linux), release guard
+gh pr checks --watch     # lint, unit, sec, integration (macos, linux), release guard, release approval
 ```
 
 The other owner reads the notes against the diff and approves.
