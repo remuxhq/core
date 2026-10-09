@@ -18,7 +18,7 @@ const TOPICS: &[Topic] = &[
     Topic { names: &["scene-switch"], args: "<name>", summary: "Switch to a saved scene without stopping the live.", note: "New sources are prepared first; shared physical captures stay open even when their layer IDs differ. Use `remux scene list` to see names." },
     Topic { names: &["scene-delete"], args: "<name>", summary: "Delete an inactive scene.", note: "The active scene cannot be deleted; switch first." },
     Topic { names: &["levels"], args: "", summary: "Read microphone, mix and music levels in dB.", note: "" },
-    Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; the panel uses its bytes. For one layer use `remux scene layer shot <id>`." },
+    Topic { names: &["shot"], args: "", summary: "Read a preview of the composed scene.", note: "The CLI reports the JPEG's size; --out file.jpg writes it and --out - sends it to stdout. --json carries the JPEG as base64, so to get the image use --out, not --json. For one layer use `remux scene layer shot <id>`." },
     Topic { names: &["grants"], args: "", summary: "Show screen, camera and microphone permissions.", note: "" },
     Topic { names: &["chat"], args: "[-f|--follow|follow]", summary: "Read chat from the armed destinations.", note: "Follow keeps reading new lines until interrupted; `remux chat hide <n>` hides a line locally. `remux chat url ws://…` reads the chat from a wire of your own; `-` forgets it." },
     Topic { names: &["say"], args: "[--to <chat>] <words>", summary: "Say a line in the platform's chat, as the broadcaster.", note: "Whoever serves the chat wire posts it (`remux-chat` with the account's token, see docs/byo.md); the line comes back in `remux chat read` and `remux events` like anybody's. `--to` takes a line's channel, as `remux events` shows it; without it, every chat the wire reads. Needs the wire up. One line: no newlines." },
@@ -171,7 +171,8 @@ require degrees 0; crop, shape and mirror apply only to captures
 remux scene layer hide editor and remux scene layer show editor preserve capture and layout;
 remux scene layer remove editor closes it.
 remux scene layer shot editor reads a source; remux scene shot reads the
-composed picture; --out file.jpg writes it.
+composed picture; --out file.jpg writes it, --out - to stdout. To get the
+image use --out: --json carries it as base64, which only fills a context.
 Layer choices, layout and visibility survive a restart.
 Sound beside the microphone is the scene's too: remux audio layer add app game
 Steam hears one application, remux audio layer add system pc what the computer

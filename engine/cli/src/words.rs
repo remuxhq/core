@@ -2285,7 +2285,7 @@ pub enum Format {
 #[derive(Clone, Debug, PartialEq)]
 pub enum View {
     Reply,
-    /// `shot --out f.jpg`: the picture written to a file.
+    /// `shot --out f.jpg`: the picture written to a file, or to stdout for `-`.
     ShotTo(String),
     /// `gate` with nothing after it: the thresholds, in dB.
     Gate,

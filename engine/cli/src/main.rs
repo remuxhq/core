@@ -32,6 +32,10 @@ fn fail(why: &str, json: bool, code: i32) -> ! {
 }
 
 fn main() {
+    // A reader that left (`| head`) ends the CLI the way it ends cat, by the
+    // signal. Rust ignores SIGPIPE, so every print after it would panic.
+    // SAFETY: at the start of main, before any thread or any write.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     let words: Vec<String> = std::env::args().skip(1).collect();
     let (json, bare) = cli::output_mode(&words);
     // Help and the guide are answered here, with no engine.
@@ -136,6 +140,15 @@ fn main() {
     }
     let failed = matches!(reply, Reply::Error { .. });
     if let (View::ShotTo(file), Some(bytes)) = (&ask.view, cli::jpeg_bytes(&reply)) {
+        // `-` is stdout: the bytes alone, for whatever reads a picture.
+        if file == "-" {
+            let mut out = std::io::stdout().lock();
+            if let Err(e) = out.write_all(&bytes).and_then(|()| out.flush()) {
+                eprintln!("could not write the shot: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
         if let Err(e) = std::fs::write(file, bytes) {
             eprintln!("could not write {file}: {e}");
             std::process::exit(1);
