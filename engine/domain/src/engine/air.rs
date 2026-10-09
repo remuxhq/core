@@ -223,11 +223,11 @@ mod tests {
             matches!(reply, Reply::Error { .. }),
             "nothing is plugged in, so there is nothing to send, got {reply:?}"
         );
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         // Stopping what never started is not an error: a panel that lost track
         // should be able to say stop and be believed.
         assert_eq!(engine.handle(Command::Stop), Reply::Ok);
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
     }
 
     // Both motors draw an empty scene at the full rate, so frames cannot keep
@@ -236,7 +236,7 @@ mod tests {
     fn an_empty_scene_cannot_go_live_though_it_has_frames() {
         let (mut engine, published) = publishing_engine(None);
         engine.handle(Command::Screen { display: 1 });
-        let id = engine.status().layers[0].id.clone();
+        let id = engine.state().layers[0].id.clone();
         engine.handle(Command::LayerVisible { id, on: false });
         assert_eq!(
             engine.handle(Command::GoLive),
@@ -244,7 +244,7 @@ mod tests {
                 message: "the scene is empty: nothing would be shared".into()
             }
         );
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         assert!(published.lock().expect("published").is_empty());
     }
 
@@ -253,10 +253,10 @@ mod tests {
         let (mut engine, _) = publishing_engine(None);
         engine.set_recordings(Some("/tmp/films".into()));
         engine.handle(Command::RecordStart);
-        assert!(engine.status().recording);
-        assert!(!engine.status().on_air, "recording is not going live");
+        assert!(engine.state().recording);
+        assert!(!engine.state().on_air, "recording is not going live");
         engine.handle(Command::RecordStop);
-        assert!(!engine.status().recording);
+        assert!(!engine.state().recording);
     }
 
     #[test]
@@ -267,7 +267,7 @@ mod tests {
         engine.handle(Command::GoLive);
         engine.handle(Command::Stop);
         assert!(
-            engine.status().recording,
+            engine.state().recording,
             "stopping the live must not stop the file"
         );
     }
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
         published.lock().expect("published").push(None);
         engine.tick();
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         assert_eq!(crate::air::history::read(&path).len(), 2);
         let _ = std::fs::remove_file(path);
     }
@@ -344,9 +344,9 @@ mod tests {
         let (mut engine, published) = publishing_engine(None);
         engine.handle(Command::Screen { display: 1 });
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
-        assert!(engine.status().on_air);
+        assert!(engine.state().on_air);
         assert!(
-            engine.status().on_air_since.is_some(),
+            engine.state().on_air_since.is_some(),
             "the clock starts here, on the engine's own time, so every face \
                  shows the same running time for the same live"
         );
@@ -356,7 +356,7 @@ mod tests {
             "go live must reach the pipeline, not just flip a flag"
         );
         engine.handle(Command::Stop);
-        assert_eq!(engine.status().on_air_since, None, "and stops with the air");
+        assert_eq!(engine.state().on_air_since, None, "and stops with the air");
     }
 
     #[test]
@@ -368,7 +368,7 @@ mod tests {
             matches!(reply, Reply::Error { .. }),
             "with no destination going live is an error, got {reply:?}"
         );
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         assert!(published.lock().expect("published").is_empty());
     }
 
@@ -382,17 +382,17 @@ mod tests {
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
         engine.tick();
         assert!(
-            engine.status().on_air,
+            engine.state().on_air,
             "a live that is going stays on air through a tick"
         );
         published.lock().expect("published").push(None);
         engine.tick();
         assert!(
-            !engine.status().on_air,
+            !engine.state().on_air,
             "the stream ended and the flag did not follow"
         );
-        assert!(engine.status().on_air_since.is_none());
-        let said = engine.reported().log.join("\n");
+        assert!(engine.state().on_air_since.is_none());
+        let said = engine.journal.lines().join("\n");
         assert!(
             said.contains("ended on its own"),
             "the log says nothing about it: {said}"
@@ -408,7 +408,7 @@ mod tests {
             "a live that could not start must say so, got {reply:?}"
         );
         assert!(
-            !engine.status().on_air,
+            !engine.state().on_air,
             "an engine that failed to publish must not report itself on air"
         );
     }
@@ -419,7 +419,7 @@ mod tests {
         engine.handle(Command::Screen { display: 1 });
         engine.handle(Command::GoLive);
         assert_eq!(engine.handle(Command::Stop), Reply::Ok);
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         assert_eq!(
             *published.lock().expect("published"),
             vec![Some(DESTINATION.to_string()), None],
@@ -432,10 +432,10 @@ mod tests {
         let (mut engine, _) = publishing_engine(None);
         engine.set_recordings(Some("/tmp/films".into()));
         assert_eq!(engine.handle(Command::RecordStart), Reply::Ok);
-        assert!(engine.status().recording);
-        assert!(!engine.status().on_air, "recording is not going live");
+        assert!(engine.state().recording);
+        assert!(!engine.state().on_air, "recording is not going live");
         assert_eq!(engine.handle(Command::RecordStop), Reply::Ok);
-        assert!(!engine.status().recording);
+        assert!(!engine.state().recording);
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
             matches!(reply, Reply::Error { .. }),
             "with no folder recording is an error, got {reply:?}"
         );
-        assert!(!engine.status().recording);
+        assert!(!engine.state().recording);
     }
 
     #[test]
@@ -457,7 +457,7 @@ mod tests {
         let reply = engine.handle(Command::RecordStart);
         assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
         assert!(
-            !engine.status().recording,
+            !engine.state().recording,
             "a clock ticking over a file that was never opened is a lie"
         );
     }
@@ -472,7 +472,7 @@ mod tests {
             matches!(reply, Reply::Error { .. }),
             "there is nothing to send, got {reply:?}"
         );
-        assert!(!engine.status().on_air);
+        assert!(!engine.state().on_air);
         assert!(
             published.lock().expect("published").is_empty(),
             "it must not even reach the pipeline"
@@ -502,7 +502,7 @@ mod tests {
         let (mut engine, _) = publishing_engine(None);
         engine.handle(Command::Screen { display: 1 });
         assert_eq!(engine.handle(Command::GoLive), Reply::Ok);
-        let since = engine.status().on_air_since.expect("on air since");
+        let since = engine.state().on_air_since.expect("on air since");
         assert!(
             since > 1_700_000_000,
             "{since} is not a moment on the real clock"

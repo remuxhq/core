@@ -21,10 +21,12 @@ mod app;
 mod audio_layers;
 mod picture;
 mod sound;
+mod state;
 
 pub use air::Air;
 pub use picture::{LayerSwapError, Picture};
 pub use sound::{Sound, SoundLevels};
+pub use state::State;
 
 /// How many ticks a face's "watching" is good for, at four ticks a second.
 /// A face renews once a second while it draws, so three seconds is two missed
@@ -491,7 +493,7 @@ impl Kept {
 /// The engine's whole state. Small on purpose: anything that grows a decision
 /// of its own gets a pure module beside it, the way `gate` and `music` are.
 pub struct Engine {
-    status: Status,
+    status: State,
     /// Running deadlines are transient and scoped to the active scene's element IDs.
     counting: std::collections::HashMap<String, Instant>,
     quitting: bool,
@@ -564,7 +566,7 @@ impl Engine {
 
     pub fn with_sources(sources: Box<dyn Sources>) -> Self {
         Self {
-            status: Status::default(),
+            status: State::default(),
             counting: Default::default(),
             quitting: false,
             sources,
@@ -669,7 +671,7 @@ impl Engine {
         self.pipeline.flowing()
     }
 
-    pub fn status(&self) -> &Status {
+    pub fn state(&self) -> &State {
         &self.status
     }
 
@@ -1531,6 +1533,16 @@ impl Engine {
             Command::Say { body, channel } => self.say(&body, channel),
             Command::Categorize { adapter, id, name } => self.categorize(adapter, &id, &name),
             Command::Categories { adapter, query } => self.search_categories(adapter, &query),
+            Command::CategoriesFound => Reply::Categories {
+                found: self.watching.found(),
+            },
+            Command::Log => Reply::Log {
+                lines: self.journal.lines(),
+            },
+            Command::Scenes => Reply::Scenes {
+                active: self.status.active_scene.clone(),
+                scenes: self.current_scenes(),
+            },
             Command::Grants => self.grants(),
             Command::Mirror { on } => self.mirror(on),
         }
@@ -1541,50 +1553,36 @@ impl Engine {
     /// because a cached frame count is exactly the lie this field exists to
     /// stop telling.
     fn reported(&self) -> Status {
-        let mut status = self.status.clone();
-        status.version = env!("CARGO_PKG_VERSION").into();
-        status.motor = self.motor.clone();
-        status.scenes = self.current_scenes();
-        status.scene_flowing = self.pipeline.flowing();
-        status.layer_flowing = status
-            .layers
-            .iter()
-            .map(|layer| (layer.id.clone(), self.pipeline.layer_flowing(&layer.id)))
-            .collect();
+        let mut scene = self
+            .current_scenes()
+            .into_iter()
+            .find(|scene| scene.name == self.status.active_scene)
+            .unwrap_or_else(|| crate::picture::scenes::defaults().remove(0));
+        // A filter the GPU turned off after it was chosen is not on the air,
+        // and the status does not say it is.
         if !self.pipeline.shader_active() {
-            status.shader = None;
+            scene.shader = None;
         }
-        for layer in &mut status.layers {
+        for layer in &mut scene.layers {
             if !self.pipeline.layer_shader_active(&layer.id) {
                 layer.shader = None;
             }
         }
-        if let Some(active) = status
-            .scenes
-            .iter_mut()
-            .find(|scene| scene.name == status.active_scene)
-        {
-            active.layers = status.layers.clone();
-            for element in &mut active.elements {
-                if !self.pipeline.layer_shader_active(&element.id) {
-                    element.shader = None;
-                }
+        for element in &mut scene.elements {
+            if !self.pipeline.layer_shader_active(&element.id) {
+                element.shader = None;
             }
-            active.shader = status.shader.clone();
         }
-        status.hearing = self.pipeline.hearing();
-        status.mixing = self.pipeline.mixing();
-        status.speakers = self.pipeline.speakers();
         // Read from the app rather than kept, every time. The engine is not a
         // second home for the web's columns, and a cached list of
         // destinations is a list that is wrong the moment somebody arms one
         // from another face.
-        status.destinations = self.watching.destinations();
+        let mut destinations = self.watching.destinations();
         // What each door is doing, from the pipeline that holds it: on air
         // through it, or what its ffmpeg last said.
         let sending = self.pipeline.publishing();
         let troubles = self.pipeline.troubles();
-        for row in &mut status.destinations {
+        for row in &mut destinations {
             if sending.contains(&row.id) {
                 row.status = "live".into();
             }
@@ -1592,17 +1590,35 @@ impl Engine {
                 row.trouble = Some(why.clone());
             }
         }
-        status.categories = self.watching.found();
-        status.viewers_peak = self.watching.viewers_peak();
-        status.app = self.watching.reachable();
-        status.viewers = self.watching.viewers();
-        status.outgoing = self.pipeline.outgoing();
-        status.preview = self.pipeline.preview();
-        status.record_dir = self.recordings.clone();
-        status.devices_generation = self.sources.generation();
-        status.server = self.watching.server();
-        status.log = self.journal.lines();
-        status
+        Status {
+            on_air: self.status.on_air,
+            on_air_since: self.status.on_air_since,
+            recording: self.status.recording,
+            recording_since: self.status.recording_since,
+            destinations,
+            outgoing: self.pipeline.outgoing(),
+            scene,
+            scenes: self.status.scenes.iter().map(|s| s.name.clone()).collect(),
+            picture: self.pipeline.flowing(),
+            preview: self.pipeline.preview(),
+            mirrored: self.status.mirrored,
+            mic: self.status.mic.clone(),
+            mic_complaint: self.pipeline.hearing().complaint,
+            muted: self.status.muted,
+            faders: self.status.faders,
+            gate: self.status.gate,
+            denoise: self.status.denoise,
+            monitoring: self.status.monitoring,
+            speakers: self.pipeline.speakers(),
+            music: self.status.music.clone(),
+            music_to_stream: self.status.music_to_stream,
+            version: env!("CARGO_PKG_VERSION").into(),
+            motor: self.motor.clone(),
+            record_dir: self.recordings.clone(),
+            destinations_from: self.watching.server(),
+            app_reachable: self.watching.reachable(),
+            devices_generation: self.sources.generation(),
+        }
     }
 
     /// Everything off.
@@ -1813,7 +1829,7 @@ mod tests {
 
         let (mut next, next_played, _) = machine_with_music();
         next.restore(&crate::remembered::read(&written));
-        let now = next.status();
+        let now = next.state();
         assert_eq!(now.mic.as_deref(), Some("HyperX DuoCast"));
         assert!(now.mirrored);
         assert_eq!(
@@ -1884,7 +1900,7 @@ mod tests {
             layers: vec![desk("desk", "2", "5C1E09B4"), desk("gone", "1", "0FF1CE00")],
             ..Default::default()
         });
-        let layers = &engine.status().layers;
+        let layers = &engine.state().layers;
         assert_eq!(
             layers.len(),
             1,
@@ -1931,9 +1947,9 @@ mod tests {
             ..Default::default()
         };
         engine.restore(&setup);
-        assert!(engine.status().layers.is_empty(), "it must not invent one");
-        assert_eq!(engine.status().mic.as_deref(), Some("HyperX DuoCast"));
-        assert!(engine.status().mirrored);
+        assert!(engine.state().layers.is_empty(), "it must not invent one");
+        assert_eq!(engine.state().mic.as_deref(), Some("HyperX DuoCast"));
+        assert!(engine.state().mirrored);
     }
 
     #[test]
@@ -1951,25 +1967,26 @@ mod tests {
         let mut next =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
         next.restore(&crate::remembered::read(&saved));
-        assert_eq!(next.status().layers.len(), 1);
-        assert_eq!(next.status().layers[0].id, "notes");
+        assert_eq!(next.state().layers.len(), 1);
+        assert_eq!(next.state().layers[0].id, "notes");
         assert_eq!(
-            next.status().layers[0].source.kind,
+            next.state().layers[0].source.kind,
             crate::picture::layers::Kind::Window
         );
     }
 
     #[test]
-    fn the_status_carries_what_the_engine_has_done() {
+    fn the_log_carries_what_the_engine_has_done() {
         let mut engine = Engine::new();
         let _ = engine.handle(Command::Mute { on: true });
-        let Reply::Status(status) = engine.handle(Command::Status) else {
-            panic!("status");
+        let _ = engine.handle(Command::Status);
+        let Reply::Log { lines } = engine.handle(Command::Log) else {
+            panic!("log");
         };
         // The stamp is the clock; what is asserted is the sentence and that
-        // asking for the status did not itself become a line.
-        assert_eq!(status.log.len(), 1);
-        assert!(status.log[0].ends_with("mic muted"), "got {:?}", status.log);
+        // asking for the status or the log did not itself become a line.
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].ends_with("mic muted"), "got {lines:?}");
     }
 
     #[test]
@@ -2023,14 +2040,13 @@ mod tests {
         };
         assert!(!status.on_air);
         assert!(!status.recording);
-        assert_eq!(status.viewers, None);
     }
 
     #[test]
     fn fresh_engine_has_only_a_default_scene() {
         let engine = engine();
-        assert_eq!(engine.status().scenes.len(), 1);
-        assert_eq!(engine.status().active_scene, "default");
+        assert_eq!(engine.state().scenes.len(), 1);
+        assert_eq!(engine.state().active_scene, "default");
     }
 
     // The panic button had a bug worth keeping a test for: it hid the picture
@@ -2042,13 +2058,13 @@ mod tests {
         engine.handle(Command::GoLive);
         engine.handle(Command::HideEverything);
         assert!(
-            engine.status().muted,
+            engine.state().muted,
             "hide everything means hide your voice too"
         );
-        assert_eq!(engine.status().active_scene, "default");
-        assert!(engine.status().layers.is_empty());
+        assert_eq!(engine.state().active_scene, "default");
+        assert!(engine.state().layers.is_empty());
         assert!(
-            engine.status().on_air,
+            engine.state().on_air,
             "it is a break, not the end of the live"
         );
     }
@@ -2109,12 +2125,12 @@ mod tests {
             panic!("a camera named after a microphone is not a camera")
         };
         assert!(message.contains("MacBook Pro Camera"), "{message}");
-        assert!(engine.status().layers.is_empty());
+        assert!(engine.state().layers.is_empty());
 
         engine.handle(Command::Mic {
             device: Some("hyperx".into()),
         });
-        assert_eq!(engine.status().mic, Some("HyperX DuoCast".into()));
+        assert_eq!(engine.state().mic, Some("HyperX DuoCast".into()));
     }
 
     #[test]
@@ -2130,8 +2146,8 @@ mod tests {
             crate::remembered::read(&crate::remembered::write(&engine.remembered()).unwrap());
         let mut next = Engine::new();
         next.restore(&saved);
-        assert_eq!(next.status().scenes.len(), 1);
-        assert_eq!(next.status().active_scene, "Custom");
+        assert_eq!(next.state().scenes.len(), 1);
+        assert_eq!(next.state().active_scene, "Custom");
     }
 
     #[test]
@@ -2141,10 +2157,10 @@ mod tests {
         );
         let mut engine = Engine::new();
         engine.restore(&saved);
-        assert_eq!(engine.status().active_scene, "default");
-        assert_eq!(engine.status().scenes.len(), 2);
-        assert_eq!(engine.status().scenes[1].elements[0].id, "note");
-        assert_eq!(engine.status().scenes[1].ordered_ids(), ["note"]);
+        assert_eq!(engine.state().active_scene, "default");
+        assert_eq!(engine.state().scenes.len(), 2);
+        assert_eq!(engine.state().scenes[1].elements[0].id, "note");
+        assert_eq!(engine.state().scenes[1].ordered_ids(), ["note"]);
     }
 
     #[test]
@@ -2376,9 +2392,9 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status")
         };
-        assert_eq!(status.layers[0].shader, None);
-        assert_eq!(status.layers[1].shader.as_deref(), Some("good.wgsl"));
-        assert_eq!(status.shader.as_deref(), Some("scene.wgsl"));
+        assert_eq!(status.scene.layers[0].shader, None);
+        assert_eq!(status.scene.layers[1].shader.as_deref(), Some("good.wgsl"));
+        assert_eq!(status.scene.shader.as_deref(), Some("scene.wgsl"));
         assert_eq!(engine.remembered().layers[0].shader, None);
         assert_eq!(
             engine.remembered().layers[1].shader.as_deref(),
@@ -2396,8 +2412,8 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status")
         };
-        assert_eq!(status.shader, None);
-        assert_eq!(status.layers[0].shader.as_deref(), Some("good.wgsl"));
+        assert_eq!(status.scene.shader, None);
+        assert_eq!(status.scene.layers[0].shader.as_deref(), Some("good.wgsl"));
         assert_eq!(engine.remembered().scenes[0].shader, None);
     }
 
@@ -2493,21 +2509,27 @@ mod tests {
         }) else {
             panic!("a duplicate answers with the status")
         };
-        assert_eq!(copied.active_scene, "copy");
-        assert_eq!(copied.layers.len(), 1, "the capture carries on");
-        let copy = copied.scenes.iter().find(|s| s.name == "copy").unwrap();
-        assert_eq!(copy.ordered_ids(), ["face", "title"]);
+        assert_eq!(copied.scene.name, "copy");
+        assert_eq!(copied.scene.layers.len(), 1, "the capture carries on");
+        assert_eq!(copied.scene.ordered_ids(), ["face", "title"]);
 
         let Reply::Status(empty) = engine.handle(Command::SceneCreate {
             name: "blank".into(),
         }) else {
             panic!("a create answers with the status")
         };
-        assert_eq!(empty.active_scene, "blank");
-        assert!(empty.layers.is_empty(), "nothing from the scene before");
-        let blank = empty.scenes.iter().find(|s| s.name == "blank").unwrap();
-        assert!(blank.elements.is_empty() && blank.shader.is_none());
-        let copy = empty.scenes.iter().find(|s| s.name == "copy").unwrap();
+        assert_eq!(empty.scene.name, "blank");
+        assert!(
+            empty.scene.layers.is_empty(),
+            "nothing from the scene before"
+        );
+        assert!(empty.scene.elements.is_empty() && empty.scene.shader.is_none());
+        let copy = engine
+            .state()
+            .scenes
+            .iter()
+            .find(|s| s.name == "copy")
+            .unwrap();
         assert_eq!(copy.layers.len(), 1, "the scene left keeps its layers");
 
         for taken in ["blank", "copy", "default"] {
@@ -2520,7 +2542,7 @@ mod tests {
                 Reply::Error { .. }
             ));
         }
-        assert_eq!(engine.status().active_scene, "blank");
+        assert_eq!(engine.state().active_scene, "blank");
     }
 
     // A plan is confirmed by its fingerprint: the live goes on what was printed
@@ -2559,7 +2581,7 @@ mod tests {
             }),
             Reply::Ok
         );
-        assert!(engine.status().on_air);
+        assert!(engine.state().on_air);
     }
 
     #[test]
@@ -2619,11 +2641,14 @@ mod tests {
         assert_eq!(Mixing::default().monitor_db, floor);
 
         let mut engine = engine();
-        let Reply::Status(status) = engine.handle(Command::Status) else {
-            panic!("status answers with a status")
+        let Reply::Levels {
+            hearing, mixing, ..
+        } = engine.handle(Command::Levels)
+        else {
+            panic!("levels answers with the meters")
         };
-        assert_eq!(status.hearing.level_db, floor, "nothing is plugged in");
-        assert_eq!(status.mixing.music_db, floor);
+        assert_eq!(hearing.level_db, floor, "nothing is plugged in");
+        assert_eq!(mixing.music_db, floor);
     }
 
     /// What the pipeline was last told a running timer had left.
@@ -2668,10 +2693,10 @@ mod tests {
         let (mut engine, shown, _) = machine_watching_elements();
         engine.handle(Command::Screen { display: 3 });
         engine.handle(Command::HideEverything);
-        assert_eq!(engine.status().active_scene, "default");
+        assert_eq!(engine.state().active_scene, "default");
         assert!(elements_shown(&shown).last().is_some());
-        assert!(engine.status().layers.is_empty());
-        assert!(engine.status().muted);
+        assert!(engine.state().layers.is_empty());
+        assert!(engine.state().muted);
     }
 
     // A bed that plays one file and then goes quiet is worse than no bed at
@@ -2694,7 +2719,7 @@ mod tests {
 
         engine.handle(Command::HideEverything);
 
-        let now = engine.status();
+        let now = engine.state();
         assert_eq!(now.active_scene, "default");
         assert!(now.layers.is_empty(), "the sources are off");
         assert!(now.muted, "the microphone is muted");
@@ -2718,21 +2743,16 @@ mod tests {
     #[test]
     fn an_engine_that_captures_nothing_refuses_the_speakers_and_the_file() {
         let mut engine = Engine::new().with_recordings(Some("/tmp/films".into()));
-        assert_eq!(
-            engine.status().record_dir.as_deref(),
-            None,
-            "read, never kept"
-        );
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status answers with a status")
         };
         assert_eq!(status.record_dir.as_deref(), Some("/tmp/films"));
         let reply = engine.handle(Command::RecordStart);
         assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
-        assert!(!engine.status().recording);
+        assert!(!engine.state().recording);
         let reply = engine.handle(Command::Monitor { on: true });
         assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
-        assert!(!engine.status().monitoring);
+        assert!(!engine.state().monitoring);
     }
 
     #[test]
@@ -2754,16 +2774,14 @@ mod tests {
         assert!(!engine.quitting(), "still within the lease");
         engine.tick();
         assert!(engine.quitting(), "the lease ran out");
-        let Reply::Status(status) = engine.handle(Command::Status) else {
-            panic!("status answers with a status")
+        let Reply::Log { lines } = engine.handle(Command::Log) else {
+            panic!("log answers with the journal")
         };
         assert!(
-            status
-                .log
+            lines
                 .iter()
                 .any(|line| line.contains("the panel went away")),
-            "and the log says why: {:?}",
-            status.log
+            "and the log says why: {lines:?}"
         );
     }
 
@@ -2783,13 +2801,12 @@ mod tests {
     fn saying_so_writes_nothing_in_the_log() {
         let mut engine = engine();
         engine.handle(Command::Present);
-        let Reply::Status(status) = engine.handle(Command::Status) else {
-            panic!("status answers with a status")
+        let Reply::Log { lines } = engine.handle(Command::Log) else {
+            panic!("log answers with the journal")
         };
         assert!(
-            status.log.is_empty(),
-            "once a second would push everything else off: {:?}",
-            status.log
+            lines.is_empty(),
+            "once a second would push everything else off: {lines:?}"
         );
     }
 
@@ -3197,7 +3214,7 @@ mod tests {
         engine.handle(Command::Camera {
             device: Some("HP".into()),
         });
-        let id = engine.status().layers[0].id.clone();
+        let id = engine.state().layers[0].id.clone();
         for _ in 0..=crate::picture::stall::Stalls::FLAT_TICKS {
             engine.tick();
         }
@@ -3232,15 +3249,10 @@ mod tests {
         let mut engine =
             Engine::with_sources(Box::new(ThisMachine)).with_pipeline(Box::new(Wrote::default()));
         engine.restore(&setup);
-        let open: Vec<_> = engine
-            .status()
-            .layers
-            .iter()
-            .map(|l| l.id.clone())
-            .collect();
+        let open: Vec<_> = engine.state().layers.iter().map(|l| l.id.clone()).collect();
         assert_eq!(open, ["desk"], "only what opened is on the air");
         let sounds: Vec<_> = engine
-            .status()
+            .state()
             .audio_layers
             .iter()
             .map(|l| l.id.clone())
@@ -3300,7 +3312,7 @@ mod tests {
         let events = followed();
         let mut engine = engine().with_events(std::sync::Arc::clone(&events));
         engine.handle(Command::Volume { level: 0.5 });
-        let faders = engine.status().faders;
+        let faders = engine.state().faders;
         assert_eq!(
             said(&events),
             vec![Event::Faders {

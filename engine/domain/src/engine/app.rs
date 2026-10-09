@@ -188,7 +188,7 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status answers with a status")
         };
-        assert!(status.app, "and says the app is reachable");
+        assert!(status.app_reachable, "and says the app is reachable");
         assert_eq!(status.destinations.len(), 2);
         assert_eq!(status.destinations[0].name, "tico");
         assert_eq!(
@@ -196,7 +196,6 @@ mod tests {
             Some("Rust at midnight"),
             "what the live is called rides on the row, so every face can show it"
         );
-        assert_eq!(status.viewers, Some(12));
     }
 
     /// What an app was asked to call a live: the destination, the title, the
@@ -301,10 +300,9 @@ mod tests {
             Some(&(2, Some("announced".to_string()), None))
         );
         told.tick();
-        let Reply::Status(now) = told.handle(Command::Status) else {
-            panic!("status answers with a status")
+        let Reply::Log { lines: log } = told.handle(Command::Log) else {
+            panic!("log answers with the journal")
         };
-        let log = now.log;
         assert!(
             log.iter()
                 .any(|line| line.contains("! tico: the token was refused")),
@@ -356,12 +354,10 @@ mod tests {
             }),
             Reply::Ok
         );
-        let Reply::Status(now) = told.handle(Command::Status) else {
-            panic!("status answers with a status")
+        let Reply::Categories { found } = told.handle(Command::CategoriesFound) else {
+            panic!("categories-found answers with what was found")
         };
-        let found = now
-            .categories
-            .expect("the app's answer rides on the status");
+        let found = found.expect("the app's answer is kept for every face");
         assert_eq!(found.query, "sci");
         assert_eq!(found.items[0].name, "Science & Technology");
     }
@@ -425,12 +421,8 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status answers with a status")
         };
-        assert!(!status.app);
+        assert!(!status.app_reachable);
         assert!(status.destinations.is_empty());
-        assert_eq!(
-            status.viewers, None,
-            "nobody answered is not nobody watching"
-        );
         // And it says so rather than pretending it armed something.
         assert!(matches!(
             engine.handle(Command::Arm {
@@ -591,11 +583,13 @@ mod tests {
         let Reply::Status(status) = engine.handle(Command::Status) else {
             panic!("status answers with a status")
         };
-        assert_eq!(status.server, None);
+        assert_eq!(status.destinations_from, None);
+        let Reply::Log { lines } = engine.handle(Command::Log) else {
+            panic!("log answers with the journal")
+        };
         assert!(
-            status.log.iter().all(|line| !line.contains("! ")),
-            "no notice from nobody: {:?}",
-            status.log
+            lines.iter().all(|line| !line.contains("! ")),
+            "no notice from nobody: {lines:?}"
         );
         let reply = engine.handle(Command::Announce { adapter: 1 });
         assert!(matches!(reply, Reply::Error { .. }), "got {reply:?}");
