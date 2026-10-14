@@ -30,8 +30,9 @@ the operator has kept. A failing test first, on production code; the smallest fi
 the fast tests after every edit (`make remuxd.test F=name`, sub-second); the whole
 suite and the gate never mid-loop. Hardware-only checks are the operator's when
 you have no machine: report them as pending and finish. Small commits, present tense,
-plain subjects, no authorship trailers, no session links. Code and commit messages are
-the documentation; a measurement behind a decision goes in the comment beside it.
+Conventional Commits subjects in lowercase (CLAUDE.md, Commits), no authorship
+trailers, no session links. Code and commit messages are the documentation; a
+measurement behind a decision goes in the comment beside it.
 
 ## Layout
 
