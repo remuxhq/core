@@ -90,4 +90,5 @@ the documentation; a measurement behind a decision goes in the comment beside it
 
 Code, comments, tests, docs in English. A feature lands with tests and is verified on
 the machine before it counts as done. Wire changes keep old clients working (contract
-tests assert exact bytes). Contributions are under `CLA.md`.
+tests assert exact bytes). Pull requests are the owners' alone
+(`.github/workflows/pull-requests.yml` closes the rest); issues are welcome.
