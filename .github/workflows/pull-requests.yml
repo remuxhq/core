@@ -1,8 +1,8 @@
 # remux is open source, not open contribution: the owners write the code, and a
 # pull request from anybody else is closed when it is opened, with a word on
 # where to go instead. An issue is welcome; a patch in one is read as an idea,
-# and may be rewritten from scratch. The owners are .github/CODEOWNERS's;
-# Dependabot keeps the pinned actions and crates moving and stays.
+# and may be rewritten from scratch. The owners are .github/CODEOWNERS's, and
+# bots are no exception: the dependencies move when an advisory or a need does.
 #
 # pull_request_target, so a pull request from a fork gets a token that may close
 # it. Nothing of the pull request is checked out or run: the job reads its
@@ -19,7 +19,7 @@ permissions:
 jobs:
   owners-only:
     if: >-
-      !contains(fromJSON('["leandronsp", "molvrr", "dependabot[bot]"]'),
+      !contains(fromJSON('["leandronsp", "molvrr"]'),
       github.event.pull_request.user.login)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
