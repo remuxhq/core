@@ -18,3 +18,20 @@
 ## Architecture and discipline
 
 `.claude/rules/architecture.md`, `typing.md`, `testing.md`, `security.md`.
+
+## Commits
+
+Every subject follows Conventional Commits 1.0.0 (conventionalcommits.org):
+`<type>(<scope>): <description>`, the scope optional.
+
+- The type: `feat` (a new capability), `fix` (a bug), `docs`, `refactor`, `perf`,
+  `test`, `build`, `ci`, `chore`, `style`, `revert`.
+- The scope, when it helps: one noun for the part touched, `engine`, `motor`, `cli`,
+  `tui`, `wire`, `deps`, `release`.
+- The description starts in lowercase, in the imperative present, with no full stop:
+  `fix: correct the music fader's floor`, `feat(tui): zoom the focused panel`.
+- A change that breaks a face or the wire takes `!` after the type or scope, and a
+  `BREAKING CHANGE:` footer saying what breaks.
+- A bump that fixes an advisory is its own commit, named after it:
+  `fix(deps): rustls 0.23.46, for RUSTSEC-2026-0346`.
+- A pull request's title is its squashed commit, so it follows the same rule.
