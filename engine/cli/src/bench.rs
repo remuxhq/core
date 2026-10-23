@@ -86,7 +86,11 @@ fn export(
     ask: Ask,
 ) -> Result<String, String> {
     let status = status(ask)?;
-    let mut scenes = status.scenes.clone();
+    let mut scenes = match ask(&Command::Scenes)? {
+        Reply::Scenes { scenes, .. } => scenes,
+        Reply::Error { message } => return Err(message),
+        other => return Err(format!("the engine answered {other:?}")),
+    };
     let files = bench::files(&scenes);
     let dir = workbench()?;
     for (at, path) in files.iter().enumerate() {
@@ -103,7 +107,6 @@ fn export(
         bench: bench::VERSION,
         requires: here(&status),
         scenes,
-        audio_layers: status.audio_layers.clone(),
         gate: status.gate,
         faders: status.faders,
         // Where its secrets are read from is this machine's business.
@@ -197,11 +200,7 @@ fn import(file: &Path, anyway: bool, into: &Path, ask: Ask) -> Result<String, St
             scene: Box::new(scene),
         })? {
             Reply::Status(status) => {
-                let name = status
-                    .scenes
-                    .last()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
+                let name = status.scenes.last().cloned().unwrap_or_default();
                 lines.push(match hidden.is_empty() {
                     true => format!("scene {name} added"),
                     false => format!(
@@ -222,8 +221,7 @@ fn import(file: &Path, anyway: bool, into: &Path, ask: Ask) -> Result<String, St
         ));
     }
     lines.push(format!(
-        "not applied: the gate, the faders and {} audio layers, which stay yours; the files are in {}",
-        made.audio_layers.len(),
+        "not applied: the gate and the faders, which stay yours; the files are in {}",
         dir.display()
     ));
     Ok(lines.join("\n"))
@@ -278,15 +276,22 @@ mod tests {
             order: vec![],
             elements: vec![],
             shader: None,
+            audio_layers: vec![],
         };
         let mut status = Status {
-            scenes: vec![scene],
+            scenes: vec![scene.name.clone()],
             motor: "obs 30.2.3".into(),
             ..Status::default()
         };
         let tarball = mine.join("setup.tar.gz");
         let mut engine = |command: &Command| match command {
             Command::Status => Ok(Reply::Status(Box::new(status.clone()))),
+            Command::Scenes => Ok(Reply::Scenes {
+                active: "default".into(),
+                scenes: vec![scene.clone()],
+                staged: None,
+                trash: vec![],
+            }),
             other => Err(format!("unexpected {other:?}")),
         };
         let said = export(&tarball, vec![], &mut engine).expect("exported");
@@ -305,7 +310,7 @@ mod tests {
             })),
             Command::SceneAdd { scene } => {
                 added.push((**scene).clone());
-                status.scenes.push((**scene).clone());
+                status.scenes.push(scene.name.clone());
                 Ok(Reply::Status(Box::new(status.clone())))
             }
             other => Err(format!("unexpected {other:?}")),
@@ -331,7 +336,6 @@ mod tests {
                 motor: "obs 30".into(),
             },
             scenes: vec![],
-            audio_layers: vec![],
             gate: Default::default(),
             faders: Status::default().faders,
             companions: vec![],

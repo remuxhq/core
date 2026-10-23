@@ -69,6 +69,19 @@ pub fn list(source: &str, property: &str) -> Vec<(String, String)> {
     }
 }
 
+/// The same list off a live source, by its own settings: what its device
+/// offers, where the list depends on the device.
+///
+/// # Safety
+/// `source` is a live source.
+pub unsafe fn list_of_source(
+    source: *mut sys::obs_source_t,
+    property: &str,
+) -> Vec<(String, String)> {
+    // SAFETY: the caller's source is live; the properties are ours to destroy.
+    unsafe { rows(sys::obs_source_properties(source), property) }
+}
+
 /// The same list off the source type, with no source made. A microphone
 /// source starts capturing the moment it exists: on AirPods that switched
 /// them to the headset profile ("[24000 Hz] initialized") and glitched what
@@ -119,6 +132,38 @@ unsafe fn rows(props: *mut sys::obs_properties_t, property: &str) -> Vec<(String
     out
 }
 
+/// The bundle id of a running application by its name, as a face says it:
+/// from the last listing, and listed again when it is not there. A boot puts
+/// its scene back before anybody listed, and an application may have opened
+/// since; either one read as "no running application" and the layer was lost.
+pub fn bundle_of(
+    known: &Mutex<Known>,
+    said: &str,
+    listed: impl FnOnce() -> BTreeMap<String, String>,
+) -> Option<String> {
+    let find = |apps: &BTreeMap<String, String>| {
+        apps.iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(said))
+            .map(|(_, bundle)| bundle.clone())
+    };
+    let mut known = known.lock().ok()?;
+    if let Some(bundle) = find(&known.apps) {
+        return Some(bundle);
+    }
+    known.apps = listed();
+    find(&known.apps)
+}
+
+/// The running applications by name, with their bundle ids, where the
+/// platform hears one application at a time.
+pub fn apps() -> BTreeMap<String, String> {
+    let table = crate::platform::screen();
+    table
+        .apps
+        .map(|apps| list(table.source, apps).into_iter().collect())
+        .unwrap_or_default()
+}
+
 impl Sources for ObsSources {
     /// Off the source type alone, as `available` reads them: no camera is
     /// listed, so none is opened.
@@ -146,10 +191,7 @@ impl Sources for ObsSources {
             .known
             .lock()
             .map_err(|_| "the display list is poisoned")?;
-        known.apps = table
-            .apps
-            .map(|apps| list(table.source, apps).into_iter().collect())
-            .unwrap_or_default();
+        known.apps = apps();
         known.displays = displays
             .iter()
             .enumerate()
@@ -219,7 +261,28 @@ impl Sources for ObsSources {
 
 #[cfg(test)]
 mod tests {
-    use super::{value_of, Row};
+    use super::{bundle_of, value_of, Known, Row};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    fn spotify() -> BTreeMap<String, String> {
+        BTreeMap::from([("Spotify".to_string(), "com.spotify.client".to_string())])
+    }
+
+    #[test]
+    fn an_application_nobody_listed_yet_is_listed_then_found() {
+        let known = Mutex::new(Known::default());
+        assert_eq!(
+            bundle_of(&known, "spotify", spotify).as_deref(),
+            Some("com.spotify.client")
+        );
+        assert_eq!(
+            bundle_of(&known, "Spotify", || panic!("listed again")).as_deref(),
+            Some("com.spotify.client"),
+            "a known one is not listed again"
+        );
+        assert_eq!(bundle_of(&known, "Steam", BTreeMap::new), None);
+    }
 
     #[test]
     fn the_row_for_none_is_not_a_device() {

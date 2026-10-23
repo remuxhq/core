@@ -82,6 +82,14 @@ make setup                            # nextest, llvm-cov, scanners
 | Linux, X11 (Ubuntu 24.04+) | OBS 30+ from the distribution | Limited support, needs further testing; proven in an Ubuntu 24.04 VM. Wayland: not yet |
 | Windows | | Not yet |
 
+## Issues and pull requests
+
+remux is open source, not open contribution. Issues are welcome: a bug with the report
+`remux bug` writes, or an idea. Pull requests are not: only its two maintainers write the
+code, and a pull request from anybody else is closed when it is opened
+(`.github/workflows/pull-requests.yml`). A patch in an issue is fine as an illustration,
+and may be rewritten from scratch.
+
 ## License
 
-GPL-3.0 (`LICENSE`). Contributions under `CLA.md`.
+GPL-3.0 (`LICENSE`).

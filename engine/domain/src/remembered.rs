@@ -29,6 +29,9 @@ pub struct Remembered {
     pub scenes: Vec<crate::picture::scenes::Scene>,
     #[serde(default = "crate::protocol::default_scene_name")]
     pub active_scene: String,
+    /// The active scene's, which each scene keeps now: written for an engine
+    /// from before, and read from a file from before, when every scene heard
+    /// them.
     #[serde(default)]
     pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
     #[serde(default)]

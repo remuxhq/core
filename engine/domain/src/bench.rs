@@ -13,7 +13,6 @@ use crate::companions::Companion;
 use crate::picture::layers::Kind;
 use crate::picture::scenes::Scene;
 use crate::protocol::{Devices, Faders};
-use crate::sound::audio_layers::Layer as AudioLayer;
 use crate::sound::mixer::gate::GateParams;
 
 /// The bench format's version.
@@ -31,9 +30,8 @@ pub struct Requires {
 pub struct Bench {
     pub bench: u32,
     pub requires: Requires,
+    /// Each with its own sounds, its audio layers.
     pub scenes: Vec<Scene>,
-    #[serde(default)]
-    pub audio_layers: Vec<AudioLayer>,
     pub gate: GateParams,
     pub faders: Faders,
     #[serde(default)]
@@ -174,6 +172,7 @@ mod tests {
             order: vec![],
             elements: vec![],
             shader: None,
+            audio_layers: vec![],
         }
     }
 

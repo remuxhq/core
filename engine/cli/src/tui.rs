@@ -22,6 +22,16 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         Reply::Status(status) => Ok(*status),
         other => Err(format!("the engine answered {other:?}")),
     };
+    // What the status no longer carries has its own question: the engine's
+    // journal, and every scene in full.
+    let journal = || match ask(&Command::Log) {
+        Ok(Reply::Log { lines }) => lines,
+        _ => Vec::new(),
+    };
+    let scenes = || match ask(&Command::Scenes) {
+        Ok(Reply::Scenes { scenes, .. }) => scenes,
+        _ => Vec::new(),
+    };
     let mut terminal = ratatui::init();
     // A click focuses a panel and picks its row.
     let _ = ratatui::crossterm::execute!(std::io::stdout(), event::EnableMouseCapture);
@@ -38,13 +48,12 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let mut last_said: Option<String> = None;
     // The log starts with what the engine wrote down so far; of its events, only
     // what happens from now on.
-    let mut journal_seen: Option<String> = None;
-    if let Ok(now) = &status {
-        for line in &now.log {
-            to_log(&mut screen, line.clone());
-        }
-        journal_seen = now.log.last().cloned();
+    let written = journal();
+    for line in &written {
+        to_log(&mut screen, line.clone());
     }
+    let mut journal_seen: Option<String> = written.last().cloned();
+    screen.scenes = scenes();
     let mut events_seen = match ask(&Command::Events {
         since: 0,
         follow: false,
@@ -68,12 +77,12 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
     let outcome = loop {
         if read_at.elapsed() >= Duration::from_secs(1) {
             status = read();
-            if let Ok(now) = &status {
-                for line in fresh_journal(journal_seen.as_deref(), &now.log) {
-                    to_log(&mut screen, line.clone());
-                }
-                journal_seen = now.log.last().cloned();
+            let written = journal();
+            for line in fresh_journal(journal_seen.as_deref(), &written) {
+                to_log(&mut screen, line.clone());
             }
+            journal_seen = written.last().cloned().or(journal_seen);
+            screen.scenes = scenes();
             if let Ok(Reply::Events { events, .. }) = ask(&Command::Events {
                 since: events_seen,
                 follow: false,
@@ -96,7 +105,9 @@ pub fn run(ask: impl Fn(&Command) -> Result<Reply, String>) -> std::io::Result<(
         }
         // The meters, every turn of the loop: one line on the socket, no device opened.
         let levels = match ask(&Command::Levels) {
-            Ok(Reply::Levels { hearing, mixing }) => Some((hearing, mixing)),
+            Ok(Reply::Levels {
+                hearing, mixing, ..
+            }) => Some((hearing, mixing)),
             _ => None,
         };
         if let (Some((hearing, mixing)), Ok(now_status)) = (&levels, &status) {
@@ -421,12 +432,12 @@ pub fn clicked(screen: &mut Screen, status: &Status, panel: Panel, row: Option<u
     screen.focus = panel;
     let Some(row) = row else { return };
     match panel {
-        Panel::Scenes if row < status.scenes.len() && row != screen.picked => {
+        Panel::Scenes if row < screen.scenes.len() && row != screen.picked => {
             screen.picked = row;
             screen.picked_layer = 0;
         }
         Panel::Layers => {
-            let rows = status
+            let rows = screen
                 .scenes
                 .get(screen.picked)
                 .map_or(0, |scene| scene.ordered_ids().len());
@@ -468,11 +479,11 @@ fn draw_panel(
     let reversed = Style::new().add_modifier(Modifier::REVERSED);
     match panel {
         Panel::Scenes => {
-            let scenes: Vec<ListItem> = status
+            let scenes: Vec<ListItem> = screen
                 .scenes
                 .iter()
                 .map(|scene| {
-                    let mark = if scene.name == status.active_scene {
+                    let mark = if scene.name == status.scene.name {
                         "▶ "
                     } else if status.staged.as_deref() == Some(scene.name.as_str()) {
                         "◇ "
@@ -491,15 +502,15 @@ fn draw_panel(
                     .block(block(title))
                     .highlight_style(reversed),
                 area,
-                &mut picked(screen.picked, status.scenes.len()),
+                &mut picked(screen.picked, screen.scenes.len()),
             );
         }
         Panel::Layers => {
             // The picked scene's, which need not be the one on the air: what a scene
             // holds is read before it goes out.
-            let shown = status
+            let shown = screen
                 .scenes
-                .get(screen.picked.min(status.scenes.len().saturating_sub(1)));
+                .get(screen.picked.min(screen.scenes.len().saturating_sub(1)));
             let layers: Vec<ListItem> = shown
                 .map(rows_of)
                 .unwrap_or_default()
@@ -1281,6 +1292,8 @@ pub struct Screen {
     /// How many lines of chat back from the last the panel ends: zero follows the chat.
     pub chat_back: usize,
     pub picked_companion: usize,
+    /// Every scene in full, as `scenes` last answered: the status names them only.
+    pub scenes: Vec<remuxd_domain::picture::scenes::Scene>,
     /// Each companion and its state as last read.
     pub companions: Vec<(String, State)>,
     /// The words each companion says it takes, as last read.
@@ -1445,12 +1458,12 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         };
     }
     let destination = status.destinations.get(screen.picked_destination);
-    let scene = status.scenes.get(screen.picked);
+    let scene = screen.scenes.get(screen.picked);
     let ids = scene.map(Scene::ordered_ids).unwrap_or_default();
     let layer = ids.get(screen.picked_layer).cloned();
     // A layer's verbs act on the scene on the air, or on the staged one by way of the
     // preview: a layer of a third scene with the same id would be the air's.
-    let on_air = scene.is_some_and(|scene| scene.name == status.active_scene);
+    let on_air = scene.is_some_and(|scene| scene.name == status.scene.name);
     let in_preview = scene.is_some_and(|scene| Some(&scene.name) == status.staged.as_ref());
     let send = |command: Command| {
         if on_air {
@@ -1540,7 +1553,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         }
         ('j', Panel::Log) => screen.log_back = screen.log_back.saturating_sub(1),
         ('j', Panel::Chat) => screen.chat_back = screen.chat_back.saturating_sub(1),
-        ('j', Panel::Sound) if screen.picked_sound < 1 + status.audio_layers.len() => {
+        ('j', Panel::Sound) if screen.picked_sound < 1 + status.scene.audio_layers.len() => {
             screen.picked_sound += 1
         }
         ('k', Panel::Sound) => screen.picked_sound = screen.picked_sound.saturating_sub(1),
@@ -1622,9 +1635,7 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         ('X', Panel::Scenes) if on_air => return Act::Say("the scene on the air is not deleted"),
         ('U', Panel::Scenes) => {
             return match status.trash.first() {
-                Some(scene) => Act::Send(Command::SceneRestore {
-                    name: scene.name.clone(),
-                }),
+                Some(name) => Act::Send(Command::SceneRestore { name: name.clone() }),
                 None => Act::Say("the trash is empty"),
             }
         }
@@ -1682,8 +1693,8 @@ pub fn press(key: char, screen: &mut Screen, rows: usize, status: &Status) -> Ac
         // As a studio does: Enter stages the scene, off the air, and `t` takes
         // it. The scene on the air staged is nothing staged.
         ('\n', Panel::Scenes) => {
-            if let Some(scene) = status.scenes.get(screen.picked) {
-                if scene.name != status.active_scene || status.staged.is_some() {
+            if let Some(scene) = screen.scenes.get(screen.picked) {
+                if scene.name != status.scene.name || status.staged.is_some() {
                     return Act::Send(Command::SceneStage {
                         name: scene.name.clone(),
                     });
@@ -1752,7 +1763,7 @@ fn sound_verb(key: char, row: usize, playing: bool, status: &Status) -> Option<C
             },
         },
         (_, row) => {
-            let layer = status.audio_layers.get(row.checked_sub(2)?)?;
+            let layer = status.scene.audio_layers.get(row.checked_sub(2)?)?;
             let id = layer.id.clone();
             match key {
                 ' ' => Command::AudioLayerMute {
@@ -1884,8 +1895,8 @@ pub fn out_line(status: &Status) -> String {
         out.fps,
         out.video_kbps,
         out.audio_kbps,
-        count(status.viewers),
-        count(status.viewers_peak)
+        count(summed(status.destinations.iter().map(|d| d.viewers))),
+        count(summed(status.destinations.iter().map(|d| d.viewers_peak)))
     )
 }
 
@@ -1974,8 +1985,8 @@ pub fn chat_rows(lines: &[ChatLine], width: usize) -> Vec<Line<'static>> {
 /// The scene on the air, and the one staged in the preview when there is one.
 pub fn scene_line(status: &Status) -> String {
     match &status.staged {
-        Some(staged) => format!("scene: {} · preview: {staged}", status.active_scene),
-        None => format!("scene: {}", status.active_scene),
+        Some(staged) => format!("scene: {} · preview: {staged}", status.scene.name),
+        None => format!("scene: {}", status.scene.name),
     }
 }
 
@@ -2224,9 +2235,9 @@ fn sound(
         ),
     ]
     .into_iter()
-    .chain((!status.audio_layers.is_empty()).then(|| Line::from("")))
+    .chain((!status.scene.audio_layers.is_empty()).then(|| Line::from("")))
     .chain(audio_rows(status).into_iter().enumerate().map(|(i, line)| {
-        let muted = status.audio_layers[i].muted;
+        let muted = status.scene.audio_layers[i].muted;
         let style = if muted {
             Style::new().fg(Color::DarkGray)
         } else {
@@ -2240,11 +2251,18 @@ fn sound(
     .collect()
 }
 
+/// The destinations' counts added up, from those that answered; none answered
+/// is no count, never zero.
+fn summed(counts: impl Iterator<Item = Option<u32>>) -> Option<u32> {
+    counts.flatten().reduce(|a, b| a + b)
+}
+
 /// The audio layers, one line each. The engine meters none of them, so a line says what
 /// the layer hears and how it is set, never a level.
 pub fn audio_rows(status: &Status) -> Vec<String> {
     use remuxd_domain::sound::audio_layers::{Duck, Kind};
     status
+        .scene
         .audio_layers
         .iter()
         .map(|layer| {
@@ -2252,7 +2270,7 @@ pub fn audio_rows(status: &Status) -> Vec<String> {
             let heard = match source.kind {
                 Kind::Mic => format!("mic {}", source.device.as_deref().unwrap_or("")),
                 Kind::App => format!("app {}", source.name.as_deref().unwrap_or("")),
-                Kind::Screen => format!("screen {}", source.display.unwrap_or_default()),
+                Kind::System => "the computer's sound".to_string(),
             };
             let on = if layer.muted { "muted" } else { "on" };
             let duck = match layer.duck {
@@ -2448,16 +2466,19 @@ mod tests {
 
     fn with_scenes(names: &[&str], active: &str) -> Status {
         Status {
-            scenes: names
-                .iter()
-                .map(|n| {
-                    serde_json::from_value(serde_json::json!({ "name": n }))
-                        .expect("a scene by its name")
-                })
-                .collect(),
-            active_scene: active.to_string(),
+            scene: named(active),
+            scenes: names.iter().map(|n| n.to_string()).collect(),
             ..Status::default()
         }
+    }
+
+    fn named(name: &str) -> remuxd_domain::picture::scenes::Scene {
+        serde_json::from_value(serde_json::json!({ "name": name })).expect("a scene by its name")
+    }
+
+    /// Every scene of `with_scenes` in full, as `scenes` answers, for a screen.
+    fn every(names: &[&str]) -> Vec<remuxd_domain::picture::scenes::Scene> {
+        names.iter().map(|n| named(n)).collect()
     }
 
     fn with_destinations(rows: &[(i64, bool, bool)]) -> Status {
@@ -2637,6 +2658,16 @@ mod tests {
     /// "Screen" on the air with `desk` shown and `face` hidden, back to front, and
     /// "BRB" beside it.
     fn on_screen() -> Status {
+        let scenes = on_screen_scenes();
+        Status {
+            scene: scenes[0].clone(),
+            scenes: scenes.iter().map(|s| s.name.clone()).collect(),
+            ..Status::default()
+        }
+    }
+
+    /// The scenes of `on_screen` in full, as `scenes` answers, for a screen.
+    fn on_screen_scenes() -> Vec<remuxd_domain::picture::scenes::Scene> {
         let layer = |id: &str, visible: bool| {
             serde_json::json!({
                 "id": id, "visible": visible,
@@ -2644,20 +2675,16 @@ mod tests {
                 "transform": { "x": 0, "y": 0, "width": 1920, "height": 1080, "degrees": 0 }
             })
         };
-        Status {
-            scenes: vec![
-                serde_json::from_value(serde_json::json!({
-                    "name": "Screen", "layers": [layer("desk", true), layer("face", false)]
-                }))
-                .expect("a scene"),
-                serde_json::from_value(
-                    serde_json::json!({ "name": "BRB", "layers": [layer("desk", true)] }),
-                )
-                .expect("a scene"),
-            ],
-            active_scene: "Screen".into(),
-            ..Status::default()
-        }
+        vec![
+            serde_json::from_value(serde_json::json!({
+                "name": "Screen", "layers": [layer("desk", true), layer("face", false)]
+            }))
+            .expect("a scene"),
+            serde_json::from_value(
+                serde_json::json!({ "name": "BRB", "layers": [layer("desk", true)] }),
+            )
+            .expect("a scene"),
+        ]
     }
 
     #[test]
@@ -2672,6 +2699,7 @@ mod tests {
     #[test]
     fn space_hides_a_shown_layer_and_shows_a_hidden_one() {
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             ..Screen::default()
         };
@@ -2695,6 +2723,7 @@ mod tests {
     #[test]
     fn shift_j_brings_a_layer_forward_and_shift_k_sends_it_back_the_pick_following() {
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             ..Screen::default()
         };
@@ -2754,6 +2783,7 @@ mod tests {
         let mut status = on_screen();
         status.staged = Some("BRB".into());
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             picked: 1,
             ..Screen::default()
@@ -2889,7 +2919,7 @@ mod tests {
     fn sounding() -> Status {
         let mut status = music_at(0.01);
         status.faders.mic = 1.0;
-        status.audio_layers = serde_json::from_value(serde_json::json!([
+        status.scene.audio_layers = serde_json::from_value(serde_json::json!([
             { "id": "guest", "source": { "kind": "app", "name": "Discord" },
               "volume": 0.5, "muted": false, "duck": "by-kind" }
         ]))
@@ -2994,7 +3024,7 @@ mod tests {
             (Duck::Off, Duck::On),
             (Duck::On, Duck::ByKind),
         ] {
-            status.audio_layers[0].duck = now;
+            status.scene.audio_layers[0].duck = now;
             assert_eq!(
                 press('d', &mut on_sound(2), 0, &status),
                 Act::Send(Command::AudioLayerDuck {
@@ -3052,8 +3082,11 @@ mod tests {
             out_line(&status),
             "out 1920x1080 · 30 fps · video 6182 kbps · audio 160 kbps · viewers — · peak —"
         );
-        status.viewers = Some(42);
-        status.viewers_peak = Some(80);
+        status.destinations = vec![remuxd_domain::protocol::Destination {
+            viewers: Some(42),
+            viewers_peak: Some(80),
+            ..Default::default()
+        }];
         assert!(out_line(&status).ends_with("viewers 42 · peak 80"));
     }
 
@@ -3215,6 +3248,7 @@ mod tests {
     fn enter_stages_the_picked_scene_and_the_air_does_not_move() {
         let status = with_scenes(&["Screen", "Starting soon", "BRB"], "Screen");
         let mut screen = Screen {
+            scenes: every(&["Screen", "Starting soon", "BRB"]),
             picked: 2,
             ..Screen::default()
         };
@@ -3227,10 +3261,29 @@ mod tests {
     #[test]
     fn enter_on_the_scene_on_the_air_lets_the_staged_one_go_or_does_nothing() {
         let mut status = with_scenes(&["Screen", "BRB"], "Screen");
-        assert_eq!(press('\n', &mut Screen::default(), 2, &status), Act::Stay);
+        assert_eq!(
+            press(
+                '\n',
+                &mut Screen {
+                    scenes: every(&["Screen", "BRB"]),
+                    ..Screen::default()
+                },
+                2,
+                &status
+            ),
+            Act::Stay
+        );
         status.staged = Some("BRB".into());
         assert_eq!(
-            press('\n', &mut Screen::default(), 2, &status),
+            press(
+                '\n',
+                &mut Screen {
+                    scenes: every(&["Screen", "BRB"]),
+                    ..Screen::default()
+                },
+                2,
+                &status
+            ),
             Act::Send(Command::SceneStage {
                 name: "Screen".into()
             })
@@ -3371,6 +3424,7 @@ mod tests {
     fn d_drafts_a_copy_of_the_picked_scene_under_a_new_name() {
         let status = with_scenes(&["Screen", "BRB"], "Screen");
         let mut screen = Screen {
+            scenes: every(&["Screen", "BRB"]),
             picked: 1,
             ..Screen::default()
         };
@@ -3703,6 +3757,7 @@ mod tests {
     fn a_click_on_a_panel_focuses_it_and_picks_the_row() {
         let status = with_scenes(&["Screen", "BRB", "Old"], "Screen");
         let mut screen = Screen {
+            scenes: every(&["Screen", "BRB", "Old"]),
             focus: Panel::Chat,
             ..Screen::default()
         };
@@ -3731,10 +3786,19 @@ mod tests {
     fn x_deletes_a_scene_after_a_yes_and_never_the_one_on_the_air() {
         let status = with_scenes(&["Screen", "BRB"], "Screen");
         assert_eq!(
-            press('X', &mut Screen::default(), 2, &status),
+            press(
+                'X',
+                &mut Screen {
+                    scenes: every(&["Screen", "BRB"]),
+                    ..Screen::default()
+                },
+                2,
+                &status
+            ),
             Act::Say("the scene on the air is not deleted")
         );
         let mut screen = Screen {
+            scenes: every(&["Screen", "BRB"]),
             picked: 1,
             ..Screen::default()
         };
@@ -3749,6 +3813,7 @@ mod tests {
     fn x_removes_the_picked_layer_after_a_yes() {
         let status = on_screen();
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             ..Screen::default()
         };
@@ -3860,6 +3925,7 @@ mod tests {
     fn f_filters_the_picked_layer_and_shift_f_the_whole_scene_on_the_air_or_staged() {
         let mut status = on_screen();
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             filters: vec!["/f/fire.wgsl".into()],
             ..Screen::default()
@@ -3893,6 +3959,7 @@ mod tests {
     fn with_no_filters_to_offer_f_and_shift_f_change_nothing_and_send_nothing() {
         let status = on_screen();
         let mut screen = Screen {
+            scenes: on_screen_scenes(),
             focus: Panel::Layers,
             ..Screen::default()
         };

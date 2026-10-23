@@ -680,6 +680,17 @@ impl ObsPipeline {
             if made.is_null() {
                 return Err(format!("libobs could not open {}", source.name));
             }
+
+            if let (Kind::Camera, Some((key, choose))) =
+                (source.kind, crate::platform::TABLE.camera.format)
+            {
+                if let Some(format) = choose(&crate::sources::list_of_source(made, key)) {
+                    let update = sys::obs_data_create();
+                    sys::obs_data_set_int(update, c(key).as_ptr(), format);
+                    sys::obs_source_update(made, update);
+                    sys::obs_data_release(update);
+                }
+            }
             Ok(made)
         }
     }
@@ -1168,12 +1179,6 @@ impl Picture for ObsPipeline {
             drawn.order = layers.iter().map(|l| l.id.clone()).collect();
         }
         drawn.reorder();
-    }
-
-    /// Screen sound is the system's, whichever display asked for it: the
-    /// capture hears every app but this one, not one display's.
-    fn screen_audio(&mut self, id: Option<&str>) -> Result<(), String> {
-        self.set_screen_sound(id.is_some())
     }
 
     fn shader(&mut self, path: Option<&str>) -> Result<(), String> {

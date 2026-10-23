@@ -17,8 +17,8 @@ port it drives; `mod.rs` holds the state, the dispatcher and what crosses contex
   back-to-front order, the scenes and their switch, the filters (WGSL), the
   preview lease. Port: `Picture`.
 - `sound`: the microphone, the gate, the denoiser, the music and its rotation, the
-  clips, the faders, the speakers, the screen's sound, one application's sound, the
-  audio layers. Port: `Sound`.
+  clips, the faders, the speakers, and the audio layers (a microphone, one
+  application, what the computer plays), each the active scene's. Port: `Sound`.
 - `air`: going live and recording, the two levers on the same picture; the live written
   down when it ends. Port: `Air`.
 - `app`: what the engine asks on a face's behalf (arm, retitle, announce, the chat, the
