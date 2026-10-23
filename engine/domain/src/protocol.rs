@@ -41,6 +41,34 @@ pub enum Command {
     SceneDelete {
         name: String,
     },
+    /// Draw this scene off the air, into the preview's staged ring, so it is
+    /// seen before it goes out. The scene on the air stages nothing.
+    SceneStage {
+        name: String,
+    },
+    /// The staged scene on the air, and the scene that was out staged in its
+    /// place: a second take goes back.
+    SceneTake,
+    /// A new scene in the preview, off the air: empty, or a copy of `from`.
+    SceneDraft {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+    },
+    /// A layer verb on the staged scene instead of the scene on the air.
+    Staged {
+        command: Box<Command>,
+    },
+    /// A deleted scene back from the trash, under its name, or under another
+    /// when the name was taken since. Nothing on the air moves.
+    SceneRestore {
+        name: String,
+    },
+    /// A whole scene from elsewhere (a bench), beside the others, under its
+    /// name or another when it is taken. Nothing on the air moves.
+    SceneAdd {
+        scene: Box<crate::picture::scenes::Scene>,
+    },
     AudioLayerAdd {
         id: String,
         source: crate::sound::audio_layers::Source,
@@ -96,6 +124,13 @@ pub enum Command {
     /// Everything capturable right now: screens, windows, cameras, mics,
     /// apps, and the music's genres.
     Sources,
+    /// The microphones alone, answered as `sources` is, with no camera opened
+    /// to list them: a panel asks this to offer a choice of microphone.
+    Mics,
+    /// The music's genres alone, answered as `sources` is: listing cameras
+    /// opens one, and the camera on the air stutters, so a panel asks this
+    /// for the genres instead.
+    Genres,
 
     // ---- the two levers ---------------------------------------------------
     GoLive,
@@ -436,6 +471,12 @@ pub enum Reply {
     Scenes {
         active: String,
         scenes: Vec<crate::picture::scenes::Scene>,
+        /// The scene in the preview, off the air.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        staged: Option<String>,
+        /// The deleted scenes by name, the latest first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        trash: Vec<String>,
     },
     Ok,
     /// Boxed, and only because of its size: a `Reply` that carried a `Status`
@@ -801,6 +842,14 @@ pub struct Status {
     pub scene: crate::picture::scenes::Scene,
     /// Every scene's name, the active one included.
     pub scenes: Vec<String>,
+    /// The scene drawn off the air, which a `scene-take` puts on it. Not
+    /// remembered: a restarted engine stages nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged: Option<String>,
+    /// The deleted scenes by name, the latest first; `scene-restore` brings one
+    /// back whole. The last ten are kept, and remembered across a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trash: Vec<String>,
     /// The composed scene's frames, drawn at the full rate whether or not
     /// anything is in it; the plan, not the count, keeps an empty scene off
     /// the air.
@@ -856,6 +905,8 @@ impl Default for Status {
             outgoing: Outgoing::default(),
             scene: crate::picture::scenes::defaults().remove(0),
             scenes: vec![default_scene_name()],
+            staged: None,
+            trash: Vec::new(),
             picture: Flowing::default(),
             preview: None,
             mirrored: false,

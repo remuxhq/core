@@ -75,6 +75,17 @@ pub trait Picture: Send {
         Err("this pipeline cannot switch scenes".into())
     }
     fn layers_changed(&mut self, _layers: &[crate::picture::layers::Layer]) {}
+    /// Draw a scene that is not on the air into the staged ring, sharing the
+    /// captures the air already has open; `None` stops drawing one.
+    fn stage(&mut self, scene: Option<&crate::picture::scenes::Scene>) -> Result<(), String> {
+        match scene {
+            Some(_) => Err("this pipeline cannot stage a scene".into()),
+            None => Ok(()),
+        }
+    }
+    /// While on, the layer calls that follow act on the staged scene's
+    /// picture instead of the air's.
+    fn edit_staged(&mut self, _on: bool) {}
     /// Compile a scene shader before switching the running compositor.
     fn shader(&mut self, path: Option<&str>) -> Result<(), String>;
     /// Compile before replacing this layer's shader. `None` removes it.

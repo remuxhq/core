@@ -26,6 +26,17 @@ pub struct ObsPipeline {
     pub(crate) scene: *mut sys::obs_scene_t,
     /// The picture's layers and elements, shared with the tick.
     pub(crate) picture: Box<Mutex<crate::picture::Drawn>>,
+    /// The staged scene, drawn off the air into the staged ring, and its
+    /// layers, shared with their own tick.
+    pub(crate) staged_scene: *mut sys::obs_scene_t,
+    pub(crate) staged: Box<Mutex<crate::picture::Drawn>>,
+    /// Whether a scene is staged: the staged ring draws it while one is.
+    pub(crate) staging: bool,
+    /// The staged scene's own filter, over everything it composes.
+    pub(crate) staged_filter: Option<(String, *mut sys::obs_source_t)>,
+    /// Whether the staged scene stands in for the air's while a verb edits
+    /// it (`Picture::edit_staged`).
+    pub(crate) editing_staged: bool,
     /// The scene's own filter, over everything composed.
     pub(crate) scene_filter: Option<(String, *mut sys::obs_source_t)>,
     /// Filters asked for an element before its picture exists.
@@ -61,6 +72,10 @@ pub struct ObsPipeline {
     pub(crate) preview: Option<Box<crate::preview::Ring>>,
     width: u32,
     height: u32,
+    /// The music's last gain, given to every new track before it is heard: a
+    /// new source starts at full volume, and the first instant of each track
+    /// was loud until the faders came (#46). Silent until the faders first come.
+    music_volume: f64,
     /// The independent audio captures, each on its own channel from 8, and
     /// whether it steps back under the voice.
     audio_layers: Vec<AudioLayer>,
@@ -358,6 +373,11 @@ impl ObsPipeline {
         Self {
             known,
             scene: std::ptr::null_mut(),
+            staged_scene: std::ptr::null_mut(),
+            staged: Box::default(),
+            staging: false,
+            staged_filter: None,
+            editing_staged: false,
             picture: Box::default(),
             scene_filter: None,
             element_filters: Default::default(),
@@ -382,6 +402,7 @@ impl ObsPipeline {
             preview: None,
             width: 1920,
             height: 1080,
+            music_volume: 0.0,
             audio_layers: Vec::new(),
             video_encoder: std::ptr::null_mut(),
             audio_encoder: std::ptr::null_mut(),
@@ -762,6 +783,24 @@ impl ObsPipeline {
         self.scene
     }
 
+    /// The staged scene, made on first use, on no output channel: only the
+    /// staged ring draws it. Its layers tick as the air's do.
+    pub(crate) fn staged_scene(&mut self) -> *mut sys::obs_scene_t {
+        if self.staged_scene.is_null() {
+            // SAFETY: ours until drop; the tick's pointer is the boxed staged
+            // picture, which outlives the registration (removed in drop).
+            unsafe {
+                self.staged_scene = sys::obs_scene_create_private(c("remux staged").as_ptr());
+                sys::obs_add_tick_callback(Some(crate::picture::tick), self.staged_param());
+            }
+        }
+        self.staged_scene
+    }
+
+    fn staged_param(&self) -> *mut c_void {
+        &*self.staged as *const Mutex<crate::picture::Drawn> as *mut c_void
+    }
+
     fn tick_param(&self) -> *mut c_void {
         &*self.picture as *const Mutex<crate::picture::Drawn> as *mut c_void
     }
@@ -860,6 +899,15 @@ impl Drop for ObsPipeline {
         }
         self.recording = None;
         self.publishing.clear();
+        if !self.staged_scene.is_null() {
+            let _ = self.stage_scene(None);
+            // SAFETY: registered in `staged_scene` with this pointer; the
+            // scene is ours and on no channel.
+            unsafe {
+                sys::obs_remove_tick_callback(Some(crate::picture::tick), self.staged_param());
+                sys::obs_scene_release(self.staged_scene);
+            }
+        }
         self.clear_picture();
         let ids: Vec<String> = self.audio_layers.iter().map(|l| l.id.clone()).collect();
         for id in ids {
@@ -1045,6 +1093,7 @@ impl Sound for ObsPipeline {
             if source.is_null() {
                 return Err("libobs could not open the track".into());
             }
+            sys::obs_source_set_volume(source, self.music_volume as f32);
             sys::obs_set_output_source(2, source);
             self.music = source;
             if self.music_meter.is_null() {
@@ -1130,6 +1179,7 @@ impl Sound for ObsPipeline {
             self.duck_db = levels.duck_db;
             self.apply_duck();
         }
+        self.music_volume = levels.music;
         if !self.music.is_null() {
             // SAFETY: ours and live.
             unsafe { sys::obs_source_set_volume(self.music, levels.music as f32) };

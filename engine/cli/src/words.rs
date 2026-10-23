@@ -155,6 +155,14 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             name: words[2..].join(" "),
         });
     }
+    // `--staged` on a scene verb: the same verb, on the scene in the preview.
+    if words.first().map(String::as_str) == Some("scene") && words.iter().any(|w| w == "--staged") {
+        let rest: Vec<String> = words.iter().filter(|w| *w != "--staged").cloned().collect();
+        let command = parse(&rest)?;
+        return Ok(Command::Staged {
+            command: Box::new(command),
+        });
+    }
     let words = normalize(words)?;
     parse_wire_words(&words)
 }
@@ -180,6 +188,27 @@ fn parse_wire_words(words: &[String]) -> Result<Command, String> {
             }),
             _ => Err("scene command needs exactly one name (quote names with spaces)".into()),
         },
+        "scene-stage" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneStage { name: name.clone() }),
+            _ => Err("scene stage needs exactly one name (quote names with spaces)".into()),
+        },
+        "scene-take" if rest.is_empty() => Ok(Command::SceneTake),
+        "scene-restore" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneRestore { name: name.clone() }),
+            _ => Err("scene restore needs exactly one name (quote names with spaces)".into()),
+        },
+        "scene-draft" => match rest {
+            [name] if !name.is_empty() => Ok(Command::SceneDraft {
+                name: name.clone(),
+                from: None,
+            }),
+            [name, flag, from] if !name.is_empty() && flag == "--from" => Ok(Command::SceneDraft {
+                name: name.clone(),
+                from: Some(from.clone()),
+            }),
+            _ => Err("scene draft <name> [--from <scene>] (quote names with spaces)".into()),
+        },
+        "scene-take" => Err("scene take takes no arguments: it takes what is staged".into()),
         "audio-layer" => parse_audio_layer(rest),
         "levels" => Ok(Command::Levels),
         // The composed scene preview.
@@ -775,7 +804,12 @@ pub fn render(reply: &Reply) -> String {
                 .join("\n"),
             _ => "nothing found".into(),
         },
-        Reply::Scenes { active, scenes } => render_scene_list(active, scenes),
+        Reply::Scenes {
+            active,
+            scenes,
+            staged,
+            trash,
+        } => render_scene_list(active, staged.as_deref(), scenes, trash),
         Reply::Sources(devices) => render_devices(devices),
         // dB, because that is what the meters are marked in and what a person
         // reading this in a terminal is comparing against them.
@@ -844,7 +878,7 @@ pub fn render(reply: &Reply) -> String {
 }
 
 /// What changed, one a line, oldest first.
-fn render_events(
+pub(crate) fn render_events(
     gap: Option<remuxd_domain::app::events::Gap>,
     events: &[remuxd_domain::app::events::Numbered],
 ) -> String {
@@ -1000,7 +1034,7 @@ fn grant(grant: &Grant) -> &'static str {
 
 /// The plan the way a person confirms it: what leaves, where to, and what
 /// would stop it, with the fingerprint `live --confirm` takes on the last line.
-fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
+pub(crate) fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
     let mut lines = Vec::new();
     if plan.on_air {
         lines.push("already on air".to_string());
@@ -1067,19 +1101,36 @@ fn render_plan(plan: &remuxd_domain::air::plan::Plan) -> String {
     lines.join("\n")
 }
 
-pub fn render_scene_list(active: &str, scenes: &[remuxd_domain::picture::scenes::Scene]) -> String {
-    scenes
+pub fn render_scene_list(
+    active: &str,
+    staged: Option<&str>,
+    scenes: &[remuxd_domain::picture::scenes::Scene],
+    trash: &[String],
+) -> String {
+    let mut lines: Vec<String> = scenes
         .iter()
         .map(|scene| {
+            let (mark, said) = if scene.name == active {
+                ("* ", "")
+            } else if Some(scene.name.as_str()) == staged {
+                ("~ ", ", in the preview")
+            } else {
+                ("  ", "")
+            };
             format!(
-                "{}{} ({} layers)",
-                if scene.name == active { "* " } else { "  " },
+                "{mark}{} ({} layers{said})",
                 scene.name,
                 scene.ordered_ids().len()
             )
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if !trash.is_empty() {
+        lines.push(format!(
+            "trash: {} (remux scene restore <name>)",
+            trash.join(", ")
+        ));
+    }
+    lines.join("\n")
 }
 
 fn render_status(status: &Status) -> String {
@@ -1264,7 +1315,7 @@ fn happening(happened: &remuxd_domain::app::wire::Happening) -> String {
     format!("{} {what}{said}", plain(&happened.platform))
 }
 
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
@@ -1334,14 +1385,67 @@ mod tests {
             })
         );
         assert_eq!(
+            super::parse(&words(&["scene", "stage", "Close Up"])),
+            Ok(remuxd_domain::protocol::Command::SceneStage {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "take"])),
+            Ok(remuxd_domain::protocol::Command::SceneTake)
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "restore", "Close Up"])),
+            Ok(remuxd_domain::protocol::Command::SceneRestore {
+                name: "Close Up".into()
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "draft", "Keys"])),
+            Ok(remuxd_domain::protocol::Command::SceneDraft {
+                name: "Keys".into(),
+                from: None
+            })
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "draft", "Keys", "--from", "Screen"])),
+            Ok(remuxd_domain::protocol::Command::SceneDraft {
+                name: "Keys".into(),
+                from: Some("Screen".into())
+            })
+        );
+        assert_eq!(
+            super::read(&words(&["scene", "layer", "hide", "keys", "--staged"]))
+                .map(|ask| ask.command),
+            Ok(Some(remuxd_domain::protocol::Command::Staged {
+                command: Box::new(remuxd_domain::protocol::Command::LayerVisible {
+                    id: "keys".into(),
+                    on: false
+                })
+            }))
+        );
+        assert_eq!(
+            super::parse(&words(&["scene", "layer", "hide", "keys", "--staged"])),
+            Ok(remuxd_domain::protocol::Command::Staged {
+                command: Box::new(remuxd_domain::protocol::Command::LayerVisible {
+                    id: "keys".into(),
+                    on: false
+                })
+            })
+        );
+        assert!(super::parse(&words(&["scene", "take", "Close Up"])).is_err());
+        assert_eq!(
             super::parse(&words(&["scene", "list"])),
             Ok(remuxd_domain::protocol::Command::Scenes)
         );
         assert!(super::parse(&words(&["scene", "create"])).is_err());
-        assert!(
-            super::render_scene_list("default", &remuxd_domain::picture::scenes::defaults())
-                .contains("* default")
-        );
+        assert!(super::render_scene_list(
+            "default",
+            None,
+            &remuxd_domain::picture::scenes::defaults(),
+            &[]
+        )
+        .contains("* default"));
     }
 
     #[test]
@@ -2317,6 +2421,13 @@ pub enum View {
     DestinationRemove(String),
     /// `history`: every live on record, newest first, off the file here.
     History,
+    /// `tui`: the engine on one screen, in the terminal, drawn here.
+    Tui,
+    /// `companion`: the operator's programs beside the engine, run by the
+    /// shell, never the engine.
+    Companion(crate::companion::Verb),
+    /// `bench export|import <file.tar.gz>`: a setup to hand to another machine.
+    Bench(crate::bench::Verb),
     /// `health`: could this engine go live now, and what stands in the way.
     /// The shell asks the grants too and joins the two.
     Health,
@@ -2340,10 +2451,11 @@ pub enum View {
     ChatKeep(String),
     /// `config`: what is in effect and where each value came from.
     Config,
-    /// `bug [--open]`: a report for an issue, gathered here; `--open` lands
-    /// on GitHub's form with it filled in, for a person to submit.
+    /// `bug [--open <title>]`: a report for an issue, gathered here; `--open`
+    /// lands on GitHub's form with it and the title filled in, for a person to
+    /// submit.
     Bug {
-        open: bool,
+        open: Option<String>,
     },
     /// `daemon start|stop|restart|status|log|path`: the engine as a service of the session.
     Daemon(remuxd_domain::daemon::Verb),
@@ -2383,6 +2495,19 @@ pub struct Ask {
 }
 
 pub fn read(words: &[String]) -> Result<Ask, String> {
+    // `--staged` on a scene verb: the same verb, on the scene in the preview.
+    if words.first().map(String::as_str) == Some("scene") && words.iter().any(|w| w == "--staged") {
+        let rest: Vec<String> = words.iter().filter(|w| *w != "--staged").cloned().collect();
+        let mut ask = read(&rest)?;
+        let command = ask
+            .command
+            .take()
+            .ok_or("--staged goes with a scene verb the engine answers")?;
+        ask.command = Some(Command::Staged {
+            command: Box::new(command),
+        });
+        return Ok(ask);
+    }
     let json = words.iter().any(|w| matches!(w.as_str(), "--json" | "-j"));
     let words: Vec<String> = words
         .iter()
@@ -2505,6 +2630,22 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
             follow: false,
         });
     }
+    if words.first().map(String::as_str) == Some("bench") {
+        return Ok(Ask {
+            command: None,
+            view: View::Bench(crate::bench::Verb::parse(&words[1..])?),
+            format,
+            follow: false,
+        });
+    }
+    if words.first().map(String::as_str) == Some("companion") {
+        return Ok(Ask {
+            command: None,
+            view: View::Companion(crate::companion::Verb::parse(&words[1..])?),
+            format,
+            follow: false,
+        });
+    }
     if words.first().map(String::as_str) == Some("daemon") {
         return Ok(Ask {
             command: None,
@@ -2514,11 +2655,22 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         });
     }
     if words.first().map(String::as_str) == Some("bug") {
+        let title = words[1..]
+            .iter()
+            .filter(|w| !w.starts_with("--"))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let open = match (words.iter().any(|w| w == "--open"), title.is_empty()) {
+            (false, _) => None,
+            (true, true) => {
+                return Err("bug --open needs a title: remux bug --open <what went wrong>".into())
+            }
+            (true, false) => Some(title),
+        };
         return Ok(Ask {
             command: None,
-            view: View::Bug {
-                open: words.iter().any(|w| w == "--open"),
-            },
+            view: View::Bug { open },
             format,
             follow: false,
         });
@@ -2546,6 +2698,14 @@ pub fn read(words: &[String]) -> Result<Ask, String> {
         return Ok(Ask {
             command: Some(Command::Status),
             view: View::Wait { until, for_secs },
+            format,
+            follow: false,
+        });
+    }
+    if words.first().map(String::as_str) == Some("tui") {
+        return Ok(Ask {
+            command: None,
+            view: View::Tui,
             format,
             follow: false,
         });
@@ -2965,6 +3125,13 @@ mod reading {
     }
 
     #[test]
+    fn tui_is_the_shell_s_own_screen_and_sends_nothing_by_itself() {
+        let ask = read(&w("tui")).unwrap();
+        assert_eq!(ask.command, None);
+        assert_eq!(ask.view, View::Tui);
+    }
+
+    #[test]
     fn json_is_the_shell_s_flag_and_never_reaches_the_engine() {
         let ask = read(&w("status --json")).unwrap();
         assert_eq!(ask.command, Some(Command::Status));
@@ -3030,9 +3197,20 @@ mod reading {
         assert!(read(&w("chat url")).is_err());
         assert_eq!(read(&w("config")).unwrap().view, View::Config);
         assert_eq!(
-            read(&w("bug --open")).unwrap().view,
-            View::Bug { open: true }
+            read(&w("bug --open window capture freezes on air"))
+                .unwrap()
+                .view,
+            View::Bug {
+                open: Some("window capture freezes on air".into())
+            }
         );
+        assert_eq!(read(&w("bug")).unwrap().view, View::Bug { open: None });
+        assert_eq!(
+            read(&w("bench export setup.tar.gz")).unwrap().view,
+            View::Bench(crate::bench::Verb::Export("setup.tar.gz".into()))
+        );
+        let refused = read(&w("bug --open")).unwrap_err();
+        assert!(refused.contains("title"), "{refused}");
         assert_eq!(
             read(&w("daemon stop --force")).unwrap().view,
             View::Daemon(remuxd_domain::daemon::Verb::Stop { force: true })
@@ -3117,10 +3295,23 @@ mod reading {
         let reply = Reply::Scenes {
             active: "talk".into(),
             scenes: vec![scene("code"), scene("talk")],
+            staged: None,
+            trash: vec![],
         };
         assert_eq!(
             show(&reply, &View::Scenes, Format::Prose, Ink::Plain, 0),
             "  code (0 layers)\n* talk (0 layers)"
+        );
+        let staged = Reply::Scenes {
+            active: "talk".into(),
+            scenes: vec![scene("code"), scene("talk")],
+            staged: Some("code".into()),
+            trash: vec!["old".into(), "older".into()],
+        };
+        assert_eq!(
+            show(&staged, &View::Scenes, Format::Prose, Ink::Plain, 0),
+            "~ code (0 layers, in the preview)\n* talk (0 layers)\n\
+             trash: old, older (remux scene restore <name>)"
         );
     }
 

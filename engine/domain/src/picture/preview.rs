@@ -29,11 +29,12 @@ use serde::{Deserialize, Serialize};
 /// single frame be overwritten mid-draw.
 pub const SLOTS: u32 = 3;
 
-/// How many pictures the region carries: the scene, the self-view, the screen.
-/// They are separate because each is a different picture, not a crop of
-/// another: a card up makes the scene the card while the other two go on
-/// showing what they are pointed at.
-pub const RINGS: usize = 3;
+/// How many pictures the region carries: the scene, the self-view, the screen,
+/// and the staged scene. They are separate because each is a different
+/// picture, not a crop of another: a card up makes the scene the card while
+/// the others go on showing what they are pointed at, and the staged scene is
+/// what goes out next, while the scene is what is out now.
+pub const RINGS: usize = 4;
 
 /// What a panel is told, once, so it can map the region and read it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -72,6 +73,13 @@ impl Preview {
         self.ring_offset(2, slot)
     }
 
+    /// And the staged scene's, after the screen's: the scene a `take` puts on
+    /// the air, drawn while the air goes on showing the scene.
+    #[must_use]
+    pub fn staged_offset(&self, slot: u32) -> usize {
+        self.ring_offset(3, slot)
+    }
+
     fn ring_offset(&self, ring: usize, slot: u32) -> usize {
         HEADER + (ring * self.slots as usize + slot as usize) * self.frame()
     }
@@ -82,8 +90,8 @@ impl Preview {
         (self.stride as usize) * (self.height as usize)
     }
 
-    /// The whole region: the scene's ring, then the self-view's, then the
-    /// screen's.
+    /// The whole region: the scene's ring, then the self-view's, the
+    /// screen's and the staged scene's.
     #[must_use]
     pub fn size(&self) -> usize {
         HEADER + RINGS * (self.slots as usize) * self.frame()
@@ -125,10 +133,13 @@ pub const CAMERA_SEQUENCE_AT: usize = 16;
 /// still has to show the screen.
 pub const SCREEN_SEQUENCE_AT: usize = 24;
 
-/// Both sequences have to fit in the header, before the first pixel. Checked
+/// And the staged scene's, after the screen's.
+pub const STAGED_SEQUENCE_AT: usize = 32;
+
+/// Every sequence has to fit in the header, before the first pixel. Checked
 /// while compiling rather than while running: it is arithmetic over constants,
 /// and a test would only ever prove what the compiler already knows.
-const _: () = assert!(SCREEN_SEQUENCE_AT + 8 <= HEADER);
+const _: () = assert!(STAGED_SEQUENCE_AT + 8 <= HEADER);
 
 /// The slot the writer fills next, given how many frames it has published.
 ///
@@ -208,7 +219,7 @@ mod tests {
         assert_eq!(it.frame(), 960 * 540 * 4);
         assert_eq!(it.offset(0), HEADER);
         assert_eq!(it.offset(1), HEADER + it.frame());
-        assert_eq!(it.size(), HEADER + 9 * it.frame(), "three rings of three");
+        assert_eq!(it.size(), HEADER + 12 * it.frame(), "four rings of three");
         assert_eq!(it.offset(it.slots - 1) + it.frame(), it.camera_offset(0));
     }
 
@@ -233,6 +244,7 @@ mod tests {
             Preview::offset as fn(&Preview, u32) -> usize,
             Preview::camera_offset,
             Preview::screen_offset,
+            Preview::staged_offset,
         ];
         for ring in rings {
             for slot in 0..it.slots {
@@ -241,11 +253,30 @@ mod tests {
             }
         }
         assert_eq!(expected, it.size(), "the region ends where the rings do");
-        let says = [SEQUENCE_AT, CAMERA_SEQUENCE_AT, SCREEN_SEQUENCE_AT];
+        let says = [
+            SEQUENCE_AT,
+            CAMERA_SEQUENCE_AT,
+            SCREEN_SEQUENCE_AT,
+            STAGED_SEQUENCE_AT,
+        ];
         assert_eq!(
             says.iter().collect::<std::collections::HashSet<_>>().len(),
             says.len(),
             "two rings share a sequence"
+        );
+    }
+
+    // The staged scene's ring came last, after the screen's: a reader that knew
+    // three rings reads the same bytes it always did.
+    #[test]
+    fn the_first_three_rings_keep_their_bytes_beside_the_staged_scene() {
+        let it = shape();
+        assert_eq!(it.camera_offset(0), HEADER + 3 * it.frame());
+        assert_eq!(it.screen_offset(0), HEADER + 6 * it.frame());
+        assert_eq!(it.staged_offset(0), HEADER + 9 * it.frame());
+        assert_eq!(
+            (CAMERA_SEQUENCE_AT, SCREEN_SEQUENCE_AT, STAGED_SEQUENCE_AT),
+            (16, 24, 32)
         );
     }
 

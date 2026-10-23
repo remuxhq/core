@@ -319,14 +319,36 @@ pub fn music_gain(position: f64, ducked_db: f64) -> f64 {
 /// this one ends eighteen decibels under, which is a bed at its loudest.
 pub const MUSIC_CEILING_DB: f64 = -18.0;
 
-/// The music's fader: linear in dB from the floor to its own ceiling, 4.2 dB
-/// every 10% of travel, off at the bottom. See `MUSIC_CEILING_DB`.
+/// The quietest the music's fader goes before off: where a bed is just heard.
+///
+/// Not the voice's -60. Measured on lives: a bed is first heard around -47 dB
+/// of gain, sits under the voice around -40, and at -32 already reads as loud.
+/// Over a -60 floor the bottom third of the travel was all inaudible ("very
+/// quiet up to 30%, nearly the same, and only rising after"); over -50 the
+/// first notch is heard and every 10% is 3.2 dB.
+pub const MUSIC_FLOOR_DB: f64 = -50.0;
+
+/// The music's fader: linear in dB from its floor to its ceiling, 3.2 dB every
+/// 10% of travel, off at the bottom. See `MUSIC_FLOOR_DB`, `MUSIC_CEILING_DB`.
 pub fn music_fader(position: f64) -> f64 {
     let p = position.clamp(0.0, 1.0);
     if p <= 0.0 {
         0.0
     } else {
-        10f64.powf((FADER_FLOOR_DB + (MUSIC_CEILING_DB - FADER_FLOOR_DB) * p) / 20.0)
+        10f64.powf((MUSIC_FLOOR_DB + (MUSIC_CEILING_DB - MUSIC_FLOOR_DB) * p) / 20.0)
+    }
+}
+
+/// The music fader moved by `db`: the same decibels wherever it is, since the
+/// travel is linear in dB. Out of off lands one step up; a step down past the
+/// bottom is off; never past the top.
+pub fn music_step(position: f64, db: f64) -> f64 {
+    let step = db / (MUSIC_CEILING_DB - MUSIC_FLOOR_DB);
+    let moved = position.clamp(0.0, 1.0) + step;
+    if moved <= 0.0 {
+        0.0
+    } else {
+        moved.min(1.0)
     }
 }
 
@@ -437,11 +459,14 @@ mod tests {
             (music_fader_db(1.0) - MUSIC_CEILING_DB).abs() < 1e-9,
             "its loudest is a bed"
         );
+        // From where a bed is just heard to a bed alone: the whole travel is
+        // music, a third of it under a voice.
         assert!(
-            (music_fader_db(0.5) + 39.0).abs() < 0.001,
-            "halfway between -60 and -18"
+            (music_fader_db(0.5) + 34.0).abs() < 0.001,
+            "halfway between -50 and -18"
         );
-        assert!((music_fader_db(0.1) + 55.8).abs() < 0.001, "4.2 dB a notch");
+        assert!((music_fader_db(0.1) + 46.8).abs() < 0.001, "3.2 dB a notch");
+        assert!(music_fader_db(0.01) > -50.0, "the first notch is heard");
         assert_eq!(music_fader(0.0), 0.0, "off at the bottom");
         assert!(
             (music_fader(2.0) - music_fader(1.0)).abs() < 1e-9,
@@ -451,6 +476,19 @@ mod tests {
             fader(1.0) > music_fader(1.0),
             "the voice's fader still reaches unity"
         );
+    }
+
+    #[test]
+    fn a_step_of_the_music_fader_is_the_same_decibels_anywhere() {
+        let louder = |at: f64| music_fader_db(music_step(at, 3.0)) - music_fader_db(at);
+        assert!((louder(0.2) - 3.0).abs() < 1e-9);
+        assert!((louder(0.7) - 3.0).abs() < 1e-9);
+        assert_eq!(music_step(0.95, 3.0), 1.0, "not past the top");
+        assert!(
+            music_fader_db(music_step(0.0, 3.0)) > -48.0,
+            "out of silence, heard"
+        );
+        assert_eq!(music_step(0.05, -3.0), 0.0, "under the first step is off");
     }
 
     #[test]

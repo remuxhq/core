@@ -17,3 +17,7 @@ base64 = "0.22"
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# `remux companion`: is a process alive, and the signal that stops its group.
+libc = "0.2"
+# `remux tui`: the terminal screen, with crossterm under it (re-exported as ratatui::crossterm).
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }

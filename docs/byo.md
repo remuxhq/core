@@ -58,4 +58,4 @@ On macOS, turn on `remuxd` in System Settings → Privacy & Security → Screen 
 
 ## When something is wrong
 
-`remux daemon log -f` shows the engine's log. `remux bug --open` opens a GitHub issue with a report filled in, keys redacted. `remux config` shows every setting and where it came from.
+`remux daemon log -f` shows the engine's log. `remux bug --open <what went wrong>` opens a GitHub issue titled with those words and a report filled in, keys redacted. `remux config` shows every setting and where it came from.

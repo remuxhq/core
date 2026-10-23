@@ -25,6 +25,12 @@ pub struct State {
     /// Named layouts; the active entry reflects the current layers.
     pub scenes: Vec<crate::picture::scenes::Scene>,
     pub active_scene: String,
+    /// The scene drawn off the air, which a `scene-take` puts on it. Not
+    /// remembered: a restarted engine stages nothing.
+    pub staged: Option<String>,
+    /// The scenes deleted, the latest first, whole: `scene-restore` brings one
+    /// back. The last ten are kept, and remembered across a restart.
+    pub trash: Vec<crate::picture::scenes::Scene>,
     /// Independent audio captures, not ordered visual scene layers.
     pub audio_layers: Vec<crate::sound::audio_layers::Layer>,
     /// The selected scene shader, if any. Never its source.
@@ -76,6 +82,8 @@ impl Default for State {
             layers: Vec::new(),
             scenes: crate::picture::scenes::defaults(),
             active_scene: crate::protocol::default_scene_name(),
+            staged: None,
+            trash: Vec::new(),
             audio_layers: Vec::new(),
             shader: None,
             mic: None,
